@@ -413,6 +413,39 @@ export async function saveWizardSession(
   }
 }
 
+// ==========================================
+// UI MESSAGE TRACKING (retire old keyboards)
+// Stored in wizard_sessions under a prefixed chat_id so it never collides
+// with the real conversation state of the same chat.
+// ==========================================
+
+const UI_TRACK_PREFIX = "__ui__:";
+
+export async function trackUiMessage(chatId: string | number, messageId: number): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `${UI_TRACK_PREFIX}${chatId}`,
+      step: "ui_menu",
+      task_data: { promptMessageId: messageId },
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error tracking UI message:", error);
+}
+
+export async function getTrackedUiMessage(chatId: string | number): Promise<number | null> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${UI_TRACK_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  const messageId = (data.task_data as { promptMessageId?: unknown } | null)?.promptMessageId;
+  return typeof messageId === "number" ? messageId : null;
+}
+
 export async function clearWizardSession(chatId: string | number): Promise<boolean> {
   const cId = String(chatId);
   try {

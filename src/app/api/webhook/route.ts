@@ -23,6 +23,8 @@ import {
   getWizardSession,
   saveWizardSession,
   clearWizardSession,
+  trackUiMessage,
+  getTrackedUiMessage,
   isTaskCompletedToday,
   untickTaskToday,
   deduplicateTodayTickLogs,
@@ -79,7 +81,60 @@ async function sendWizardPrompt(
     await removeInlineKeyboard(chatId, previousPromptId);
   }
 
+  // Retire whatever menu was previously the active surface for this chat
+  await retireTrackedUi(chatId, promptMessageId);
+
+  if (promptMessageId) {
+    await trackUiMessage(chatId, promptMessageId);
+  }
+
   await saveWizardSession(chatId, step, { ...taskData, promptMessageId });
+}
+
+async function retireTrackedUi(chatId: string | number, keepMessageId?: number): Promise<void> {
+  const trackedId = await getTrackedUiMessage(chatId);
+  if (trackedId && trackedId !== keepMessageId) {
+    await removeInlineKeyboard(chatId, trackedId);
+  }
+}
+
+async function sendUiMessage(
+  chatId: string | number,
+  text: string,
+  keyboard?: InlineKeyboard
+): Promise<number | undefined> {
+  const res = await sendTelegramMessage(chatId, text, keyboard);
+  const newMessageId = res?.result?.message_id;
+  await retireTrackedUi(chatId, newMessageId);
+  if (newMessageId) {
+    await trackUiMessage(chatId, newMessageId);
+  }
+  return newMessageId;
+}
+
+async function editUiMessage(
+  chatId: string | number,
+  messageId: number,
+  text: string,
+  keyboard?: InlineKeyboard
+): Promise<void> {
+  await editTelegramMessage(chatId, messageId, text, keyboard ?? []);
+  await retireTrackedUi(chatId, messageId);
+  await trackUiMessage(chatId, messageId);
+}
+
+// Reply by editing the tapped message (when possible) and keep only one active keyboard
+async function respondUi(
+  chatId: string | number,
+  messageId: number | undefined,
+  text: string,
+  keyboard?: InlineKeyboard
+): Promise<void> {
+  if (messageId) {
+    await editUiMessage(chatId, messageId, text, keyboard);
+  } else {
+    await sendUiMessage(chatId, text, keyboard);
+  }
 }
 
 async function clearWizardSessionAndRetirePrompt(chatId: string | number): Promise<void> {
@@ -89,6 +144,7 @@ async function clearWizardSessionAndRetirePrompt(chatId: string | number): Promi
   if (promptId) {
     await removeInlineKeyboard(chatId, promptId);
   }
+  await retireTrackedUi(chatId, promptId);
 }
 
 // =========================================================================
@@ -399,11 +455,7 @@ export async function POST(req: NextRequest) {
       if (callbackData === "wizard_cancel") {
         await clearWizardSession(chatId);
         const cancelText = "❌ <i>Action cancelled.</i>";
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, cancelText, []);
-        } else {
-          await sendTelegramMessage(chatId, cancelText);
-        }
+        await respondUi(chatId, messageId, cancelText, []);
         return NextResponse.json({ ok: true });
       }
 
@@ -543,7 +595,6 @@ export async function POST(req: NextRequest) {
         }
 
         const taskData = session.task_data;
-        const previousPromptId = taskData.promptMessageId;
         const newTask = await createTask({
           name: taskData.name,
           type: taskData.type || "timer",
@@ -556,10 +607,7 @@ export async function POST(req: NextRequest) {
         await clearWizardSession(chatId);
 
         if (!newTask) {
-          await sendTelegramMessage(chatId, `⚠️ Could not create task (name may already exist).`);
-          if (previousPromptId && previousPromptId !== messageId) {
-            await removeInlineKeyboard(chatId, previousPromptId);
-          }
+          await respondUi(chatId, messageId, `⚠️ Could not create task (name may already exist).`, []);
           return NextResponse.json({ ok: true });
         }
 
@@ -583,14 +631,7 @@ export async function POST(req: NextRequest) {
         }
         actionButtons.push([{ text: "📋 View Tasks", callback_data: "menu_tasks" }]);
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, successText, actionButtons);
-        } else {
-          await sendTelegramMessage(chatId, successText, actionButtons);
-        }
-        if (previousPromptId && previousPromptId !== messageId) {
-          await removeInlineKeyboard(chatId, previousPromptId);
-        }
+        await respondUi(chatId, messageId, successText, actionButtons);
         return NextResponse.json({ ok: true });
       }
 
@@ -635,11 +676,7 @@ export async function POST(req: NextRequest) {
         }
 
         const tasksText = "📋 <b>Your Tasks:</b>\nTap a task to log or start:";
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, tasksText, taskButtons);
-        } else {
-          await sendTelegramMessage(chatId, tasksText, taskButtons);
-        }
+        await respondUi(chatId, messageId, tasksText, taskButtons);
         return NextResponse.json({ ok: true });
       }
 
@@ -674,8 +711,9 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
-          await sendTelegramMessage(
+          await respondUi(
             chatId,
+            messageId,
             `⏱️ <b>${task.name}</b>\n` +
               `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
               `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
@@ -702,8 +740,9 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
-          await sendTelegramMessage(
+          await respondUi(
             chatId,
+            messageId,
             `💧 <b>${task.name}</b>\n` +
               `🎯 Goal: <b>${formatGoalDisplay(target, unit)}</b>\n` +
               `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
@@ -722,8 +761,9 @@ export async function POST(req: NextRequest) {
                 { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
               ],
             ];
-            await sendTelegramMessage(
+            await respondUi(
               chatId,
+              messageId,
               `✅ <b>${task.name}</b> is marked complete for today!\nTap below if you want to undo:`,
               tickKeyboard
             );
@@ -736,8 +776,9 @@ export async function POST(req: NextRequest) {
                 { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
               ],
             ];
-            await sendTelegramMessage(
+            await respondUi(
               chatId,
+              messageId,
               `⬜ <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
               tickKeyboard
             );
@@ -764,11 +805,7 @@ export async function POST(req: NextRequest) {
           `It will be removed from your task list.\n` +
           `📜 Past logs stay saved forever.`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, confirmKb);
-        } else {
-          await sendTelegramMessage(chatId, text, confirmKb);
-        }
+        await respondUi(chatId, messageId, text, confirmKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -779,13 +816,9 @@ export async function POST(req: NextRequest) {
         const text = task
           ? `❌ <i>Delete cancelled — <b>${task.name}</b> is safe.</i>`
           : `❌ <i>Delete cancelled.</i>`;
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, [
-            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-          ]);
-        } else {
-          await sendTelegramMessage(chatId, text);
-        }
+        await respondUi(chatId, messageId, text, [
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ]);
         return NextResponse.json({ ok: true });
       }
 
@@ -806,11 +839,7 @@ export async function POST(req: NextRequest) {
           `💡 Create a task with the same name anytime to revive it.`;
         const kb: InlineKeyboard = [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]];
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, kb);
-        } else {
-          await sendTelegramMessage(chatId, text, kb);
-        }
+        await respondUi(chatId, messageId, text, kb);
         return NextResponse.json({ ok: true });
       }
 
@@ -841,11 +870,52 @@ export async function POST(req: NextRequest) {
           `${buildTaskSummary(task)}\n\n` +
           `What would you like to change?`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, editKb);
-        } else {
-          await sendTelegramMessage(chatId, text, editKb);
+        await respondUi(chatId, messageId, text, editKb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Manage Task (from /edit list) -> Edit or Delete ---
+      if (callbackData.startsWith("manage_task:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found or already deleted.", []);
+          return NextResponse.json({ ok: true });
         }
+
+        const manageKb: InlineKeyboard = [
+          [
+            { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
+            { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+          ],
+          [{ text: "↩️ Back to Task List", callback_data: "ui_edit_list" }],
+        ];
+
+        await respondUi(
+          chatId,
+          messageId,
+          `⚙️ <b>${task.name}</b>\n\n${buildTaskSummary(task)}\n\nWhat do you want to do?`,
+          manageKb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Re-render the /edit Task List ---
+      if (callbackData === "ui_edit_list") {
+        const tasks = await getActiveTasks();
+        if (tasks.length === 0) {
+          await respondUi(chatId, messageId, "📋 <b>No tasks to edit yet!</b>", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const listKb: InlineKeyboard = tasks.map((t) => [
+          {
+            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "✅"} ${t.name}`,
+            callback_data: `manage_task:${t.id}`,
+          },
+        ]);
+
+        await respondUi(chatId, messageId, "✏️ <b>Edit Tasks</b>\nTap a task to edit or delete:", listKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -930,13 +1000,9 @@ export async function POST(req: NextRequest) {
         const text = updated
           ? `⏰ Reminder removed for <b>${task.name}</b>.\n\n${buildTaskSummary(updated)}`
           : `⚠️ Could not update the task. Please try again.`;
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, [
-            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-          ]);
-        } else {
-          await sendTelegramMessage(chatId, text);
-        }
+        await respondUi(chatId, messageId, text, [
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ]);
         if (promptId && promptId !== messageId) {
           await removeInlineKeyboard(chatId, promptId);
         }
@@ -959,13 +1025,9 @@ export async function POST(req: NextRequest) {
         const text = updated
           ? `📅 Schedule updated to Daily for <b>${task.name}</b>.\n\n${buildTaskSummary(updated)}`
           : `⚠️ Could not update the task. Please try again.`;
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, [
-            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-          ]);
-        } else {
-          await sendTelegramMessage(chatId, text);
-        }
+        await respondUi(chatId, messageId, text, [
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ]);
         if (promptId && promptId !== messageId) {
           await removeInlineKeyboard(chatId, promptId);
         }
@@ -1003,11 +1065,7 @@ export async function POST(req: NextRequest) {
           `⏱️ <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
           `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, replyKb);
-        } else {
-          await sendTelegramMessage(chatId, text, replyKb);
-        }
+        await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -1050,11 +1108,7 @@ export async function POST(req: NextRequest) {
 
         const text = `⏱️ <b>${taskName}</b> timer started at <b>${new Date().toLocaleTimeString()}</b>!\nFocus mode on. Tap Stop when finished:`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, stopKeyboard);
-        } else {
-          await sendTelegramMessage(chatId, text, stopKeyboard);
-        }
+        await respondUi(chatId, messageId, text, stopKeyboard);
         return NextResponse.json({ ok: true });
       }
 
@@ -1082,11 +1136,7 @@ export async function POST(req: NextRequest) {
           `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
           `Saved cleanly to your database!`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, stopKb);
-        } else {
-          await sendTelegramMessage(chatId, text, stopKb);
-        }
+        await respondUi(chatId, messageId, text, stopKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -1120,11 +1170,7 @@ export async function POST(req: NextRequest) {
           `💧 <b>${taskName}</b>: Logged +${amount} ${task?.unit || ""}!\n` +
           `📊 Today: <b>${total.toLocaleString()} / ${formatGoalDisplay(target, task?.unit)}</b> (${percent}%)`;
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, replyKb);
-        } else {
-          await sendTelegramMessage(chatId, text, replyKb);
-        }
+        await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -1151,11 +1197,7 @@ export async function POST(req: NextRequest) {
         ];
 
         const text = `✅ <b>${taskName}</b> marked as completed for today!`;
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, undoKeyboard);
-        } else {
-          await sendTelegramMessage(chatId, text, undoKeyboard);
-        }
+        await respondUi(chatId, messageId, text, undoKeyboard);
         return NextResponse.json({ ok: true });
       }
 
@@ -1173,11 +1215,7 @@ export async function POST(req: NextRequest) {
         ];
 
         const text = `⭕ <b>${taskName}</b> unmarked for today.`;
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, tickKeyboard);
-        } else {
-          await sendTelegramMessage(chatId, text, tickKeyboard);
-        }
+        await respondUi(chatId, messageId, text, tickKeyboard);
         return NextResponse.json({ ok: true });
       }
     }
@@ -1188,6 +1226,9 @@ export async function POST(req: NextRequest) {
     if (body.message?.text) {
       const text = body.message.text.trim();
       const chatId = body.message.chat.id;
+
+      // Any typed message retires the previous interactive keyboard
+      await retireTrackedUi(chatId);
 
       // --- Command: /cancel ---
       if (text === "/cancel") {
@@ -1204,6 +1245,7 @@ export async function POST(req: NextRequest) {
           `<b>Available Commands:</b>\n` +
           `• <b>/addtask</b> — ➕ Create a new task (guided wizard)\n` +
           `• <b>/tasks</b> — 📋 View and log your tasks\n` +
+          `• <b>/edit</b> — ✏️ Edit or delete a task\n` +
           `• <b>/today</b> — 📊 View today's scorecard\n` +
           `• <b>/log</b> — 📖 Write daily diary / notes\n` +
           `• <b>/status</b> — ⏱️ Check or stop active timer\n` +
@@ -1274,7 +1316,7 @@ export async function POST(req: NextRequest) {
           `• 💧 <b>Counter:</b> Amount & unit goal (e.g. 10 km, 5000 ml, 50 pages)\n` +
           `• ✅ <b>Daily Tick:</b> Wake up, meditation (yes/no daily completion)`;
 
-        await sendTelegramMessage(chatId, promptText, typeKeyboard);
+        await sendUiMessage(chatId, promptText, typeKeyboard);
         return NextResponse.json({ ok: true });
       }
 
@@ -1318,7 +1360,26 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        await sendTelegramMessage(chatId, "📋 <b>Your Tasks:</b>\nTap a task to log or start:", taskButtons);
+        await sendUiMessage(chatId, "📋 <b>Your Tasks:</b>\nTap a task to log or start:", taskButtons);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /edit (Task list -> Manage -> Edit / Delete) ---
+      if (text === "/edit") {
+        const tasks = await getActiveTasks();
+        if (tasks.length === 0) {
+          await sendUiMessage(chatId, "📋 <b>No tasks to edit yet!</b>\nType /addtask to create one.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const taskButtons: InlineKeyboard = tasks.map((t) => [
+          {
+            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "✅"} ${t.name}`,
+            callback_data: `manage_task:${t.id}`,
+          },
+        ]);
+
+        await sendUiMessage(chatId, "✏️ <b>Edit Tasks</b>\nTap a task to edit or delete:", taskButtons);
         return NextResponse.json({ ok: true });
       }
 
@@ -1330,7 +1391,7 @@ export async function POST(req: NextRequest) {
         } else {
           const startedAt = new Date(active.started_at);
           const elapsed = Math.round((Date.now() - startedAt.getTime()) / 60000);
-          await sendTelegramMessage(
+          await sendUiMessage(
             chatId,
             `⏱️ Running: <b>${active.task_name}</b> for <b>${elapsed} mins</b>\n(Started: ${startedAt.toLocaleTimeString()})`,
             [[{ text: "⏹️ End & Log", callback_data: "stop_active_timer" }]]
@@ -1514,16 +1575,12 @@ export async function POST(req: NextRequest) {
           }
 
           const updated = await getTaskById(task.id);
-          const editPromptId = activeSession.task_data.promptMessageId;
           await clearWizardSession(chatId);
 
-          await sendTelegramMessage(
+          await sendUiMessage(
             chatId,
             `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`
           );
-          if (editPromptId) {
-            await removeInlineKeyboard(chatId, editPromptId);
-          }
           return NextResponse.json({ ok: true });
         }
 
