@@ -734,10 +734,6 @@ export async function POST(req: NextRequest) {
               { text: "✏️ Custom Minutes", callback_data: `timer_custom_prompt:${task.id}` },
               { text: "📋 Back to Tasks", callback_data: "menu_tasks" },
             ],
-            [
-              { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
-              { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
-            ],
           ];
 
           await respondUi(
@@ -763,10 +759,6 @@ export async function POST(req: NextRequest) {
               { text: `+10 ${unit}`, callback_data: `counter_add:${task.id}:10` },
             ],
             [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-            [
-              { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
-              { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
-            ],
           ];
 
           await respondUi(
@@ -785,10 +777,6 @@ export async function POST(req: NextRequest) {
             const tickKeyboard: InlineKeyboard = [
               [{ text: `⭕ Mark Incomplete (Undo)`, callback_data: `untick_task:${task.id}` }],
               [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-              [
-                { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
-                { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
-              ],
             ];
             await respondUi(
               chatId,
@@ -800,10 +788,6 @@ export async function POST(req: NextRequest) {
             const tickKeyboard: InlineKeyboard = [
               [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
               [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-              [
-                { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
-                { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
-              ],
             ];
             await respondUi(
               chatId,
