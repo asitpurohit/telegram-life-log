@@ -1117,10 +1117,17 @@ export async function POST(req: NextRequest) {
             const timerPrompt =
               `🎯 <b>Daily Time Goal</b>\n\n` +
               `Task: <b>${taskName}</b>\n\n` +
-              `Type your daily goal in <b>hours & minutes</b>:\n` +
-              `<i>(e.g., "2 hours", "1h 30m", "45 mins", "3h 15m")</i>`;
+              `✍️ <b>Type your goal in chat:</b>\n` +
+              `<i>(e.g., "2 hours", "1h 30m", "45 mins", "3h 15m")</i>\n\n` +
+              `<b>— OR tap a quick target:</b>`;
 
             const timerKb: InlineKeyboard = [
+              [
+                { text: "30 mins", callback_data: "wizard_timer_target:30" },
+                { text: "1 hour", callback_data: "wizard_timer_target:60" },
+                { text: "2 hours", callback_data: "wizard_timer_target:120" },
+                { text: "4 hours", callback_data: "wizard_timer_target:240" },
+              ],
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
@@ -1136,10 +1143,20 @@ export async function POST(req: NextRequest) {
             const counterPrompt =
               `🎯 <b>Daily Goal & Unit</b>\n\n` +
               `Task: <b>${taskName}</b>\n\n` +
-              `Type your daily goal amount and unit:\n` +
-              `<i>(e.g., "10 km", "5000 ml", "8000 steps", "50 pages", "2.5 liters")</i>`;
+              `✍️ <b>Type your goal & unit in chat:</b>\n` +
+              `<i>(e.g., "10 km", "5000 ml", "8000 steps", "50 pages", "2.5 liters")</i>\n\n` +
+              `<b>— OR tap a quick target:</b>`;
 
             const counterKb: InlineKeyboard = [
+              [
+                { text: "2,000 ml", callback_data: "wizard_count_target:2000:ml" },
+                { text: "5,000 ml", callback_data: "wizard_count_target:5000:ml" },
+              ],
+              [
+                { text: "5 km", callback_data: "wizard_count_target:5:km" },
+                { text: "10 km", callback_data: "wizard_count_target:10:km" },
+                { text: "50 pages", callback_data: "wizard_count_target:50:pages" },
+              ],
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
