@@ -46,20 +46,24 @@ export function buildTimerView(
       `🕐 Started: ${startedTime}\n\n` +
       `<i>Runs until you stop it.</i>`;
 
+  // Buttons carry the session start so any message of THIS session can be used,
+  // while buttons from an older, already-finished session get rejected.
+  const sessionEpoch = new Date(startedAtIso).getTime();
+
   const keyboard: InlineKeyboard = isPaused
     ? [
         [
-          { text: "▶️ Resume", callback_data: `timer_resume:${pausedAtMs}` },
-          { text: "⏹ Stop", callback_data: `timer_stop:${pausedAtMs}` },
+          { text: "▶️ Resume", callback_data: `timer_resume:${pausedAtMs}:${sessionEpoch}` },
+          { text: "⏹ Stop", callback_data: `timer_stop:${pausedAtMs}:${sessionEpoch}` },
         ],
-        [{ text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}` }],
+        [{ text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}:${sessionEpoch}` }],
       ]
     : [
         [
-          { text: "⏸ Pause", callback_data: "timer_pause" },
-          { text: "⏹ Stop", callback_data: "timer_stop:0" },
+          { text: "⏸ Pause", callback_data: `timer_pause:${sessionEpoch}` },
+          { text: "⏹ Stop", callback_data: `timer_stop:0:${sessionEpoch}` },
         ],
-        [{ text: "🔄 Refresh", callback_data: "timer_refresh:0" }],
+        [{ text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` }],
       ];
 
   return { text, keyboard };

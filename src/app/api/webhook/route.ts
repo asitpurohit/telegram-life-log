@@ -62,6 +62,7 @@ export const dynamic = "force-dynamic";
 function isTimerCallback(data: string): boolean {
   return (
     data === "timer_pause" ||
+    data.startsWith("timer_pause:") ||
     data === "stop_active_timer" ||
     data.startsWith("timer_resume:") ||
     data.startsWith("timer_refresh:") ||
@@ -534,13 +535,22 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
       } else if (isTimerCallback(callbackData)) {
-        const trackedTimerId = await getTimerMessage(chatId);
-        if (trackedTimerId && messageId && trackedTimerId !== messageId) {
-          await answerCallbackQuery(
-            callbackQuery.id,
-            "⚠️ This timer is outdated — please use the latest timer message."
-          );
-          return NextResponse.json({ ok: true });
+        // Validate by session start, not by message id: every message showing the
+        // SAME running timer stays usable, but buttons from an older session are rejected.
+        const parts = callbackData.split(":");
+        const sessionEpoch = callbackData.startsWith("timer_pause:")
+          ? parseInt(parts[1], 10)
+          : parseInt(parts[2], 10);
+
+        if (sessionEpoch) {
+          const active = await getActiveTimer(chatId);
+          if (active && new Date(active.started_at).getTime() !== sessionEpoch) {
+            await answerCallbackQuery(
+              callbackQuery.id,
+              "⚠️ This timer is outdated — please use the latest timer message."
+            );
+            return NextResponse.json({ ok: true });
+          }
         }
       }
 
@@ -1120,7 +1130,7 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Timer: Pause (local only, nothing written to the database) ---
-      if (callbackData === "timer_pause") {
+      if (callbackData === "timer_pause" || callbackData.startsWith("timer_pause:")) {
         const active = await getActiveTimer(chatId);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
@@ -1309,7 +1319,8 @@ export async function POST(req: NextRequest) {
       // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
       const isWizardAnswer = activeSession && !text.startsWith("/");
-      if (!isWizardAnswer) {
+      const isEmergencyStop = text === "/stop";
+      if (!isWizardAnswer && !isEmergencyStop) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
           if (messageId) {
@@ -1478,6 +1489,28 @@ export async function POST(req: NextRequest) {
         ]);
 
         await sendUiMessage(chatId, "✏️ <b>Edit Tasks</b>\nTap a task to edit or delete:", taskButtons);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /stop (emergency escape: works even during focus mode) ---
+      if (text === "/stop") {
+        const pausedAt = getTimerPaused(chatId);
+        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
+        clearTimerPaused(chatId);
+        if (!result) {
+          await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
+        } else {
+          const task = await findTaskByName(result.taskName);
+          const totalToday = await getTodayTaskTotal(result.taskName);
+          const target = task?.target_value || 60;
+          const percent = Math.round((totalToday / target) * 100);
+          await sendUiMessage(
+            chatId,
+            `🎉 <b>${result.taskName}</b> stopped!\n` +
+              `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
+              `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)`
+          );
+        }
         return NextResponse.json({ ok: true });
       }
 
