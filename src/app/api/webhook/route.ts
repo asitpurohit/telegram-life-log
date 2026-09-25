@@ -1686,8 +1686,8 @@ export async function POST(req: NextRequest) {
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
-          `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
           `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
+          `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
           `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +

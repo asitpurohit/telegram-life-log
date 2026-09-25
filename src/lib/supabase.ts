@@ -16,10 +16,12 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
 // ==========================================
 
 export async function getActiveTasks(): Promise<Task[]> {
+  // Ordered by reminder time (morning -> evening); tasks without a reminder go last
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
     .eq("is_archived", false)
+    .order("reminder_time", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: true });
 
   if (error) {
