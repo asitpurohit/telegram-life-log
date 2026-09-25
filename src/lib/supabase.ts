@@ -86,6 +86,39 @@ export async function taskNameExists(name: string): Promise<Task | null> {
 }
 
 export async function createTask(task: Partial<Task>): Promise<Task | null> {
+  // If an archived task with the same name exists, revive it so past logs stay linked.
+  if (task.name) {
+    const { data: archivedMatch } = await supabase
+      .from("tasks")
+      .select("id")
+      .ilike("name", escapeLikePattern(task.name))
+      .eq("is_archived", true)
+      .limit(1)
+      .maybeSingle();
+
+    if (archivedMatch) {
+      const { data, error } = await supabase
+        .from("tasks")
+        .update({
+          type: task.type,
+          reminder_time: task.reminder_time ?? null,
+          target_value: task.target_value ?? null,
+          unit: task.unit ?? null,
+          target_days: task.target_days ?? "daily",
+          is_archived: false,
+        })
+        .eq("id", archivedMatch.id)
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        console.error("Error reviving task:", error);
+        return null;
+      }
+      return data;
+    }
+  }
+
   const { data, error } = await supabase
     .from("tasks")
     .insert([task])
@@ -94,6 +127,21 @@ export async function createTask(task: Partial<Task>): Promise<Task | null> {
 
   if (error) {
     console.error("Error creating task:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function updateTask(taskId: string, updates: Partial<Task>): Promise<Task | null> {
+  const { data, error } = await supabase
+    .from("tasks")
+    .update(updates)
+    .eq("id", taskId)
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error updating task:", error);
     return null;
   }
   return data;

@@ -12,6 +12,8 @@ import {
   findTaskByName,
   taskNameExists,
   createTask,
+  updateTask,
+  archiveTask,
   startActiveTimer,
   getActiveTimer,
   stopActiveTimer,
@@ -48,7 +50,9 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("wizard_count_target:") ||
     data.startsWith("wizard_skip:") ||
     data.startsWith("wizard_days:") ||
-    data.startsWith("timer_custom_prompt:")
+    data.startsWith("timer_custom_prompt:") ||
+    data.startsWith("edit_clear_reminder:") ||
+    data.startsWith("edit_set_days:")
   );
 }
 
@@ -218,6 +222,17 @@ function formatGoalDisplay(targetValue?: number | null, unit?: string | null): s
     return "1 completion";
   }
   return `${targetValue.toLocaleString()} ${cleanUnit || "units"}`;
+}
+
+// One-line task summary used in edit/delete confirmations
+function buildTaskSummary(task: Task): string {
+  const typeIcon = task.type === "timer" ? "⏱️" : task.type === "counter" ? "💧" : "✅";
+  return (
+    `${typeIcon} <b>${task.name}</b>\n` +
+    `🎯 Goal: <b>${formatGoalDisplay(task.target_value, task.unit)}</b>\n` +
+    `⏰ Reminder: <b>${formatReminderTime(task.reminder_time)}</b>\n` +
+    `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>`
+  );
 }
 
 // Parse schedule days: supports "daily", or comma/dot-separated days e.g. "Mon, Wed, Fri"
@@ -653,6 +668,10 @@ export async function POST(req: NextRequest) {
               { text: "✏️ Custom Minutes", callback_data: `timer_custom_prompt:${task.id}` },
               { text: "📋 Back to Tasks", callback_data: "menu_tasks" },
             ],
+            [
+              { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
+              { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+            ],
           ];
 
           await sendTelegramMessage(
@@ -677,6 +696,10 @@ export async function POST(req: NextRequest) {
               { text: `+10 ${unit}`, callback_data: `counter_add:${task.id}:10` },
             ],
             [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+            [
+              { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
+              { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+            ],
           ];
 
           await sendTelegramMessage(
@@ -694,6 +717,10 @@ export async function POST(req: NextRequest) {
             const tickKeyboard: InlineKeyboard = [
               [{ text: `⭕ Mark Incomplete (Undo)`, callback_data: `untick_task:${task.id}` }],
               [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+              [
+                { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
+                { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+              ],
             ];
             await sendTelegramMessage(
               chatId,
@@ -704,6 +731,10 @@ export async function POST(req: NextRequest) {
             const tickKeyboard: InlineKeyboard = [
               [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
               [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+              [
+                { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
+                { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+              ],
             ];
             await sendTelegramMessage(
               chatId,
@@ -711,6 +742,232 @@ export async function POST(req: NextRequest) {
               tickKeyboard
             );
           }
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Delete Task (Soft delete, past logs are preserved) ---
+      if (callbackData.startsWith("delete_task:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found or already deleted.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const confirmKb: InlineKeyboard = [
+          [{ text: "🗑️ Yes, Delete", callback_data: `confirm_delete:${task.id}` }],
+          [{ text: "❌ Cancel", callback_data: `delete_cancel:${task.id}` }],
+        ];
+        const text =
+          `🗑️ <b>Delete "${task.name}"?</b>\n\n` +
+          `It will be removed from your task list.\n` +
+          `📜 Past logs stay saved forever.`;
+
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, confirmKb);
+        } else {
+          await sendTelegramMessage(chatId, text, confirmKb);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Cancel Delete ---
+      if (callbackData.startsWith("delete_cancel:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        const text = task
+          ? `❌ <i>Delete cancelled — <b>${task.name}</b> is safe.</i>`
+          : `❌ <i>Delete cancelled.</i>`;
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, [
+            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+          ]);
+        } else {
+          await sendTelegramMessage(chatId, text);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Confirm Delete ---
+      if (callbackData.startsWith("confirm_delete:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task already deleted.");
+          return NextResponse.json({ ok: true });
+        }
+
+        await archiveTask(task.id);
+
+        const text =
+          `🗑️ <b>${task.name}</b> removed from your task list.\n\n` +
+          `📜 Past logs are untouched — your history is safe.\n` +
+          `💡 Create a task with the same name anytime to revive it.`;
+        const kb: InlineKeyboard = [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]];
+
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, kb);
+        } else {
+          await sendTelegramMessage(chatId, text, kb);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Edit Task Menu ---
+      if (callbackData.startsWith("edit_task:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const firstRow = [{ text: "📝 Name", callback_data: `edit_field:${task.id}:name` }];
+        if (task.type !== "tick") {
+          firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${task.id}:goal` });
+        }
+        const editKb: InlineKeyboard = [
+          firstRow,
+          [
+            { text: "⏰ Reminder", callback_data: `edit_field:${task.id}:reminder` },
+            { text: "📅 Days", callback_data: `edit_field:${task.id}:days` },
+          ],
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ];
+
+        const text =
+          `📝 <b>Edit "${task.name}"</b>\n\n` +
+          `${buildTaskSummary(task)}\n\n` +
+          `What would you like to change?`;
+
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, editKb);
+        } else {
+          await sendTelegramMessage(chatId, text, editKb);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Edit a Specific Field ---
+      if (callbackData.startsWith("edit_field:")) {
+        const [, taskId, field] = callbackData.split(":");
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found.");
+          return NextResponse.json({ ok: true });
+        }
+
+        if (field === "name") {
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_edit_name",
+            { taskId: task.id, name: task.name },
+            `📝 <b>New name for "${task.name}"</b>\n\nSend the new name:`,
+            [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+            messageId
+          );
+        } else if (field === "goal") {
+          const prompt =
+            task.type === "timer"
+              ? `🎯 <b>New goal for "${task.name}"</b>\n\nSend the daily time goal:\n<i>(e.g., "2 hours", "1h 30m", "45 mins")</i>`
+              : `🎯 <b>New goal for "${task.name}"</b>\n\nSend the goal & unit:\n<i>(e.g., "5000 ml", "10 km", "50 pages")</i>`;
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_edit_goal",
+            { taskId: task.id, name: task.name },
+            prompt,
+            [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+            messageId
+          );
+        } else if (field === "reminder") {
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_edit_reminder",
+            { taskId: task.id, name: task.name },
+            `⏰ <b>New reminder for "${task.name}"</b>\n\n` +
+              `Current: <b>${formatReminderTime(task.reminder_time)}</b>\n\n` +
+              `Send the new time:\n<i>(e.g., "8am", "18:30")</i>`,
+            [
+              [{ text: "⏭️ Remove Reminder", callback_data: `edit_clear_reminder:${task.id}` }],
+              [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+            ],
+            messageId
+          );
+        } else if (field === "days") {
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_edit_days",
+            { taskId: task.id, name: task.name },
+            `📅 <b>New days for "${task.name}"</b>\n\n` +
+              `Current: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n\n` +
+              `Tap Daily, or type the days:\n<i>(e.g., "Mon, Wed, Fri")</i>`,
+            [
+              [{ text: "🌟 Daily (Every Day)", callback_data: `edit_set_days:${task.id}:daily` }],
+              [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+            ],
+            messageId
+          );
+        } else {
+          await sendTelegramMessage(chatId, "⚠️ Unknown edit option.");
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Remove Reminder (from edit prompt) ---
+      if (callbackData.startsWith("edit_clear_reminder:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const updated = await updateTask(task.id, { reminder_time: null });
+        const promptId = (await getWizardSession(chatId))?.task_data?.promptMessageId;
+        await clearWizardSession(chatId);
+
+        const text = updated
+          ? `⏰ Reminder removed for <b>${task.name}</b>.\n\n${buildTaskSummary(updated)}`
+          : `⚠️ Could not update the task. Please try again.`;
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, [
+            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+          ]);
+        } else {
+          await sendTelegramMessage(chatId, text);
+        }
+        if (promptId && promptId !== messageId) {
+          await removeInlineKeyboard(chatId, promptId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Set Days to Daily (from edit prompt) ---
+      if (callbackData.startsWith("edit_set_days:")) {
+        const [, taskId] = callbackData.split(":");
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const updated = await updateTask(task.id, { target_days: "daily" });
+        const promptId = (await getWizardSession(chatId))?.task_data?.promptMessageId;
+        await clearWizardSession(chatId);
+
+        const text = updated
+          ? `📅 Schedule updated to Daily for <b>${task.name}</b>.\n\n${buildTaskSummary(updated)}`
+          : `⚠️ Could not update the task. Please try again.`;
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, [
+            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+          ]);
+        } else {
+          await sendTelegramMessage(chatId, text);
+        }
+        if (promptId && promptId !== messageId) {
+          await removeInlineKeyboard(chatId, promptId);
         }
         return NextResponse.json({ ok: true });
       }
@@ -1169,6 +1426,107 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        // --- State: Editing an Existing Task ---
+        if (
+          activeSession.step === "awaiting_edit_name" ||
+          activeSession.step === "awaiting_edit_goal" ||
+          activeSession.step === "awaiting_edit_reminder" ||
+          activeSession.step === "awaiting_edit_days"
+        ) {
+          const taskId = activeSession.task_data.taskId || "";
+          const task = await getTaskById(taskId);
+          if (!task) {
+            await clearWizardSession(chatId);
+            await sendTelegramMessage(chatId, "⚠️ Task not found or deleted. Edit cancelled.");
+            return NextResponse.json({ ok: true });
+          }
+
+          const failEdit = async (message: string) => {
+            await sendWizardPrompt(
+              chatId,
+              activeSession.step,
+              activeSession.task_data,
+              message,
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+          };
+
+          if (activeSession.step === "awaiting_edit_name") {
+            const newName = text.trim();
+            if (newName.length < 2) {
+              await failEdit("⚠️ Please provide a name with at least 2 characters:");
+              return NextResponse.json({ ok: true });
+            }
+            const existing = await taskNameExists(newName);
+            if (existing && existing.id !== task.id && !existing.is_archived) {
+              await failEdit(
+                `⚠️ A task named <b>"${existing.name}"</b> already exists.\n\nPlease choose a different name:`
+              );
+              return NextResponse.json({ ok: true });
+            }
+            await updateTask(task.id, { name: newName });
+          } else if (activeSession.step === "awaiting_edit_goal") {
+            let updates: Partial<Task> | null = null;
+            if (task.type === "timer") {
+              const mins = parseTimerGoal(text);
+              if (mins && mins > 0) updates = { target_value: mins, unit: "minutes" };
+            } else {
+              const parsed = parseCountGoalAndUnit(text);
+              if (parsed && parsed.value > 0) updates = { target_value: parsed.value, unit: parsed.unit };
+            }
+            if (!updates) {
+              await failEdit(
+                task.type === "timer"
+                  ? `⚠️ Please enter hours & minutes like <b>2 hours</b>, <b>1h 30m</b>, or <b>45 mins</b>:`
+                  : `⚠️ Please enter an amount and unit like <b>10 km</b>, <b>5000 ml</b>, or <b>50 pages</b>:`
+              );
+              return NextResponse.json({ ok: true });
+            }
+            await updateTask(task.id, updates);
+          } else if (activeSession.step === "awaiting_edit_reminder") {
+            const lower = text.trim().toLowerCase();
+            if (["none", "remove", "no reminder", "skip"].includes(lower)) {
+              await updateTask(task.id, { reminder_time: null });
+            } else {
+              const parsedTime = parseReminderTime(text);
+              if (!parsedTime) {
+                await failEdit(
+                  `⚠️ I didn't recognize that time format.\n\n` +
+                    `Please try like <b>08:00 AM</b>, <b>8am</b>, or <b>18:30</b>:`
+                );
+                return NextResponse.json({ ok: true });
+              }
+              await updateTask(task.id, { reminder_time: parsedTime });
+            }
+          } else {
+            const chosenDays = parseScheduleDays(text);
+            if (!chosenDays) {
+              await failEdit(
+                `⚠️ <b>Invalid Days of Week</b>\n\n` +
+                  `I couldn't recognize those days.\n` +
+                  `Please type valid days separated by comma, like:\n` +
+                  `• <b>Mon, Wed, Fri</b>\n` +
+                  `• <b>Saturday, Sunday</b>`
+              );
+              return NextResponse.json({ ok: true });
+            }
+            await updateTask(task.id, { target_days: chosenDays });
+          }
+
+          const updated = await getTaskById(task.id);
+          const editPromptId = activeSession.task_data.promptMessageId;
+          await clearWizardSession(chatId);
+
+          await sendTelegramMessage(
+            chatId,
+            `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`
+          );
+          if (editPromptId) {
+            await removeInlineKeyboard(chatId, editPromptId);
+          }
+          return NextResponse.json({ ok: true });
+        }
+
         // --- State: Step 1 Name Input -> Branch by Task Type ---
         if (activeSession.step === "awaiting_name") {
           const taskName = text.trim();
@@ -1184,7 +1542,7 @@ export async function POST(req: NextRequest) {
           }
 
           const existing = await taskNameExists(taskName);
-          if (existing) {
+          if (existing && !existing.is_archived) {
             await sendWizardPrompt(
               chatId,
               "awaiting_name",

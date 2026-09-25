@@ -38,7 +38,11 @@ export interface WizardSession {
     | 'awaiting_reminder'
     | 'awaiting_days'
     | 'awaiting_diary_text'
-    | 'awaiting_timer_custom';
+    | 'awaiting_timer_custom'
+    | 'awaiting_edit_name'
+    | 'awaiting_edit_goal'
+    | 'awaiting_edit_reminder'
+    | 'awaiting_edit_days';
   task_data: {
     type?: TaskType;
     name?: string;
