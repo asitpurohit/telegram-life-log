@@ -6,6 +6,7 @@ const ai = new GoogleGenAI({ apiKey });
 export interface AIParsedIntent {
   intent: "CREATE_TASK" | "START_TIMER" | "STOP_TIMER" | "ADD_WATER" | "DIARY_ENTRY" | "QUERY" | "UNKNOWN";
   isMeaningful: boolean; // true if text is meaningful human reflection/activity/query; false if gibberish, keyboard mash, random nonsense, abrupt noise, or accidental spam
+  aiUsed?: boolean; // false when the offline fallback parser answered (AI down/quota)
   reason?: string;
   task?: {
     name: string;
@@ -45,6 +46,7 @@ export async function parseUserMessageWithAI(
     return {
       intent: "UNKNOWN",
       isMeaningful: false,
+      aiUsed: false,
       reason: "Text consists of repetitive characters or symbols with no semantic meaning.",
       replyMessage: "",
     };
@@ -52,7 +54,9 @@ export async function parseUserMessageWithAI(
 
   if (!apiKey) {
     console.warn("GEMINI_API_KEY not configured, using fallback parsing.");
-    return fallbackParser(userText, existingTaskNames);
+    const fb = fallbackParser(userText, existingTaskNames);
+    fb.aiUsed = false;
+    return fb;
   }
 
   const prompt = `
@@ -131,13 +135,16 @@ Respond ONLY with valid JSON matching this schema:
       if (typeof parsed.isMeaningful !== "boolean") {
         parsed.isMeaningful = !isQuickGibberishCheck(userText);
       }
+      parsed.aiUsed = true;
       return parsed;
     } catch (err: any) {
       console.warn(`Gemini model ${modelName} error, trying next fallback:`, err.message || err);
     }
   }
 
-  return fallbackParser(userText, existingTaskNames);
+  const fb = fallbackParser(userText, existingTaskNames);
+  fb.aiUsed = false;
+  return fb;
 }
 
 function fallbackParser(text: string, existingTasks: string[]): AIParsedIntent {

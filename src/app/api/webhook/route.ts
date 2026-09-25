@@ -1763,6 +1763,9 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
+          if (!ai.aiUsed) {
+            reply += `\n\n<i>⚠️ AI was unavailable (quota/offline) — saved without an AI summary.</i>`;
+          }
           await sendUiMessage(chatId, reply, moodKb);
           return NextResponse.json({ ok: true });
         } else {
@@ -2015,6 +2018,9 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
+          if (!ai.aiUsed) {
+            reply += `\n\n<i>⚠️ AI was unavailable (quota/offline) — saved without an AI summary.</i>`;
+          }
           await sendUiMessage(chatId, reply, moodKb);
           if (diaryPromptId) {
             await removeInlineKeyboard(chatId, diaryPromptId);
@@ -2094,15 +2100,6 @@ export async function POST(req: NextRequest) {
             if (newName.length < 2 || isQuickGibberishCheck(newName)) {
               await failEdit("⚠️ Please provide a clear, valid name with at least 2 characters:");
               return NextResponse.json({ ok: true });
-            }
-            if (newName.length >= 6) {
-              const aiCheck = await parseUserMessageWithAI(newName, []);
-              if (!aiCheck.isMeaningful) {
-                await failEdit(
-                  `⚠️ That doesn't look like a valid task name.\n\nPlease choose a clear name like <b>Physics Study</b> or <b>Reading</b>:`
-                );
-                return NextResponse.json({ ok: true });
-              }
             }
             const existing = await taskNameExists(newName);
             if (existing && existing.id !== task.id && !existing.is_archived) {
@@ -2277,20 +2274,6 @@ export async function POST(req: NextRequest) {
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
             return NextResponse.json({ ok: true });
-          }
-
-          if (taskName.length >= 6) {
-            const aiCheck = await parseUserMessageWithAI(taskName, []);
-            if (!aiCheck.isMeaningful) {
-              await sendWizardPrompt(
-                chatId,
-                "awaiting_name",
-                activeSession.task_data,
-                "⚠️ That doesn't look like a valid task name.\n\nPlease enter a clear name like <b>Physics Study</b>, <b>Work</b>, or <b>Reading</b>:",
-                [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
-              );
-              return NextResponse.json({ ok: true });
-            }
           }
 
           const existing = await taskNameExists(taskName);
@@ -2615,133 +2598,9 @@ export async function POST(req: NextRequest) {
       }
 
       // =======================================================================
-      // 4. FREEFORM MESSAGE HANDLING (NO ACCIDENTAL DIARY SAVES)
+      // 4. NO CONTEXT: any other typed message is deleted silently.
+      //    AI is only used for /log summaries and /ask analytics.
       // =======================================================================
-      const activeTasks = await getActiveTasks();
-      const taskNames = activeTasks.map((t) => t.name);
-
-      const ai = await parseUserMessageWithAI(text, taskNames);
-
-      // Silently delete or ignore random keyboard mash / meaningless messages
-      if (!ai.isMeaningful) {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: CREATE A TASK VIA TEXT (e.g. "Add task: Read books")
-      if (ai.intent === "CREATE_TASK" && ai.task) {
-        if (!ai.task.name || ai.task.name.trim().length < 2) {
-          await sendTelegramMessage(
-            chatId,
-            `💡 <b>To create a task, type /addtask</b>`
-          );
-          return NextResponse.json({ ok: true });
-        }
-        const newTask = await createTask({
-          name: ai.task.name,
-          type: ai.task.type,
-          reminder_time: ai.task.reminder_time || null,
-          target_value: ai.task.target_value || (ai.task.type === "timer" ? 60 : 5000),
-          unit: ai.task.unit || (ai.task.type === "timer" ? "minutes" : "ml"),
-        });
-
-        if (newTask) {
-          await sendTelegramMessage(
-            chatId,
-            `✅ <b>Created ${newTask.type.toUpperCase()} Task:</b>\n` +
-              `📌 <b>${newTask.name}</b>\n` +
-              `🎯 Goal: <b>${formatGoalDisplay(newTask.target_value, newTask.unit)}</b>\n` +
-              `${newTask.reminder_time ? `⏰ Reminder: ${formatReminderTime(newTask.reminder_time)}\n` : ""}` +
-              `\nYou can start it anytime via /tasks!`
-          );
-        } else {
-          await sendTelegramMessage(chatId, `⚠️ Could not create task (might already exist).`);
-        }
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: START TIMER (e.g. "Starting physics now")
-      if (ai.intent === "START_TIMER") {
-        const targetName = ai.timerTaskName || "Study/Work";
-        const matchedTask = await findTaskByName(targetName);
-        const taskId = matchedTask ? matchedTask.id : "ad-hoc";
-        const taskName = matchedTask ? matchedTask.name : targetName;
-
-        const active = await startActiveTimer(chatId, taskId, taskName);
-        clearTimerPaused(chatId);
-        await setActiveTask(chatId, matchedTask ? matchedTask.id : null);
-
-        const startedAt = active?.started_at || new Date().toISOString();
-        const view = buildTimerView(taskName, startedAt, 0);
-        const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
-        if (sentId) {
-          await trackTimerMessage(chatId, sentId);
-        }
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: STOP TIMER
-      if (ai.intent === "STOP_TIMER") {
-        const pausedAt = getTimerPaused(chatId);
-        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
-        clearTimerPaused(chatId);
-        if (!result) {
-          await sendUiMessage(chatId, "⏱️ No active timer was running.");
-        } else {
-          const task = await findTaskByName(result.taskName);
-          const totalToday = await getTodayTaskTotal(result.taskName);
-          const target = task?.target_value || 60;
-          const percent = Math.round((totalToday / target) * 100);
-
-          await sendUiMessage(
-            chatId,
-            `🎉 <b>${result.taskName}</b> finished!\n` +
-              `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
-              `📊 Today's Total: <b>${totalToday} / ${target} mins</b> (${percent}% of goal)`
-          );
-        }
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: ADD WATER (e.g. "Drank 500ml water")
-      if (ai.intent === "ADD_WATER") {
-        const amount = ai.waterAmount || 500;
-        await logActivity({
-          task_name: "Drink Water",
-          value: amount,
-          notes: `Logged via message`,
-        });
-        const total = await getTodayTaskTotal("Drink Water");
-        await sendTelegramMessage(
-          chatId,
-          `💧 <b>+${amount}ml logged!</b> Today: <b>${total.toLocaleString()}/5,000ml</b>`
-        );
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: QUERY (e.g. "how much did I study this week?")
-      if (ai.intent === "QUERY") {
-        await sendUiMessage(chatId, "🤖 <i>Looking at your data…</i>");
-        const answer = await askAboutData(text, taskNames);
-        await sendUiMessage(chatId, answer);
-        return NextResponse.json({ ok: true });
-      }
-
-      // DIARY-LIKE FREETEXT WITHOUT /log: guide the user, never silently save
-      if (ai.intent === "DIARY_ENTRY") {
-        await sendUiMessage(
-          chatId,
-          `📖 <b>I didn't save that.</b>\n\n` +
-            `To keep it as a diary entry, resend it as:\n` +
-            `<code>/log your text here</code>\n\n` +
-            `Or open <b>/tasks</b> to log an activity.`
-        );
-        return NextResponse.json({ ok: true });
-      }
-
-      // NO CONTEXT / MEANINGLESS TEXT: delete silently, no reply
       if (messageId) {
         await deleteTelegramMessage(chatId, messageId);
       }

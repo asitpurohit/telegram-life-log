@@ -46,7 +46,7 @@ async function toolGetLogs(args: ToolArgs) {
     .order("log_date", { ascending: true })
     .limit(500);
 
-  if (args.task) query = query.ilike("task_name", String(args.task));
+  if (args.task) query = query.ilike("task_name", `%${String(args.task)}%`);
 
   const { data, error } = await query;
   if (error) return { error: error.message };
@@ -74,7 +74,7 @@ async function toolGetSummary(args: ToolArgs) {
     .lte("log_date", to)
     .limit(2000);
 
-  if (args.task) query = query.ilike("task_name", String(args.task));
+  if (args.task) query = query.ilike("task_name", `%${String(args.task)}%`);
 
   const { data, error } = await query;
   if (error) return { error: error.message };
