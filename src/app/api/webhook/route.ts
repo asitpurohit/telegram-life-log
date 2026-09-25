@@ -320,11 +320,6 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
         `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
         [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
-        [
-          { text: "+15m", callback_data: `timer_add:${task.id}:15` },
-          { text: "+30m", callback_data: `timer_add:${task.id}:30` },
-          { text: "+60m", callback_data: `timer_add:${task.id}:60` },
-        ],
         [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
       ],
     };
@@ -1067,10 +1062,6 @@ export async function POST(req: NextRequest) {
 
         const replyKb: InlineKeyboard = [
           [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${taskId}` }],
-          [
-            { text: "+15m", callback_data: `timer_add:${taskId}:15` },
-            { text: "+30m", callback_data: `timer_add:${taskId}:30` },
-          ],
           [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
         ];
 
@@ -1313,10 +1304,12 @@ export async function POST(req: NextRequest) {
       const chatId = body.message.chat.id;
       const messageId = body.message.message_id;
 
-      // While a timer is running, plain text is ignored and removed so the
-      // timer's Pause / Stop / Refresh buttons stay untouched.
+      // While a timer is running (or paused), EVERYTHING except answers to an
+      // already-open wizard is ignored and removed, so the timer's
+      // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
-      if (!text.startsWith("/") && !activeSession) {
+      const isWizardAnswer = activeSession && !text.startsWith("/");
+      if (!isWizardAnswer) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
           if (messageId) {
