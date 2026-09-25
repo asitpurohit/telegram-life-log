@@ -2147,8 +2147,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // DIARY-LIKE FREETEXT WITHOUT /log: guide the user, never silently save
+      if (ai.intent === "DIARY_ENTRY") {
+        await sendUiMessage(
+          chatId,
+          `📖 <b>I didn't save that.</b>\n\n` +
+            `To keep it as a diary entry, resend it as:\n` +
+            `<code>/log your text here</code>\n\n` +
+            `Or open <b>/tasks</b> to log an activity.`
+        );
+        return NextResponse.json({ ok: true });
+      }
+
       // CASUAL CHAT / QUESTIONS / TYPOS (CLEAN)
-      await sendTelegramMessage(
+      await sendUiMessage(
         chatId,
         ai.replyMessage ||
           `👋 I received: <i>"${text}"</i>\n\n` +
