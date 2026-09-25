@@ -59,35 +59,15 @@ export async function createTask(task: Partial<Task>): Promise<Task | null> {
     .select()
     .single();
 
-  if (!error) return data;
-
-  // Fallback if target_days column is not yet in database table
-  if (error && (error.code === "PGRST204" || error.code === "42703")) {
-    const { target_days, ...rest } = task;
-    const fallbackUnit = target_days ? `${rest.unit || ""}|${target_days}` : rest.unit;
-    const { data: fbData, error: fbError } = await supabase
-      .from("tasks")
-      .insert([{ ...rest, unit: fallbackUnit }])
-      .select()
-      .single();
-
-    if (fbError) {
-      console.error("Error creating task with fallback:", fbError);
-      return null;
-    }
-    return fbData;
+  if (error) {
+    console.error("Error creating task:", error);
+    return null;
   }
-
-  console.error("Error creating task:", error);
-  return null;
+  return data;
 }
 
 export function getTaskSchedule(task: Task): string {
-  if (task.target_days) return task.target_days;
-  if (task.unit && task.unit.includes("|")) {
-    return task.unit.split("|")[1];
-  }
-  return "daily";
+  return task.target_days || "daily";
 }
 
 
@@ -284,7 +264,6 @@ export async function deduplicateTodayTickLogs(taskId: string): Promise<void> {
 export async function getWizardSession(chatId: string | number): Promise<WizardSession | null> {
   const cId = String(chatId);
   try {
-    // 1. Try dedicated wizard_sessions table
     const { data, error } = await supabase
       .from("wizard_sessions")
       .select("*")
@@ -295,34 +274,31 @@ export async function getWizardSession(chatId: string | number): Promise<WizardS
       return data as WizardSession;
     }
 
-    // 2. Fallback to logs table if wizard_sessions table does not exist
-    if (error && error.code === "PGRST205") {
-      const { data: logData } = await supabase
-        .from("logs")
-        .select("*")
-        .eq("task_name", "__wizard_session__")
-        .ilike("notes", `%"chat_id":"${cId}"%`)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    // Fallback if not found in wizard_sessions (e.g. while RLS policy is being applied)
+    const { data: logData } = await supabase
+      .from("logs")
+      .select("*")
+      .eq("task_name", "__wizard_session__")
+      .ilike("notes", `%"chat_id":"${cId}"%`)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-      if (logData && logData.notes) {
-        try {
-          const parsed = JSON.parse(logData.notes);
-          return {
-            chat_id: parsed.chat_id,
-            step: parsed.step,
-            task_data: parsed.task_data,
-          };
-        } catch {
-          return null;
-        }
+    if (logData && logData.notes) {
+      try {
+        const parsed = JSON.parse(logData.notes);
+        return {
+          chat_id: parsed.chat_id,
+          step: parsed.step,
+          task_data: parsed.task_data,
+        };
+      } catch {
+        return null;
       }
     }
   } catch (err) {
     console.error("Error fetching wizard session:", err);
   }
-
   return null;
 }
 
@@ -333,7 +309,6 @@ export async function saveWizardSession(
 ): Promise<boolean> {
   const cId = String(chatId);
   try {
-    // 1. Try dedicated wizard_sessions table
     const { error } = await supabase
       .from("wizard_sessions")
       .upsert({
@@ -345,8 +320,8 @@ export async function saveWizardSession(
 
     if (!error) return true;
 
-    // 2. Fallback to logs table
-    if (error && error.code === "PGRST205") {
+    // Resilient fallback to logs table if RLS blocks or error
+    if (error) {
       await supabase
         .from("logs")
         .delete()
@@ -370,21 +345,18 @@ export async function saveWizardSession(
   } catch (err) {
     console.error("Error saving wizard session:", err);
   }
-
   return false;
 }
 
 export async function clearWizardSession(chatId: string | number): Promise<boolean> {
   const cId = String(chatId);
   try {
-    // Delete from wizard_sessions if exists
     await supabase.from("wizard_sessions").delete().eq("chat_id", cId);
   } catch {
-    // Ignore error if table doesn't exist
+    // Ignore error
   }
 
   try {
-    // Delete fallback from logs
     await supabase
       .from("logs")
       .delete()
@@ -393,7 +365,6 @@ export async function clearWizardSession(chatId: string | number): Promise<boole
   } catch (err) {
     console.error("Error clearing wizard session:", err);
   }
-
   return true;
 }
 
