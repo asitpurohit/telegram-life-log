@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS active_timers (
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 4. Wizard Sessions Table (Tracks step-by-step task creation in Telegram)
+CREATE TABLE IF NOT EXISTS wizard_sessions (
+    chat_id TEXT PRIMARY KEY,
+    step TEXT NOT NULL,
+    task_data JSONB DEFAULT '{}',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes for lightning fast queries
 CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(is_archived);
 CREATE INDEX IF NOT EXISTS idx_logs_date ON logs(log_date);
@@ -50,3 +58,4 @@ ON CONFLICT (name) DO NOTHING;
 ALTER TABLE tasks DISABLE ROW LEVEL SECURITY;
 ALTER TABLE logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE active_timers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE wizard_sessions DISABLE ROW LEVEL SECURITY;

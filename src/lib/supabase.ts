@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { Task, Log, ActiveTimer } from "./types";
+import { Task, Log, ActiveTimer, WizardSession } from "./types";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co";
 const supabaseKey = 
@@ -195,3 +195,124 @@ export async function getTodayLogs(): Promise<Log[]> {
   if (error) return [];
   return data || [];
 }
+
+// ==========================================
+// WIZARD SESSIONS (Guided /addtask Flow)
+// ==========================================
+
+export async function getWizardSession(chatId: string | number): Promise<WizardSession | null> {
+  const cId = String(chatId);
+  try {
+    // 1. Try dedicated wizard_sessions table
+    const { data, error } = await supabase
+      .from("wizard_sessions")
+      .select("*")
+      .eq("chat_id", cId)
+      .maybeSingle();
+
+    if (!error && data) {
+      return data as WizardSession;
+    }
+
+    // 2. Fallback to logs table if wizard_sessions table does not exist
+    if (error && error.code === "PGRST205") {
+      const { data: logData } = await supabase
+        .from("logs")
+        .select("*")
+        .eq("task_name", "__wizard_session__")
+        .ilike("notes", `%"chat_id":"${cId}"%`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (logData && logData.notes) {
+        try {
+          const parsed = JSON.parse(logData.notes);
+          return {
+            chat_id: parsed.chat_id,
+            step: parsed.step,
+            task_data: parsed.task_data,
+          };
+        } catch {
+          return null;
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error fetching wizard session:", err);
+  }
+
+  return null;
+}
+
+export async function saveWizardSession(
+  chatId: string | number,
+  step: WizardSession["step"],
+  taskData: WizardSession["task_data"]
+): Promise<boolean> {
+  const cId = String(chatId);
+  try {
+    // 1. Try dedicated wizard_sessions table
+    const { error } = await supabase
+      .from("wizard_sessions")
+      .upsert({
+        chat_id: cId,
+        step,
+        task_data: taskData,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (!error) return true;
+
+    // 2. Fallback to logs table
+    if (error && error.code === "PGRST205") {
+      await supabase
+        .from("logs")
+        .delete()
+        .eq("task_name", "__wizard_session__")
+        .ilike("notes", `%"chat_id":"${cId}"%`);
+
+      const { error: insertErr } = await supabase.from("logs").insert([
+        {
+          task_name: "__wizard_session__",
+          value: 0,
+          notes: JSON.stringify({
+            chat_id: cId,
+            step,
+            task_data: taskData,
+          }),
+        },
+      ]);
+
+      return !insertErr;
+    }
+  } catch (err) {
+    console.error("Error saving wizard session:", err);
+  }
+
+  return false;
+}
+
+export async function clearWizardSession(chatId: string | number): Promise<boolean> {
+  const cId = String(chatId);
+  try {
+    // Delete from wizard_sessions if exists
+    await supabase.from("wizard_sessions").delete().eq("chat_id", cId);
+  } catch {
+    // Ignore error if table doesn't exist
+  }
+
+  try {
+    // Delete fallback from logs
+    await supabase
+      .from("logs")
+      .delete()
+      .eq("task_name", "__wizard_session__")
+      .ilike("notes", `%"chat_id":"${cId}"%`);
+  } catch (err) {
+    console.error("Error clearing wizard session:", err);
+  }
+
+  return true;
+}
+

@@ -27,3 +27,17 @@ export interface ActiveTimer {
   task_name: string;
   started_at: string;
 }
+
+export interface WizardSession {
+  chat_id: string;
+  step: 'awaiting_name' | 'awaiting_reminder' | 'awaiting_target';
+  task_data: {
+    type?: TaskType;
+    name?: string;
+    reminder_time?: string | null;
+    target_value?: number | null;
+    unit?: string | null;
+  };
+  updated_at?: string;
+}
+
