@@ -50,14 +50,14 @@ export function buildTimerView(
     ? [
         [
           { text: "▶️ Resume", callback_data: `timer_resume:${pausedAtMs}` },
-          { text: "⏹ Stop & Log", callback_data: `timer_stop:${pausedAtMs}` },
+          { text: "⏹ Stop", callback_data: `timer_stop:${pausedAtMs}` },
         ],
         [{ text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}` }],
       ]
     : [
         [
           { text: "⏸ Pause", callback_data: "timer_pause" },
-          { text: "⏹ Stop & Log", callback_data: "timer_stop:0" },
+          { text: "⏹ Stop", callback_data: "timer_stop:0" },
         ],
         [{ text: "🔄 Refresh", callback_data: "timer_refresh:0" }],
       ];

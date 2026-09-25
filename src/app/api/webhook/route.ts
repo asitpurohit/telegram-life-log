@@ -4,6 +4,8 @@ import {
   editTelegramMessage,
   answerCallbackQuery,
   removeInlineKeyboard,
+  setBotCommands,
+  BOT_COMMANDS,
   InlineKeyboard,
 } from "@/lib/telegram";
 import {
@@ -28,6 +30,8 @@ import {
   getTrackedUiMessage,
   trackTimerMessage,
   getTimerMessage,
+  setActiveTask,
+  getActiveTaskId,
   isTaskCompletedToday,
   untickTaskToday,
   deduplicateTodayTickLogs,
@@ -298,6 +302,73 @@ function formatGoalDisplay(targetValue?: number | null, unit?: string | null): s
     return "1 completion";
   }
   return `${targetValue.toLocaleString()} ${cleanUnit || "units"}`;
+}
+
+// Task detail view (used by /tasks and as the reply target for typed amounts)
+async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: InlineKeyboard }> {
+  if (task.type === "timer") {
+    const todayMins = await getTodayTaskTotal(task.name);
+    const target = task.target_value || 60;
+    const percent = Math.min(100, Math.round((todayMins / target) * 100));
+    return {
+      text:
+        `⏱️ <b>${task.name}</b>\n` +
+        `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
+        `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
+        `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
+        `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
+      keyboard: [
+        [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
+        [
+          { text: "+15m", callback_data: `timer_add:${task.id}:15` },
+          { text: "+30m", callback_data: `timer_add:${task.id}:30` },
+          { text: "+60m", callback_data: `timer_add:${task.id}:60` },
+        ],
+        [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+      ],
+    };
+  }
+
+  if (task.type === "counter") {
+    const todayTotal = await getTodayTaskTotal(task.name);
+    const target = task.target_value || 5000;
+    const percent = Math.min(100, Math.round((todayTotal / target) * 100));
+    const unit = task.unit || "units";
+    return {
+      text:
+        `💧 <b>${task.name}</b>\n` +
+        `🎯 Goal: <b>${formatGoalDisplay(target, unit)}</b>\n` +
+        `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
+        `📊 Today: <b>${todayTotal.toLocaleString()} / ${formatGoalDisplay(target, unit)}</b> (${percent}%)\n\n` +
+        `Tap a button, or just type the amount to add (e.g. <b>250</b>):`,
+      keyboard: [
+        [
+          { text: `+1 ${unit}`, callback_data: `counter_add:${task.id}:1` },
+          { text: `+5 ${unit}`, callback_data: `counter_add:${task.id}:5` },
+          { text: `+10 ${unit}`, callback_data: `counter_add:${task.id}:10` },
+        ],
+        [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+      ],
+    };
+  }
+
+  const isDone = await isTaskCompletedToday(task.id);
+  if (isDone) {
+    return {
+      text: `✅ <b>${task.name}</b> is marked complete for today!\nTap below if you want to undo:`,
+      keyboard: [
+        [{ text: `⭕ Mark Incomplete (Undo)`, callback_data: `untick_task:${task.id}` }],
+        [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+      ],
+    };
+  }
+  return {
+    text: `⬜ <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
+    keyboard: [
+      [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
+      [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+    ],
+  };
 }
 
 // One-line task summary used in edit/delete confirmations
@@ -666,6 +737,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Show Task List (CLEAN - ONLY TASKS) ---
       if (callbackData === "menu_tasks") {
+        await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendTelegramMessage(
@@ -714,89 +786,13 @@ export async function POST(req: NextRequest) {
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         if (!task) {
-          await sendTelegramMessage(chatId, "⚠️ Task not found or already archived.");
+          await respondUi(chatId, messageId, "⚠️ Task not found or already archived.", []);
           return NextResponse.json({ ok: true });
         }
 
-        if (task.type === "timer") {
-          const todayMins = await getTodayTaskTotal(task.name);
-          const target = task.target_value || 60;
-          const percent = Math.min(100, Math.round((todayMins / target) * 100));
-
-          const timerKeyboard: InlineKeyboard = [
-            [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
-            [
-              { text: "+15m", callback_data: `timer_add:${task.id}:15` },
-              { text: "+30m", callback_data: `timer_add:${task.id}:30` },
-              { text: "+60m", callback_data: `timer_add:${task.id}:60` },
-            ],
-            [
-              { text: "✏️ Custom Minutes", callback_data: `timer_custom_prompt:${task.id}` },
-              { text: "📋 Back to Tasks", callback_data: "menu_tasks" },
-            ],
-          ];
-
-          await respondUi(
-            chatId,
-            messageId,
-            `⏱️ <b>${task.name}</b>\n` +
-              `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
-              `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
-              `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
-              `Choose how to track this session:`,
-            timerKeyboard
-          );
-        } else if (task.type === "counter") {
-          const todayTotal = await getTodayTaskTotal(task.name);
-          const target = task.target_value || 5000;
-          const percent = Math.min(100, Math.round((todayTotal / target) * 100));
-          const unit = task.unit || "units";
-
-          const counterKeyboard: InlineKeyboard = [
-            [
-              { text: `+1 ${unit}`, callback_data: `counter_add:${task.id}:1` },
-              { text: `+5 ${unit}`, callback_data: `counter_add:${task.id}:5` },
-              { text: `+10 ${unit}`, callback_data: `counter_add:${task.id}:10` },
-            ],
-            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-          ];
-
-          await respondUi(
-            chatId,
-            messageId,
-            `💧 <b>${task.name}</b>\n` +
-              `🎯 Goal: <b>${formatGoalDisplay(target, unit)}</b>\n` +
-              `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
-              `📊 Today: <b>${todayTotal.toLocaleString()} / ${formatGoalDisplay(target, unit)}</b> (${percent}%)\n\n` +
-              `Log progress:`,
-            counterKeyboard
-          );
-        } else if (task.type === "tick") {
-          const isDone = await isTaskCompletedToday(task.id);
-          if (isDone) {
-            const tickKeyboard: InlineKeyboard = [
-              [{ text: `⭕ Mark Incomplete (Undo)`, callback_data: `untick_task:${task.id}` }],
-              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-            ];
-            await respondUi(
-              chatId,
-              messageId,
-              `✅ <b>${task.name}</b> is marked complete for today!\nTap below if you want to undo:`,
-              tickKeyboard
-            );
-          } else {
-            const tickKeyboard: InlineKeyboard = [
-              [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
-              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-            ];
-            await respondUi(
-              chatId,
-              messageId,
-              `⬜ <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
-              tickKeyboard
-            );
-          }
-        }
+        await setActiveTask(chatId, task.id);
+        const detail = await buildTaskDetail(task);
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
         return NextResponse.json({ ok: true });
       }
 
@@ -837,6 +833,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Confirm Delete ---
       if (callbackData.startsWith("confirm_delete:")) {
+        await setActiveTask(chatId, null);
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         if (!task) {
@@ -889,6 +886,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Manage Task (from /edit list) -> Edit or Delete ---
       if (callbackData.startsWith("manage_task:")) {
+        await setActiveTask(chatId, null);
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         if (!task) {
@@ -915,6 +913,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Re-render the /edit Task List ---
       if (callbackData === "ui_edit_list") {
+        await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await respondUi(chatId, messageId, "📋 <b>No tasks to edit yet!</b>", []);
@@ -1115,6 +1114,7 @@ export async function POST(req: NextRequest) {
 
         const active = await startActiveTimer(chatId, taskId, taskName);
         clearTimerPaused(chatId);
+        await setActiveTask(chatId, taskId);
 
         const startedAt = active?.started_at || new Date().toISOString();
         const view = buildTimerView(taskName, startedAt, 0);
@@ -1324,6 +1324,8 @@ export async function POST(req: NextRequest) {
       // --- Command: /start ---
       if (text === "/start") {
         await clearWizardSessionAndRetirePrompt(chatId);
+        await setActiveTask(chatId, null);
+        await setBotCommands(BOT_COMMANDS);
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
@@ -1342,6 +1344,7 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /log or /diary (Dedicated Diary Command) ---
       if (text.startsWith("/log") || text.startsWith("/diary")) {
+        await setActiveTask(chatId, null);
         const noteContent = text.replace(/^\/(log|diary)\s*/i, "").trim();
 
         if (noteContent.length >= 3) {
@@ -1384,6 +1387,7 @@ export async function POST(req: NextRequest) {
       // --- Command: /addtask (START WIZARD) ---
       if (text === "/addtask") {
         await clearWizardSessionAndRetirePrompt(chatId);
+        await setActiveTask(chatId, null);
         const typeKeyboard: InlineKeyboard = [
           [
             { text: "⏱️ Timer", callback_data: "wizard_type:timer" },
@@ -1406,6 +1410,7 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /tasks or /task (CLEAN - ONLY TASKS) ---
       if (text === "/tasks" || text === "/task") {
+        await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendTelegramMessage(
@@ -1450,6 +1455,7 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /edit (Task list -> Manage -> Edit / Delete) ---
       if (text === "/edit") {
+        await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendUiMessage(chatId, "📋 <b>No tasks to edit yet!</b>\nType /addtask to create one.");
@@ -1485,6 +1491,7 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /today ---
       if (text === "/today") {
+        await setActiveTask(chatId, null);
         const scorecard = await buildTodayScorecard();
         await sendTelegramMessage(chatId, scorecard);
         return NextResponse.json({ ok: true });
@@ -1967,6 +1974,42 @@ export async function POST(req: NextRequest) {
       }
 
       // =======================================================================
+      // 3.5 TYPE-TO-LOG: a bare amount goes to the task you last opened
+      // =======================================================================
+      const activeTaskId = await getActiveTaskId(chatId);
+      if (activeTaskId) {
+        const activeTask = await getTaskById(activeTaskId);
+        if (activeTask && !activeTask.is_archived) {
+          let loggedValue: number | null = null;
+          if (activeTask.type === "timer") {
+            const mins = parseTimerGoal(text);
+            if (mins && mins > 0) loggedValue = mins;
+          } else if (activeTask.type === "counter") {
+            const parsed = parseCountGoalAndUnit(text);
+            if (parsed && parsed.value > 0) loggedValue = parsed.value;
+          }
+
+          if (loggedValue !== null) {
+            await logActivity({
+              task_id: activeTask.id,
+              task_name: activeTask.name,
+              value: loggedValue,
+              notes: activeTask.type === "timer" ? `Typed log +${loggedValue}m` : "Typed log",
+            });
+
+            const detail = await buildTaskDetail(activeTask);
+            const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
+            await sendUiMessage(
+              chatId,
+              `✅ <b>+${loggedValue.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.\n\n${detail.text}`,
+              detail.keyboard
+            );
+            return NextResponse.json({ ok: true });
+          }
+        }
+      }
+
+      // =======================================================================
       // 4. FREEFORM MESSAGE HANDLING (NO ACCIDENTAL DIARY SAVES)
       // =======================================================================
       const activeTasks = await getActiveTasks();
@@ -2015,6 +2058,7 @@ export async function POST(req: NextRequest) {
 
         const active = await startActiveTimer(chatId, taskId, taskName);
         clearTimerPaused(chatId);
+        await setActiveTask(chatId, matchedTask ? matchedTask.id : null);
 
         const startedAt = active?.started_at || new Date().toISOString();
         const view = buildTimerView(taskName, startedAt, 0);

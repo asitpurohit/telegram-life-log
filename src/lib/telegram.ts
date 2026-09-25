@@ -3,6 +3,38 @@
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API_BASE = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
+export const BOT_COMMANDS: BotCommand[] = [
+  { command: "start", description: "Show the welcome message & commands" },
+  { command: "addtask", description: "Create a new task (guided wizard)" },
+  { command: "tasks", description: "View and log your tasks" },
+  { command: "edit", description: "Edit or delete a task" },
+  { command: "today", description: "Today's scorecard" },
+  { command: "log", description: "Write daily diary / notes" },
+  { command: "status", description: "Check or stop the active timer" },
+  { command: "cancel", description: "Cancel the current action" },
+];
+
+export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {
+  if (!TELEGRAM_TOKEN) return null;
+
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/setMyCommands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commands }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    console.error("setBotCommands network error:", err.message);
+    return null;
+  }
+}
+
 export interface InlineKeyboardButton {
   text: string;
   callback_data: string;

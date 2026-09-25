@@ -6,6 +6,7 @@
 
 import { POST } from "../src/app/api/webhook/route";
 import { refreshRunningTimerMessages } from "../src/lib/timerRuntime";
+import { setBotCommands } from "../src/lib/telegram";
 import { NextRequest } from "next/server";
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -34,6 +35,9 @@ async function startPolling() {
   const meRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe`);
   const me = await meRes.json();
   console.log(`🚀 Connected as @${me.result.username} (${me.result.first_name})`);
+
+  const commandsRes = await setBotCommands();
+  console.log(commandsRes?.ok ? "📋 Command menu updated (includes /edit)." : "⚠️ Could not update command menu.");
   console.log("📲 Open Telegram on your phone and send /start to your bot!");
   console.log("Listening for messages... (Press Ctrl+C to stop)\n");
 

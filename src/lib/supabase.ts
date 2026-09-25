@@ -491,6 +491,40 @@ export async function getTimerMessage(chatId: string | number): Promise<number |
   return getTrackedMessage(TIMER_MSG_PREFIX, chatId);
 }
 
+const ACTIVE_TASK_PREFIX = "__task__:";
+
+export async function setActiveTask(chatId: string | number, taskId: string | null): Promise<void> {
+  const chatKey = `${ACTIVE_TASK_PREFIX}${chatId}`;
+
+  if (!taskId) {
+    await supabase.from("wizard_sessions").delete().eq("chat_id", chatKey);
+    return;
+  }
+
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: chatKey,
+      step: "ui_task",
+      task_data: { taskId },
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error setting active task:", error);
+}
+
+export async function getActiveTaskId(chatId: string | number): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${ACTIVE_TASK_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  const taskId = (data.task_data as { taskId?: unknown } | null)?.taskId;
+  return typeof taskId === "string" ? taskId : null;
+}
+
 export async function clearWizardSession(chatId: string | number): Promise<boolean> {
   const cId = String(chatId);
   try {
