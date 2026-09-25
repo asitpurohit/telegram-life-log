@@ -3,6 +3,7 @@ import {
   sendTelegramMessage,
   editTelegramMessage,
   answerCallbackQuery,
+  removeInlineKeyboard,
   InlineKeyboard,
 } from "@/lib/telegram";
 import {
@@ -28,9 +29,63 @@ import {
   isTaskScheduledForToday,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
-import { TaskType, Task } from "@/lib/types";
+import { TaskType, Task, WizardSession } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+// =========================================================================
+// WIZARD PROMPT TRACKING
+// Old Telegram prompts keep their inline buttons forever, so every wizard
+// prompt stores its message id: stale taps are rejected and the previous
+// prompt's keyboard is removed as soon as the flow advances.
+// =========================================================================
+
+function isWizardCallback(data: string): boolean {
+  return (
+    data === "wizard_cancel" ||
+    data.startsWith("wizard_type:") ||
+    data.startsWith("wizard_timer_target:") ||
+    data.startsWith("wizard_count_target:") ||
+    data.startsWith("wizard_skip:") ||
+    data.startsWith("wizard_days:") ||
+    data.startsWith("timer_custom_prompt:")
+  );
+}
+
+async function sendWizardPrompt(
+  chatId: string | number,
+  step: WizardSession["step"],
+  taskData: WizardSession["task_data"],
+  text: string,
+  keyboard?: InlineKeyboard,
+  editMessageId?: number
+): Promise<void> {
+  let promptMessageId: number | undefined;
+
+  if (editMessageId) {
+    await editTelegramMessage(chatId, editMessageId, text, keyboard);
+    promptMessageId = editMessageId;
+  } else {
+    const res = await sendTelegramMessage(chatId, text, keyboard);
+    promptMessageId = res?.result?.message_id;
+  }
+
+  const previousPromptId = taskData.promptMessageId;
+  if (previousPromptId && previousPromptId !== promptMessageId) {
+    await removeInlineKeyboard(chatId, previousPromptId);
+  }
+
+  await saveWizardSession(chatId, step, { ...taskData, promptMessageId });
+}
+
+async function clearWizardSessionAndRetirePrompt(chatId: string | number): Promise<void> {
+  const session = await getWizardSession(chatId);
+  const promptId = session?.task_data?.promptMessageId;
+  await clearWizardSession(chatId);
+  if (promptId) {
+    await removeInlineKeyboard(chatId, promptId);
+  }
+}
 
 // =========================================================================
 // HELPER FUNCTIONS (Parsing & Formatting)
@@ -309,6 +364,19 @@ export async function POST(req: NextRequest) {
       const chatId = callbackQuery.message?.chat?.id;
       const messageId = callbackQuery.message?.message_id;
 
+      // Reject taps on outdated wizard prompts (old messages keep their buttons)
+      if (isWizardCallback(callbackData)) {
+        const session = await getWizardSession(chatId);
+        const expectedPromptId = session?.task_data?.promptMessageId;
+        if (session && expectedPromptId && messageId && messageId !== expectedPromptId) {
+          await answerCallbackQuery(
+            callbackQuery.id,
+            "⚠️ This option is outdated — please use the latest message."
+          );
+          return NextResponse.json({ ok: true });
+        }
+      }
+
       // Acknowledge receipt to remove button loading spinner on phone
       await answerCallbackQuery(callbackQuery.id);
 
@@ -317,7 +385,7 @@ export async function POST(req: NextRequest) {
         await clearWizardSession(chatId);
         const cancelText = "❌ <i>Action cancelled.</i>";
         if (messageId) {
-          await editTelegramMessage(chatId, messageId, cancelText);
+          await editTelegramMessage(chatId, messageId, cancelText, []);
         } else {
           await sendTelegramMessage(chatId, cancelText);
         }
@@ -327,7 +395,6 @@ export async function POST(req: NextRequest) {
       // --- WIZARD: Step 1 Pick Type -> Prompt Name ---
       if (callbackData.startsWith("wizard_type:")) {
         const type = callbackData.split(":")[1] as TaskType;
-        await saveWizardSession(chatId, "awaiting_name", { type });
 
         let promptText = "";
         if (type === "timer") {
@@ -349,11 +416,12 @@ export async function POST(req: NextRequest) {
 
         const cancelKb: InlineKeyboard = [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]];
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, promptText, cancelKb);
-        } else {
-          await sendTelegramMessage(chatId, promptText, cancelKb);
+        const previousSession = await getWizardSession(chatId);
+        if (previousSession?.task_data?.promptMessageId && previousSession.task_data.promptMessageId !== messageId) {
+          await removeInlineKeyboard(chatId, previousSession.task_data.promptMessageId);
         }
+
+        await sendWizardPrompt(chatId, "awaiting_name", { type }, promptText, cancelKb, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -371,7 +439,6 @@ export async function POST(req: NextRequest) {
           target_value: mins,
           unit: "minutes",
         };
-        await saveWizardSession(chatId, "awaiting_reminder", taskData);
 
         const reminderPrompt =
           `⏰ <b>Reminder Time</b>\n\n` +
@@ -386,11 +453,7 @@ export async function POST(req: NextRequest) {
           [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
         ];
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, reminderPrompt, reminderKb);
-        } else {
-          await sendTelegramMessage(chatId, reminderPrompt, reminderKb);
-        }
+        await sendWizardPrompt(chatId, "awaiting_reminder", taskData, reminderPrompt, reminderKb, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -409,7 +472,6 @@ export async function POST(req: NextRequest) {
           target_value: amt,
           unit,
         };
-        await saveWizardSession(chatId, "awaiting_reminder", taskData);
 
         const reminderPrompt =
           `⏰ <b>Reminder Time</b>\n\n` +
@@ -424,11 +486,7 @@ export async function POST(req: NextRequest) {
           [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
         ];
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, reminderPrompt, reminderKb);
-        } else {
-          await sendTelegramMessage(chatId, reminderPrompt, reminderKb);
-        }
+        await sendWizardPrompt(chatId, "awaiting_reminder", taskData, reminderPrompt, reminderKb, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -441,7 +499,6 @@ export async function POST(req: NextRequest) {
         }
 
         const taskData = { ...session.task_data, reminder_time: null };
-        await saveWizardSession(chatId, "awaiting_days", taskData);
 
         const daysPrompt =
           `📅 <b>Which Days?</b>\n\n` +
@@ -456,11 +513,7 @@ export async function POST(req: NextRequest) {
           [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
         ];
 
-        if (messageId) {
-          await editTelegramMessage(chatId, messageId, daysPrompt, daysKb);
-        } else {
-          await sendTelegramMessage(chatId, daysPrompt, daysKb);
-        }
+        await sendWizardPrompt(chatId, "awaiting_days", taskData, daysPrompt, daysKb, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -475,6 +528,7 @@ export async function POST(req: NextRequest) {
         }
 
         const taskData = session.task_data;
+        const previousPromptId = taskData.promptMessageId;
         const newTask = await createTask({
           name: taskData.name,
           type: taskData.type || "timer",
@@ -488,6 +542,9 @@ export async function POST(req: NextRequest) {
 
         if (!newTask) {
           await sendTelegramMessage(chatId, `⚠️ Could not create task (name may already exist).`);
+          if (previousPromptId && previousPromptId !== messageId) {
+            await removeInlineKeyboard(chatId, previousPromptId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -515,6 +572,9 @@ export async function POST(req: NextRequest) {
           await editTelegramMessage(chatId, messageId, successText, actionButtons);
         } else {
           await sendTelegramMessage(chatId, successText, actionButtons);
+        }
+        if (previousPromptId && previousPromptId !== messageId) {
+          await removeInlineKeyboard(chatId, previousPromptId);
         }
         return NextResponse.json({ ok: true });
       }
@@ -703,14 +763,14 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        await saveWizardSession(chatId, "awaiting_timer_custom", {
-          taskId: task.id,
-          name: task.name,
-          target_value: task.target_value,
-        });
-
-        await sendTelegramMessage(
+        await sendWizardPrompt(
           chatId,
+          "awaiting_timer_custom",
+          {
+            taskId: task.id,
+            name: task.name,
+            target_value: task.target_value,
+          },
           `✏️ <b>Log Custom Minutes for ${task.name}</b>\n\n` +
             `How many minutes did you spend?\n` +
             `<i>(e.g., 25, 45, 90, 150)</i>`,
@@ -874,14 +934,14 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /cancel ---
       if (text === "/cancel") {
-        await clearWizardSession(chatId);
+        await clearWizardSessionAndRetirePrompt(chatId);
         await sendTelegramMessage(chatId, "❌ <i>Action cancelled.</i>");
         return NextResponse.json({ ok: true });
       }
 
       // --- Command: /start ---
       if (text === "/start") {
-        await clearWizardSession(chatId);
+        await clearWizardSessionAndRetirePrompt(chatId);
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
@@ -925,9 +985,10 @@ export async function POST(req: NextRequest) {
           await sendTelegramMessage(chatId, reply);
           return NextResponse.json({ ok: true });
         } else {
-          await saveWizardSession(chatId, "awaiting_diary_text", {});
-          await sendTelegramMessage(
+          await sendWizardPrompt(
             chatId,
+            "awaiting_diary_text",
+            {},
             `📖 <b>Daily Diary & Summary</b>\n\n` +
               `Please send your reflection or notes for today:\n` +
               `<i>(e.g., "Studied physics for 2 hours and finished chapter 3 problems. Met Vishnu to discuss textures for 3D game.")</i>`,
@@ -939,7 +1000,7 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /addtask (START WIZARD) ---
       if (text === "/addtask") {
-        await clearWizardSession(chatId);
+        await clearWizardSessionAndRetirePrompt(chatId);
         const typeKeyboard: InlineKeyboard = [
           [
             { text: "⏱️ Timer", callback_data: "wizard_type:timer" },
@@ -1036,6 +1097,7 @@ export async function POST(req: NextRequest) {
       if (activeSession) {
         // --- State: User Answering Diary Prompt ---
         if (activeSession.step === "awaiting_diary_text") {
+          const diaryPromptId = activeSession.task_data.promptMessageId;
           await clearWizardSession(chatId);
           const ai = await parseUserMessageWithAI(text, []);
 
@@ -1059,6 +1121,9 @@ export async function POST(req: NextRequest) {
           }
 
           await sendTelegramMessage(chatId, reply);
+          if (diaryPromptId) {
+            await removeInlineKeyboard(chatId, diaryPromptId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -1066,8 +1131,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_timer_custom") {
           const num = parseInt(text.replace(/[^0-9]/g, ""), 10);
           if (isNaN(num) || num <= 0) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_timer_custom",
+              activeSession.task_data,
               "⚠️ Please enter a valid number of minutes (e.g. <b>45</b> or <b>90</b>):",
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -1085,6 +1152,7 @@ export async function POST(req: NextRequest) {
             notes: `Manual log +${num}m`,
           });
 
+          const customPromptId = activeSession.task_data.promptMessageId;
           await clearWizardSession(chatId);
 
           const newTotal = await getTodayTaskTotal(taskName);
@@ -1095,6 +1163,9 @@ export async function POST(req: NextRequest) {
             `⏱️ <b>+${num} mins logged for ${taskName}!</b>\n\n` +
               `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`
           );
+          if (customPromptId) {
+            await removeInlineKeyboard(chatId, customPromptId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -1102,8 +1173,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_name") {
           const taskName = text.trim();
           if (taskName.length < 2) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_name",
+              activeSession.task_data,
               "⚠️ Please provide a task name with at least 2 characters:",
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -1112,8 +1185,10 @@ export async function POST(req: NextRequest) {
 
           const existing = await taskNameExists(taskName);
           if (existing) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_name",
+              activeSession.task_data,
               `⚠️ A task named <b>"${existing.name}"</b> already exists.\n\nPlease choose a different name:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -1124,10 +1199,10 @@ export async function POST(req: NextRequest) {
 
           if (type === "timer") {
             // Timer -> Ask for Time Goal
-            await saveWizardSession(chatId, "awaiting_timer_goal", {
+            const timerData = {
               ...activeSession.task_data,
               name: taskName,
-            });
+            };
 
             const timerPrompt =
               `🎯 <b>Daily Time Goal</b>\n\n` +
@@ -1146,14 +1221,14 @@ export async function POST(req: NextRequest) {
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
-            await sendTelegramMessage(chatId, timerPrompt, timerKb);
+            await sendWizardPrompt(chatId, "awaiting_timer_goal", timerData, timerPrompt, timerKb);
             return NextResponse.json({ ok: true });
           } else if (type === "counter") {
             // Counter -> Ask for Amount & Unit Goal
-            await saveWizardSession(chatId, "awaiting_counter_goal", {
+            const counterData = {
               ...activeSession.task_data,
               name: taskName,
-            });
+            };
 
             const counterPrompt =
               `🎯 <b>Daily Goal & Unit</b>\n\n` +
@@ -1175,16 +1250,16 @@ export async function POST(req: NextRequest) {
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
-            await sendTelegramMessage(chatId, counterPrompt, counterKb);
+            await sendWizardPrompt(chatId, "awaiting_counter_goal", counterData, counterPrompt, counterKb);
             return NextResponse.json({ ok: true });
           } else {
             // Tick -> Skip goal! Go straight to reminder time
-            await saveWizardSession(chatId, "awaiting_reminder", {
+            const tickData = {
               ...activeSession.task_data,
               name: taskName,
               target_value: 1,
               unit: "status",
-            });
+            };
 
             const tickReminderPrompt =
               `⏰ <b>Daily Reminder Time</b>\n\n` +
@@ -1198,7 +1273,7 @@ export async function POST(req: NextRequest) {
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
-            await sendTelegramMessage(chatId, tickReminderPrompt, tickReminderKb);
+            await sendWizardPrompt(chatId, "awaiting_reminder", tickData, tickReminderPrompt, tickReminderKb);
             return NextResponse.json({ ok: true });
           }
         }
@@ -1207,8 +1282,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_timer_goal") {
           const parsedMins = parseTimerGoal(text);
           if (!parsedMins || parsedMins <= 0) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_timer_goal",
+              activeSession.task_data,
               `⚠️ Please enter hours & minutes like <b>2 hours</b>, <b>1h 30m</b>, or <b>45 mins</b>:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -1220,7 +1297,6 @@ export async function POST(req: NextRequest) {
             target_value: parsedMins,
             unit: "minutes",
           };
-          await saveWizardSession(chatId, "awaiting_reminder", updatedData);
 
           const reminderPrompt =
             `⏰ <b>Daily Reminder Time</b>\n\n` +
@@ -1235,7 +1311,7 @@ export async function POST(req: NextRequest) {
             [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
           ];
 
-          await sendTelegramMessage(chatId, reminderPrompt, reminderKb);
+          await sendWizardPrompt(chatId, "awaiting_reminder", updatedData, reminderPrompt, reminderKb);
           return NextResponse.json({ ok: true });
         }
 
@@ -1243,8 +1319,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_counter_goal") {
           const parsed = parseCountGoalAndUnit(text);
           if (!parsed || parsed.value <= 0) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_counter_goal",
+              activeSession.task_data,
               `⚠️ Please enter an amount and unit like <b>10 km</b>, <b>5000 ml</b>, or <b>50 pages</b>:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -1256,7 +1334,6 @@ export async function POST(req: NextRequest) {
             target_value: parsed.value,
             unit: parsed.unit,
           };
-          await saveWizardSession(chatId, "awaiting_reminder", updatedData);
 
           const reminderPrompt =
             `⏰ <b>Daily Reminder Time</b>\n\n` +
@@ -1271,7 +1348,7 @@ export async function POST(req: NextRequest) {
             [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
           ];
 
-          await sendTelegramMessage(chatId, reminderPrompt, reminderKb);
+          await sendWizardPrompt(chatId, "awaiting_reminder", updatedData, reminderPrompt, reminderKb);
           return NextResponse.json({ ok: true });
         }
 
@@ -1279,8 +1356,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_reminder") {
           const parsedTime = parseReminderTime(text);
           if (!parsedTime) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_reminder",
+              activeSession.task_data,
               `⚠️ I didn't recognize that time format.\n\n` +
                 `Please try like <b>08:00 AM</b>, <b>8am</b>, or <b>18:30</b>.\n` +
                 `Or tap <b>Skip Reminder</b> below:`,
@@ -1296,7 +1375,6 @@ export async function POST(req: NextRequest) {
             ...activeSession.task_data,
             reminder_time: parsedTime,
           };
-          await saveWizardSession(chatId, "awaiting_days", updatedData);
 
           const daysPrompt =
             `📅 <b>Which Days?</b>\n\n` +
@@ -1311,7 +1389,7 @@ export async function POST(req: NextRequest) {
             [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
           ];
 
-          await sendTelegramMessage(chatId, daysPrompt, daysKb);
+          await sendWizardPrompt(chatId, "awaiting_days", updatedData, daysPrompt, daysKb);
           return NextResponse.json({ ok: true });
         }
 
@@ -1319,8 +1397,10 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_days") {
           const chosenDays = parseScheduleDays(text);
           if (!chosenDays) {
-            await sendTelegramMessage(
+            await sendWizardPrompt(
               chatId,
+              "awaiting_days",
+              activeSession.task_data,
               `⚠️ <b>Invalid Days of Week</b>\n\n` +
                 `I couldn't recognize those days.\n` +
                 `Please type valid days separated by comma, like:\n` +
@@ -1337,6 +1417,7 @@ export async function POST(req: NextRequest) {
           }
 
           const taskData = activeSession.task_data;
+          const previousPromptId = taskData.promptMessageId;
           const newTask = await createTask({
             name: taskData.name!,
             type: taskData.type || "timer",
@@ -1353,6 +1434,9 @@ export async function POST(req: NextRequest) {
               chatId,
               `⚠️ Could not create task (a task named "${taskData.name}" may already exist).`
             );
+            if (previousPromptId) {
+              await removeInlineKeyboard(chatId, previousPromptId);
+            }
             return NextResponse.json({ ok: true });
           }
 
@@ -1377,6 +1461,9 @@ export async function POST(req: NextRequest) {
           actionButtons.push([{ text: "📋 View Tasks", callback_data: "menu_tasks" }]);
 
           await sendTelegramMessage(chatId, successText, actionButtons);
+          if (previousPromptId) {
+            await removeInlineKeyboard(chatId, previousPromptId);
+          }
           return NextResponse.json({ ok: true });
         }
       }

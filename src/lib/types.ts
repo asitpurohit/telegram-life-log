@@ -47,6 +47,7 @@ export interface WizardSession {
     reminder_time?: string | null;
     target_value?: number | null;
     unit?: string | null;
+    promptMessageId?: number;
   };
   updated_at?: string;
 }
