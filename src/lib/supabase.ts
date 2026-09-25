@@ -70,6 +70,32 @@ export function getTaskSchedule(task: Task): string {
   return task.target_days || "daily";
 }
 
+export function formatScheduleDisplay(schedule?: string | null): string {
+  if (!schedule || schedule === "daily") return "Daily (Every Day)";
+  if (schedule === "weekdays") return "Weekdays (Mon - Fri)";
+  if (schedule === "weekends") return "Weekends (Sat - Sun)";
+  return schedule;
+}
+
+export function isTaskScheduledForToday(targetDays?: string | null): boolean {
+  if (!targetDays || targetDays === "daily" || targetDays.toLowerCase() === "every day") {
+    return true;
+  }
+  const now = new Date();
+  const dayNameShort = now.toLocaleDateString("en-US", { weekday: "short" });
+  const dayNameLong = now.toLocaleDateString("en-US", { weekday: "long" });
+  const dayOfWeek = now.getDay();
+
+  if (targetDays === "weekdays") return dayOfWeek >= 1 && dayOfWeek <= 5;
+  if (targetDays === "weekends") return dayOfWeek === 0 || dayOfWeek === 6;
+
+  const days = targetDays.split(",").map((d) => d.trim().toLowerCase());
+  return (
+    days.includes(dayNameShort.toLowerCase()) ||
+    days.includes(dayNameLong.toLowerCase())
+  );
+}
+
 
 export async function archiveTask(taskId: string): Promise<boolean> {
   const { error } = await supabase

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabase, isTaskScheduledForToday } from "@/lib/supabase";
 import { sendTelegramMessage, InlineKeyboard } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +41,9 @@ export async function GET(req: NextRequest) {
 
     // Dispatch reminders to Telegram
     for (const task of dueTasks) {
+      if (!isTaskScheduledForToday(task.target_days)) {
+        continue;
+      }
       let text = `⏰ <b>Reminder: ${task.name}!</b>\n`;
       let keyboard: InlineKeyboard = [];
 

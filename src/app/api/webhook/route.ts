@@ -23,6 +23,8 @@ import {
   untickTaskToday,
   deduplicateTodayTickLogs,
   getTaskSchedule,
+  formatScheduleDisplay,
+  isTaskScheduledForToday,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
 import { TaskType, Task } from "@/lib/types";
@@ -162,12 +164,56 @@ function formatGoalDisplay(targetValue?: number | null, unit?: string | null): s
   return `${targetValue.toLocaleString()} ${cleanUnit || "units"}`;
 }
 
-// Format schedule days display
-function formatScheduleDisplay(schedule?: string | null): string {
-  if (!schedule || schedule === "daily") return "Every Day";
-  if (schedule === "weekdays") return "Weekdays (Mon - Fri)";
-  if (schedule === "weekends") return "Weekends (Sat - Sun)";
-  return schedule;
+// Parse schedule days: supports "daily", or comma-separated days e.g. "Mon, Wed, Fri"
+function parseScheduleDays(input: string): string {
+  const clean = input.trim();
+  const lower = clean.toLowerCase();
+
+  if (lower === "daily" || lower.includes("every") || lower === "all") {
+    return "daily";
+  }
+  if (lower === "weekdays" || lower === "weekday") {
+    return "Mon, Tue, Wed, Thu, Fri";
+  }
+  if (lower === "weekends" || lower === "weekend") {
+    return "Sat, Sun";
+  }
+
+  const dayMap: Record<string, string> = {
+    mon: "Mon", monday: "Mon", mondays: "Mon",
+    tue: "Tue", tues: "Tue", tuesday: "Tue", tuesdays: "Tue",
+    wed: "Wed", weds: "Wed", wednesday: "Wed", wednesdays: "Wed",
+    thu: "Thu", thur: "Thu", thurs: "Thu", thursday: "Thu", thursdays: "Thu",
+    fri: "Fri", friday: "Fri", fridays: "Fri",
+    sat: "Sat", saturday: "Sat", saturdays: "Sat",
+    sun: "Sun", sunday: "Sun", sundays: "Sun",
+  };
+
+  const parts = clean
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length > 0) {
+    const recognizedDays: string[] = [];
+    for (const part of parts) {
+      const partLower = part.toLowerCase();
+      if (dayMap[partLower]) {
+        if (!recognizedDays.includes(dayMap[partLower])) {
+          recognizedDays.push(dayMap[partLower]);
+        }
+      } else {
+        const formatted = part.charAt(0).toUpperCase() + part.slice(1);
+        if (!recognizedDays.includes(formatted)) {
+          recognizedDays.push(formatted);
+        }
+      }
+    }
+    if (recognizedDays.length === 7) return "daily";
+    if (recognizedDays.length > 0) return recognizedDays.join(", ");
+  }
+
+  return clean;
 }
 
 // Build a clean, unbloated Today Scorecard
@@ -186,19 +232,22 @@ async function buildTodayScorecard(): Promise<string> {
   } else {
     text += `<b>Habits & Routines:</b>\n`;
     for (const t of tasks) {
+      const isScheduledToday = isTaskScheduledForToday(t.target_days);
+      const scheduleTag = !isScheduledToday ? ` <i>(Off today: ${formatScheduleDisplay(t.target_days)})</i>` : "";
+
       if (t.type === "tick") {
         const isDone = await isTaskCompletedToday(t.id);
-        text += `${isDone ? "✅" : "⬜"} <b>${t.name}</b> ${isDone ? "<i>(Done)</i>" : "<i>(Pending)</i>"}\n`;
+        text += `${isDone ? "✅" : isScheduledToday ? "⬜" : "💤"} <b>${t.name}</b> ${isDone ? "<i>(Done)</i>" : isScheduledToday ? "<i>(Pending)</i>" : scheduleTag}\n`;
       } else if (t.type === "timer") {
         const mins = await getTodayTaskTotal(t.name);
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
-        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)\n`;
+        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${scheduleTag}\n`;
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;
         const pct = Math.min(100, Math.round((val / target) * 100));
-        text += `💧 <b>${t.name}:</b> ${val.toLocaleString()} / ${formatGoalDisplay(target, t.unit)} (${pct}%)\n`;
+        text += `💧 <b>${t.name}:</b> ${val.toLocaleString()} / ${formatGoalDisplay(target, t.unit)} (${pct}%)${scheduleTag}\n`;
       }
     }
   }
@@ -394,14 +443,11 @@ export async function POST(req: NextRequest) {
           `Task: <b>${taskData.name}</b>\n` +
           `Goal: <b>${formatGoalDisplay(taskData.target_value, taskData.unit)}</b>\n` +
           `Reminder: <i>None (Skipped)</i>\n\n` +
-          `Which days will you do this task?`;
+          `Tap <b>[ 🌟 Daily ]</b> below, or type the days separated with commas:\n` +
+          `<i>(e.g., "Mon, Wed, Fri" or "Monday, Saturday")</i>`;
 
         const daysKb: InlineKeyboard = [
-          [{ text: "🌟 Every Day", callback_data: "wizard_days:daily" }],
-          [
-            { text: "💼 Weekdays (Mon-Fri)", callback_data: "wizard_days:weekdays" },
-            { text: "🌴 Weekends (Sat-Sun)", callback_data: "wizard_days:weekends" },
-          ],
+          [{ text: "🌟 Daily (Every Day)", callback_data: "wizard_days:daily" }],
           [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
         ];
 
@@ -415,7 +461,8 @@ export async function POST(req: NextRequest) {
 
       // --- WIZARD: Pick Which Days -> Finalize & Save Task ---
       if (callbackData.startsWith("wizard_days:")) {
-        const days = callbackData.split(":")[1];
+        const rawDays = callbackData.split(":")[1];
+        const chosenDays = parseScheduleDays(rawDays);
         const session = await getWizardSession(chatId);
         if (!session || !session.task_data.name) {
           await sendTelegramMessage(chatId, "⚠️ Session expired. Type /addtask to start again.");
@@ -429,7 +476,7 @@ export async function POST(req: NextRequest) {
           target_value: taskData.target_value || (taskData.type === "timer" ? 60 : 5000),
           unit: taskData.unit || (taskData.type === "timer" ? "minutes" : "ml"),
           reminder_time: taskData.reminder_time || null,
-          target_days: days,
+          target_days: chosenDays,
         });
 
         await clearWizardSession(chatId);
@@ -1239,14 +1286,11 @@ export async function POST(req: NextRequest) {
             `Task: <b>${updatedData.name}</b>\n` +
             `Goal: <b>${formatGoalDisplay(updatedData.target_value, updatedData.unit)}</b>\n` +
             `Reminder: <b>${formatReminderTime(parsedTime)}</b>\n\n` +
-            `Which days will you do this task?`;
+            `Tap <b>[ 🌟 Daily ]</b> below, or type the days separated with commas:\n` +
+            `<i>(e.g., "Mon, Wed, Fri" or "Monday, Saturday")</i>`;
 
           const daysKb: InlineKeyboard = [
-            [{ text: "🌟 Every Day", callback_data: "wizard_days:daily" }],
-            [
-              { text: "💼 Weekdays (Mon-Fri)", callback_data: "wizard_days:weekdays" },
-              { text: "🌴 Weekends (Sat-Sun)", callback_data: "wizard_days:weekends" },
-            ],
+            [{ text: "🌟 Daily (Every Day)", callback_data: "wizard_days:daily" }],
             [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
           ];
 
@@ -1256,14 +1300,7 @@ export async function POST(req: NextRequest) {
 
         // --- State: User Typed Custom Days -> Finalize & Save Task ---
         if (activeSession.step === "awaiting_days") {
-          let chosenDays = text.toLowerCase().trim();
-          if (chosenDays.includes("every") || chosenDays === "daily" || chosenDays === "all") {
-            chosenDays = "daily";
-          } else if (chosenDays.includes("weekday")) {
-            chosenDays = "weekdays";
-          } else if (chosenDays.includes("weekend")) {
-            chosenDays = "weekends";
-          }
+          const chosenDays = parseScheduleDays(text);
 
           const taskData = activeSession.task_data;
           const newTask = await createTask({
