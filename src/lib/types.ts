@@ -33,9 +33,10 @@ export interface WizardSession {
   chat_id: string;
   step:
     | 'awaiting_name'
-    | 'awaiting_days'
-    | 'awaiting_target'
+    | 'awaiting_timer_goal'
+    | 'awaiting_counter_goal'
     | 'awaiting_reminder'
+    | 'awaiting_days'
     | 'awaiting_diary_text'
     | 'awaiting_timer_custom';
   task_data: {
@@ -49,6 +50,7 @@ export interface WizardSession {
   };
   updated_at?: string;
 }
+
 
 
 
