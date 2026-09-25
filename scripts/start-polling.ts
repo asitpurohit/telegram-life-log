@@ -29,7 +29,7 @@ async function startPolling() {
     refreshRunningTimerMessages().catch((err) =>
       console.error("Timer refresh error:", err.message)
     );
-  }, 10000);
+  }, 5000);
 
   const meRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe`);
   const me = await meRes.json();
