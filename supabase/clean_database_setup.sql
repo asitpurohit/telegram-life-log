@@ -34,8 +34,21 @@ CREATE TABLE IF NOT EXISTS logs (
     log_date DATE NOT NULL DEFAULT CURRENT_DATE,
     value INTEGER DEFAULT 1,
     notes TEXT,
+    mood TEXT,
+    summary TEXT,
+    projects TEXT[],
+    people TEXT[],
+    decisions TEXT[],
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure rich diary columns exist if logs table was created earlier
+ALTER TABLE logs 
+ADD COLUMN IF NOT EXISTS mood TEXT,
+ADD COLUMN IF NOT EXISTS summary TEXT,
+ADD COLUMN IF NOT EXISTS projects TEXT[],
+ADD COLUMN IF NOT EXISTS people TEXT[],
+ADD COLUMN IF NOT EXISTS decisions TEXT[];
 
 -- Clean up any temporary session rows from logs
 DELETE FROM logs WHERE task_name = '__wizard_session__';

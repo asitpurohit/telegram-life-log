@@ -39,6 +39,8 @@ import {
   getTaskSchedule,
   formatScheduleDisplay,
   isTaskScheduledForToday,
+  updateDiaryMood,
+  formatMoodDisplay,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
 import {
@@ -482,7 +484,8 @@ async function buildTodayScorecard(): Promise<string> {
             minute: "2-digit",
           })
         : "";
-      text += `• ${timeStr ? `<i>[${timeStr}]</i> ` : ""}${d.notes}\n`;
+      const moodBadge = d.mood ? `[${formatMoodDisplay(d.mood)}] ` : "";
+      text += `• ${timeStr ? `<i>[${timeStr}]</i> ` : ""}${moodBadge}${d.summary || d.notes}\n`;
     }
   }
 
@@ -562,6 +565,44 @@ export async function POST(req: NextRequest) {
         await clearWizardSession(chatId);
         const cancelText = "❌ <i>Action cancelled.</i>";
         await respondUi(chatId, messageId, cancelText, []);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DIARY: Set / Update Mood ---
+      if (callbackData.startsWith("set_mood:")) {
+        const parts = callbackData.split(":");
+        const logId = parts[1];
+        const newMood = parts[2];
+
+        if (logId) {
+          await updateDiaryMood(logId, newMood);
+        }
+
+        const moodDisplay = formatMoodDisplay(newMood);
+
+        const updatedButtons: InlineKeyboard = [
+          [
+            { text: newMood === "happy" ? "✅ 😊 Happy" : "😊 Happy", callback_data: `set_mood:${logId}:happy` },
+            { text: newMood === "productive" ? "✅ ⚡ Productive" : "⚡ Productive", callback_data: `set_mood:${logId}:productive` },
+            { text: newMood === "okay" ? "✅ 😐 Okay" : "😐 Okay", callback_data: `set_mood:${logId}:okay` },
+          ],
+          [
+            { text: newMood === "bad" ? "✅ 😔 Bad" : "😔 Bad", callback_data: `set_mood:${logId}:bad` },
+            { text: newMood === "tired" ? "✅ 😴 Tired" : "😴 Tired", callback_data: `set_mood:${logId}:tired` },
+            { text: newMood === "grateful" ? "✅ 🙏 Grateful" : "🙏 Grateful", callback_data: `set_mood:${logId}:grateful` },
+          ],
+        ];
+
+        if (messageId) {
+          await editTelegramMessage(
+            chatId,
+            messageId,
+            `📖 <b>Diary Saved for Today!</b>\n\n` +
+              `<b>Mood:</b> ${moodDisplay}\n\n` +
+              `<i>Mood updated! Type /today to see your scorecard.</i>`,
+            updatedButtons
+          );
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -1365,14 +1406,26 @@ export async function POST(req: NextRequest) {
 
         if (noteContent.length >= 3) {
           const ai = await parseUserMessageWithAI(noteContent, []);
-          await logActivity({
+          const mood = ai.diary?.mood || "okay";
+          const summary = ai.diary?.summary || noteContent.slice(0, 120);
+
+          const newLog = await logActivity({
             task_name: "Diary",
             notes: noteContent,
             value: 1,
+            summary,
+            projects: ai.diary?.projects || [],
+            people: ai.diary?.people || [],
+            decisions: ai.diary?.decisions || [],
+            mood,
           });
 
-          const summary = ai.diary?.summary || noteContent.slice(0, 120);
-          let reply = `📖 <b>Diary Saved for Today!</b>\n\n📝 <b>Summary:</b> ${summary}`;
+          const moodDisplay = formatMoodDisplay(mood);
+          let reply = `📖 <b>Diary Saved for Today!</b>\n\n`;
+          if (moodDisplay) {
+            reply += `<b>Mood:</b> ${moodDisplay}\n`;
+          }
+          reply += `📝 <b>Summary:</b> ${summary}`;
 
           if (ai.diary?.projects && ai.diary.projects.length > 0) {
             reply += `\n🎯 <b>Projects:</b> ${ai.diary.projects.join(", ")}`;
@@ -1384,7 +1437,21 @@ export async function POST(req: NextRequest) {
             reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
           }
 
-          await sendTelegramMessage(chatId, reply);
+          const logId = newLog?.id || "";
+          const moodKb: InlineKeyboard = [
+            [
+              { text: mood === "happy" ? "✅ 😊 Happy" : "😊 Happy", callback_data: `set_mood:${logId}:happy` },
+              { text: mood === "productive" ? "✅ ⚡ Productive" : "⚡ Productive", callback_data: `set_mood:${logId}:productive` },
+              { text: mood === "okay" ? "✅ 😐 Okay" : "😐 Okay", callback_data: `set_mood:${logId}:okay` },
+            ],
+            [
+              { text: mood === "bad" ? "✅ 😔 Bad" : "😔 Bad", callback_data: `set_mood:${logId}:bad` },
+              { text: mood === "tired" ? "✅ 😴 Tired" : "😴 Tired", callback_data: `set_mood:${logId}:tired` },
+              { text: mood === "grateful" ? "✅ 🙏 Grateful" : "🙏 Grateful", callback_data: `set_mood:${logId}:grateful` },
+            ],
+          ];
+
+          await sendTelegramMessage(chatId, reply, moodKb);
           return NextResponse.json({ ok: true });
         } else {
           await sendWizardPrompt(
@@ -1544,15 +1611,26 @@ export async function POST(req: NextRequest) {
           const diaryPromptId = activeSession.task_data.promptMessageId;
           await clearWizardSession(chatId);
           const ai = await parseUserMessageWithAI(text, []);
+          const mood = ai.diary?.mood || "okay";
+          const summary = ai.diary?.summary || text.slice(0, 120);
 
-          await logActivity({
+          const newLog = await logActivity({
             task_name: "Diary",
             notes: text,
             value: 1,
+            summary,
+            projects: ai.diary?.projects || [],
+            people: ai.diary?.people || [],
+            decisions: ai.diary?.decisions || [],
+            mood,
           });
 
-          const summary = ai.diary?.summary || text.slice(0, 120);
-          let reply = `📖 <b>Diary Saved for Today!</b>\n\n📝 <b>Summary:</b> ${summary}`;
+          const moodDisplay = formatMoodDisplay(mood);
+          let reply = `📖 <b>Diary Saved for Today!</b>\n\n`;
+          if (moodDisplay) {
+            reply += `<b>Mood:</b> ${moodDisplay}\n`;
+          }
+          reply += `📝 <b>Summary:</b> ${summary}`;
 
           if (ai.diary?.projects && ai.diary.projects.length > 0) {
             reply += `\n🎯 <b>Projects:</b> ${ai.diary.projects.join(", ")}`;
@@ -1564,7 +1642,21 @@ export async function POST(req: NextRequest) {
             reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
           }
 
-          await sendTelegramMessage(chatId, reply);
+          const logId = newLog?.id || "";
+          const moodKb: InlineKeyboard = [
+            [
+              { text: mood === "happy" ? "✅ 😊 Happy" : "😊 Happy", callback_data: `set_mood:${logId}:happy` },
+              { text: mood === "productive" ? "✅ ⚡ Productive" : "⚡ Productive", callback_data: `set_mood:${logId}:productive` },
+              { text: mood === "okay" ? "✅ 😐 Okay" : "😐 Okay", callback_data: `set_mood:${logId}:okay` },
+            ],
+            [
+              { text: mood === "bad" ? "✅ 😔 Bad" : "😔 Bad", callback_data: `set_mood:${logId}:bad` },
+              { text: mood === "tired" ? "✅ 😴 Tired" : "😴 Tired", callback_data: `set_mood:${logId}:tired` },
+              { text: mood === "grateful" ? "✅ 🙏 Grateful" : "🙏 Grateful", callback_data: `set_mood:${logId}:grateful` },
+            ],
+          ];
+
+          await sendTelegramMessage(chatId, reply, moodKb);
           if (diaryPromptId) {
             await removeInlineKeyboard(chatId, diaryPromptId);
           }

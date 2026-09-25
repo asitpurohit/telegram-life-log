@@ -19,6 +19,11 @@ export interface Log {
   log_date?: string; // YYYY-MM-DD
   value?: number;
   notes?: string | null;
+  summary?: string | null;
+  projects?: string[] | null;
+  people?: string[] | null;
+  decisions?: string[] | null;
+  mood?: string | null;
   created_at?: string;
 }
 

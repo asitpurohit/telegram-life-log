@@ -287,17 +287,23 @@ export async function stopActiveTimer(
 // ==========================================
 
 export async function logActivity(log: Log): Promise<Log | null> {
+  const insertPayload: any = {
+    task_id: log.task_id || null,
+    task_name: log.task_name,
+    log_date: log.log_date || new Date().toISOString().split("T")[0],
+    value: log.value ?? 1,
+    notes: log.notes || null,
+  };
+
+  if (log.summary !== undefined) insertPayload.summary = log.summary;
+  if (log.projects !== undefined) insertPayload.projects = log.projects;
+  if (log.people !== undefined) insertPayload.people = log.people;
+  if (log.decisions !== undefined) insertPayload.decisions = log.decisions;
+  if (log.mood !== undefined) insertPayload.mood = log.mood;
+
   const { data, error } = await supabase
     .from("logs")
-    .insert([
-      {
-        task_id: log.task_id || null,
-        task_name: log.task_name,
-        log_date: log.log_date || new Date().toISOString().split("T")[0],
-        value: log.value ?? 1,
-        notes: log.notes || null,
-      },
-    ])
+    .insert([insertPayload])
     .select()
     .single();
 
@@ -306,6 +312,32 @@ export async function logActivity(log: Log): Promise<Log | null> {
     return null;
   }
   return data;
+}
+
+export async function updateDiaryMood(logId: string, mood: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("logs")
+    .update({ mood })
+    .eq("id", logId);
+
+  if (error) {
+    console.error("Error updating diary mood:", error);
+    return false;
+  }
+  return true;
+}
+
+export function formatMoodDisplay(mood?: string | null): string {
+  if (!mood) return "";
+  const m = mood.toLowerCase();
+  if (m.includes("happy") || m.includes("great") || m.includes("joy")) return "😊 Happy";
+  if (m.includes("productive") || m.includes("energetic") || m.includes("focus")) return "⚡ Productive";
+  if (m.includes("okay") || m.includes("neutral") || m.includes("fine")) return "😐 Okay";
+  if (m.includes("bad") || m.includes("sad") || m.includes("down")) return "😔 Bad";
+  if (m.includes("tired") || m.includes("exhaust")) return "😴 Tired";
+  if (m.includes("stress") || m.includes("anxious")) return "😰 Stressed";
+  if (m.includes("grateful") || m.includes("peace")) return "🙏 Grateful";
+  return `✨ ${mood.charAt(0).toUpperCase() + mood.slice(1)}`;
 }
 
 export async function getTodayTaskTotal(taskName: string): Promise<number> {

@@ -24,8 +24,21 @@ CREATE TABLE IF NOT EXISTS logs (
     log_date DATE NOT NULL DEFAULT CURRENT_DATE,
     value INTEGER DEFAULT 1,                         -- e.g. 75 (mins), 500 (ml), or 1 (tick)
     notes TEXT,                                      -- Raw diary notes or session reflections
+    mood TEXT,                                       -- e.g. "happy", "productive", "okay", "bad", "tired", "grateful"
+    summary TEXT,                                    -- AI-generated crisp summary of diary entry
+    projects TEXT[],                                 -- Extracted project tags
+    people TEXT[],                                   -- Extracted people mentioned
+    decisions TEXT[],                                -- Extracted decisions made
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure rich diary columns exist if logs table was created earlier
+ALTER TABLE logs 
+ADD COLUMN IF NOT EXISTS mood TEXT,
+ADD COLUMN IF NOT EXISTS summary TEXT,
+ADD COLUMN IF NOT EXISTS projects TEXT[],
+ADD COLUMN IF NOT EXISTS people TEXT[],
+ADD COLUMN IF NOT EXISTS decisions TEXT[];
 
 -- 3. Active Timers Table (Tracks currently running stopwatch sessions)
 CREATE TABLE IF NOT EXISTS active_timers (

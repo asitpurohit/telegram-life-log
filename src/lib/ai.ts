@@ -17,6 +17,7 @@ export interface AIParsedIntent {
     people: string[];
     projects: string[];
     decisions: string[];
+    mood?: string;
   };
   queryQuestion?: string;
   waterAmount?: number;
@@ -61,10 +62,11 @@ Classify the user's intent into ONE of these:
 
 5. DIARY_ENTRY: User is journaling about their day, thoughts, feelings, or activities.
    Extract:
-   - summary: 1-2 sentence recap
+   - summary: 1-2 sentence concise recap
    - people: array of names mentioned
-   - projects: array of projects mentioned
-   - decisions: array of decisions/conclusions
+   - projects: array of projects or study topics mentioned
+   - decisions: array of decisions/conclusions made
+   - mood: inferred overall mood of the day (e.g. "happy", "productive", "okay", "bad", "tired", "stressed", "grateful")
 
 6. QUERY: User is asking a question about their past logs or status (e.g. "how much did I study?", "show my water logs").
 
@@ -76,7 +78,7 @@ Respond ONLY with valid JSON matching this schema:
   "task": { "name": "...", "type": "timer"|"counter"|"tick", "reminder_time": "HH:MM:SS"|null, "target_value": 0, "unit": "..." },
   "timerTaskName": "...",
   "waterAmount": 0,
-  "diary": { "summary": "...", "people": [], "projects": [], "decisions": [] },
+  "diary": { "summary": "...", "people": [], "projects": [], "decisions": [], "mood": "happy"|"productive"|"okay"|"bad"|"tired"|"stressed"|"grateful" },
   "queryQuestion": "...",
   "replyMessage": "A warm, natural 1-sentence response"
 }
