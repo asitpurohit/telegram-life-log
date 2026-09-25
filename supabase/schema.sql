@@ -10,9 +10,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     reminder_time TIME,                              -- e.g. '08:00:00' or '05:00:00'
     target_value INTEGER,                            -- e.g. 60 (mins) or 5000 (ml)
     unit TEXT,                                       -- 'minutes', 'ml', 'status'
+    target_days TEXT DEFAULT 'daily',                -- 'daily', 'weekdays', 'weekends', or custom
     is_archived BOOLEAN DEFAULT false,                -- Soft-delete (archived tasks hidden from daily use)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
 
 -- 2. Logs Table (History of completed sessions, counts, and diary entries)
 CREATE TABLE IF NOT EXISTS logs (

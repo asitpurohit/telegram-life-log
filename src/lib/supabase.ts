@@ -59,12 +59,37 @@ export async function createTask(task: Partial<Task>): Promise<Task | null> {
     .select()
     .single();
 
-  if (error) {
-    console.error("Error creating task:", error);
-    return null;
+  if (!error) return data;
+
+  // Fallback if target_days column is not yet in database table
+  if (error && (error.code === "PGRST204" || error.code === "42703")) {
+    const { target_days, ...rest } = task;
+    const fallbackUnit = target_days ? `${rest.unit || ""}|${target_days}` : rest.unit;
+    const { data: fbData, error: fbError } = await supabase
+      .from("tasks")
+      .insert([{ ...rest, unit: fallbackUnit }])
+      .select()
+      .single();
+
+    if (fbError) {
+      console.error("Error creating task with fallback:", fbError);
+      return null;
+    }
+    return fbData;
   }
-  return data;
+
+  console.error("Error creating task:", error);
+  return null;
 }
+
+export function getTaskSchedule(task: Task): string {
+  if (task.target_days) return task.target_days;
+  if (task.unit && task.unit.includes("|")) {
+    return task.unit.split("|")[1];
+  }
+  return "daily";
+}
+
 
 export async function archiveTask(taskId: string): Promise<boolean> {
   const { error } = await supabase

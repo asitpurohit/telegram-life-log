@@ -22,13 +22,18 @@ import {
   isTaskCompletedToday,
   untickTaskToday,
   deduplicateTodayTickLogs,
+  getTaskSchedule,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
-import { TaskType } from "@/lib/types";
+import { TaskType, Task } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-// Helper: Parse natural time input (e.g. "8am", "08:00 AM", "18:30", "8:30 pm") to "HH:MM:SS"
+// =========================================================================
+// HELPER FUNCTIONS (Parsing & Formatting)
+// =========================================================================
+
+// Parse natural time input (e.g. "8am", "08:00 AM", "18:30", "8:30 pm") to "HH:MM:SS"
 function parseReminderTime(input: string): string | null {
   const clean = input.trim().toLowerCase();
 
@@ -72,7 +77,68 @@ function parseReminderTime(input: string): string | null {
   return null;
 }
 
-// Helper: Format "HH:MM:SS" to readable "08:00 AM"
+// Parse timer goals in hours and minutes: e.g. "2 hours", "1h 30m", "45 mins", "90"
+function parseTimerGoal(input: string): number | null {
+  const clean = input.trim().toLowerCase();
+
+  // Pattern 1: e.g. "1 hour 30 mins", "2h 30m", "1 hr 45 min", "2 hours 15 minutes"
+  const regexHrMin = /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*(?:and\s*)?(\d+)?\s*(?:m|min|mins|minute|minutes)?$/;
+  const mHrMin = clean.match(regexHrMin);
+  if (mHrMin) {
+    const hours = parseFloat(mHrMin[1]);
+    const minutes = mHrMin[2] ? parseInt(mHrMin[2], 10) : 0;
+    return Math.round(hours * 60 + minutes);
+  }
+
+  // Pattern 2: e.g. "45m", "45 mins", "90 minutes"
+  const regexMin = /^(\d+)\s*(?:m|min|mins|minute|minutes)$/;
+  const mMin = clean.match(regexMin);
+  if (mMin) {
+    return parseInt(mMin[1], 10);
+  }
+
+  // Pattern 3: e.g. "1.5h", "2 hours"
+  const regexHr = /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)$/;
+  const mHr = clean.match(regexHr);
+  if (mHr) {
+    return Math.round(parseFloat(mHr[1]) * 60);
+  }
+
+  // Pattern 4: Bare number like "60", "90", "120"
+  const regexBare = /^(\d+)$/;
+  const mBare = clean.match(regexBare);
+  if (mBare) {
+    return parseInt(mBare[1], 10);
+  }
+
+  return null;
+}
+
+// Parse counter goals (e.g. "5000", "5000 ml", "3 liters", "3.5l")
+function parseCounterGoal(input: string): number | null {
+  const clean = input.trim().toLowerCase();
+  const regexLiter = /^(\d+(?:\.\d+)?)\s*(?:l|liter|liters|litre|litres)$/;
+  const mLiter = clean.match(regexLiter);
+  if (mLiter) {
+    return Math.round(parseFloat(mLiter[1]) * 1000);
+  }
+
+  const regexMl = /^(\d+)\s*(?:ml|milliliters|millilitres)$/;
+  const mMl = clean.match(regexMl);
+  if (mMl) {
+    return parseInt(mMl[1], 10);
+  }
+
+  const regexBare = /^(\d+)$/;
+  const mBare = clean.match(regexBare);
+  if (mBare) {
+    return parseInt(mBare[1], 10);
+  }
+
+  return null;
+}
+
+// Format "HH:MM:SS" to readable "08:00 AM"
 function formatReminderTime(timeStr?: string | null): string {
   if (!timeStr) return "None";
   const parts = timeStr.split(":");
@@ -87,7 +153,31 @@ function formatReminderTime(timeStr?: string | null): string {
   return timeStr;
 }
 
-// Helper: Build a clean, unbloated Today Scorecard
+// Format goal display (e.g. "2 hours" or "1h 30m" or "5,000 ml")
+function formatGoalDisplay(targetValue?: number | null, unit?: string | null): string {
+  if (!targetValue) return "None";
+  if (unit?.startsWith("minutes") || unit === "minutes") {
+    const hours = Math.floor(targetValue / 60);
+    const mins = targetValue % 60;
+    if (hours > 0 && mins > 0) return `${hours}h ${mins}m (${targetValue} mins)`;
+    if (hours > 0) return `${hours} hour${hours > 1 ? "s" : ""}`;
+    return `${mins} mins`;
+  }
+  if (unit?.startsWith("ml") || unit === "ml") {
+    return `${targetValue.toLocaleString()} ml`;
+  }
+  return `${targetValue} ${unit || ""}`.trim();
+}
+
+// Format schedule days display
+function formatScheduleDisplay(schedule?: string | null): string {
+  if (!schedule || schedule === "daily") return "Every Day";
+  if (schedule === "weekdays") return "Weekdays (Mon - Fri)";
+  if (schedule === "weekends") return "Weekends (Sat - Sun)";
+  return schedule;
+}
+
+// Build a clean, unbloated Today Scorecard
 async function buildTodayScorecard(): Promise<string> {
   const todayStr = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -110,12 +200,12 @@ async function buildTodayScorecard(): Promise<string> {
         const mins = await getTodayTaskTotal(t.name);
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
-        text += `⏱️ <b>${t.name}:</b> ${mins} / ${target} mins (${pct}%)\n`;
+        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)\n`;
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;
         const pct = Math.min(100, Math.round((val / target) * 100));
-        text += `💧 <b>${t.name}:</b> ${val} / ${target} ${t.unit || "ml"} (${pct}%)\n`;
+        text += `💧 <b>${t.name}:</b> ${val.toLocaleString()} / ${formatGoalDisplay(target, "ml")} (${pct}%)\n`;
       }
     }
   }
@@ -137,6 +227,10 @@ async function buildTodayScorecard(): Promise<string> {
 
   return text;
 }
+
+// =========================================================================
+// MAIN WEBHOOK HANDLER
+// =========================================================================
 
 export async function POST(req: NextRequest) {
   try {
@@ -171,7 +265,7 @@ export async function POST(req: NextRequest) {
       // Acknowledge receipt to remove button loading spinner on phone
       await answerCallbackQuery(callbackQuery.id);
 
-      // --- WIZARD: Cancel Active Creation or Diary Prompt ---
+      // --- WIZARD: Cancel Active Action ---
       if (callbackData === "wizard_cancel") {
         await clearWizardSession(chatId);
         const cancelText = "❌ <i>Action cancelled.</i>";
@@ -183,45 +277,22 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- WIZARD: Start Task Creation (/addtask or button) ---
-      if (callbackData === "start_wizard") {
-        await clearWizardSession(chatId);
-        const typeKeyboard: InlineKeyboard = [
-          [
-            { text: "⏱️ Timer", callback_data: "wizard_type:timer" },
-            { text: "💧 Counter", callback_data: "wizard_type:counter" },
-            { text: "✅ Daily Tick", callback_data: "wizard_type:tick" },
-          ],
-          [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
-        ];
-
-        const text =
-          `➕ <b>Create a New Task (Step 1 of 4)</b>\n\n` +
-          `Choose the type of task you want to track:\n` +
-          `• ⏱️ <b>Timer:</b> For study, coding, work (tracks minutes)\n` +
-          `• 💧 <b>Counter:</b> For water, pages, reps (tracks quantity)\n` +
-          `• ✅ <b>Daily Tick:</b> For wake up, routines (done once a day)`;
-
-        await sendTelegramMessage(chatId, text, typeKeyboard);
-        return NextResponse.json({ ok: true });
-      }
-
-      // --- WIZARD: Step 1 Selected Type -> Prompt for Name ---
+      // --- WIZARD: Step 1 Pick Type ---
       if (callbackData.startsWith("wizard_type:")) {
         const type = callbackData.split(":")[1] as TaskType;
         await saveWizardSession(chatId, "awaiting_name", { type });
 
         const typeLabels: Record<TaskType, string> = {
-          timer: "⏱️ Timer (Study, Work, Exercise)",
-          counter: "💧 Counter (Water, Reps, Pages)",
+          timer: "⏱️ Timer (Study, Work, Coding)",
+          counter: "💧 Counter (Water Goal in ml)",
           tick: "✅ Daily Tick (Wake Up, Checklist)",
         };
 
         const promptText =
-          `📝 <b>Step 2 of 4: Task Name</b>\n\n` +
-          `Type: <b>${typeLabels[type] || type}</b>\n\n` +
-          `Please type the name of this task:\n` +
-          `<i>(e.g., "Physics Study", "Read Books", "Morning Meditation")</i>`;
+          `📝 <b>Step 2 of 5: Task Name</b>\n\n` +
+          `Selected Type: <b>${typeLabels[type] || type}</b>\n\n` +
+          `What is the name of this task?\n` +
+          `<i>(e.g., "Physics Study", "Drink Water", "Wake Up")</i>`;
 
         const cancelKb: InlineKeyboard = [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]];
 
@@ -233,121 +304,173 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- WIZARD: Step 3 Skip Reminder ---
-      if (callbackData === "wizard_skip:reminder") {
+      // --- WIZARD: Step 3 Pick Which Days (Button Click) ---
+      if (callbackData.startsWith("wizard_days:")) {
+        const days = callbackData.split(":")[1];
         const session = await getWizardSession(chatId);
         if (!session) {
-          await sendTelegramMessage(chatId, "⚠️ No active task creation in progress.");
+          await sendTelegramMessage(chatId, "⚠️ Session expired. Type /addtask to start again.");
           return NextResponse.json({ ok: true });
         }
 
-        const taskData = { ...session.task_data, reminder_time: null };
+        const taskData = { ...session.task_data, target_days: days };
         await saveWizardSession(chatId, "awaiting_target", taskData);
 
         const type = taskData.type || "timer";
-        let targetPrompt = "";
-        let skipButtonText = "⏭️ Skip Target";
+        let goalPrompt = "";
+        let goalKb: InlineKeyboard = [];
 
         if (type === "timer") {
-          targetPrompt =
-            `🎯 <b>Step 4 of 4: Daily Goal</b>\n\n` +
+          goalPrompt =
+            `🎯 <b>Step 4 of 5: Daily Time Goal</b>\n\n` +
             `Task: <b>${taskData.name}</b>\n` +
-            `Reminder: <i>None (Skipped)</i>\n\n` +
-            `How many <b>minutes</b> is your daily goal?\n` +
-            `<i>(e.g., 30, 45, 60, 120, 240)</i>\n\n` +
-            `Or tap <b>Skip</b> for default (60 mins):`;
-          skipButtonText = "⏭️ Skip (Default: 60 mins)";
+            `Schedule: <b>${formatScheduleDisplay(days)}</b>\n\n` +
+            `How much time is your daily goal?\n` +
+            `Type in <b>hours & minutes</b>:\n` +
+            `<i>(e.g., "2 hours", "1h 30m", "45 mins", "4 hours")</i>\n\n` +
+            `Or select a quick target:`;
+
+          goalKb = [
+            [
+              { text: "30 mins", callback_data: "wizard_target:30" },
+              { text: "1 hour", callback_data: "wizard_target:60" },
+              { text: "2 hours", callback_data: "wizard_target:120" },
+            ],
+            [
+              { text: "3 hours", callback_data: "wizard_target:180" },
+              { text: "4 hours", callback_data: "wizard_target:240" },
+            ],
+            [
+              { text: "⏭️ Skip (Default: 1 hour)", callback_data: "wizard_target:60" },
+              { text: "❌ Cancel", callback_data: "wizard_cancel" },
+            ],
+          ];
         } else if (type === "counter") {
-          targetPrompt =
-            `🎯 <b>Step 4 of 4: Daily Goal</b>\n\n` +
+          goalPrompt =
+            `🎯 <b>Step 4 of 5: Daily Amount Goal</b>\n\n` +
             `Task: <b>${taskData.name}</b>\n` +
-            `Reminder: <i>None (Skipped)</i>\n\n` +
-            `What is your daily target amount?\n` +
-            `<i>(e.g., 5000 for water, 20 for reading pages)</i>\n\n` +
-            `Or tap <b>Skip</b> for default:`;
-          skipButtonText = "⏭️ Skip (Default: 5000)";
+            `Schedule: <b>${formatScheduleDisplay(days)}</b>\n\n` +
+            `What is your daily target in <b>ml</b>?\n` +
+            `<i>(e.g., "3000", "5000", "4000 ml", "3.5 liters")</i>\n\n` +
+            `Or select a quick target:`;
+
+          goalKb = [
+            [
+              { text: "2,000 ml", callback_data: "wizard_target:2000" },
+              { text: "3,000 ml", callback_data: "wizard_target:3000" },
+              { text: "5,000 ml", callback_data: "wizard_target:5000" },
+            ],
+            [
+              { text: "⏭️ Skip (Default: 5,000 ml)", callback_data: "wizard_target:5000" },
+              { text: "❌ Cancel", callback_data: "wizard_cancel" },
+            ],
+          ];
         } else {
-          targetPrompt =
-            `🎯 <b>Step 4 of 4: Confirm Task</b>\n\n` +
+          goalPrompt =
+            `🎯 <b>Step 4 of 5: Daily Goal</b>\n\n` +
             `Task: <b>${taskData.name}</b>\n` +
-            `Reminder: <i>None (Skipped)</i>\n\n` +
-            `Daily Tick tasks are marked complete once per day.\n` +
-            `Tap below to save:`;
-          skipButtonText = "✅ Confirm & Save";
+            `Schedule: <b>${formatScheduleDisplay(days)}</b>\n\n` +
+            `Daily Tick habits have a target of <b>1 completion</b> per day.\n\n` +
+            `Tap below to set a reminder time:`;
+
+          goalKb = [
+            [{ text: "➡️ Next: Set Reminder", callback_data: "wizard_target:1" }],
+            [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+          ];
         }
 
-        const targetKb: InlineKeyboard = [
-          [{ text: skipButtonText, callback_data: "wizard_skip:target" }],
-          [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
-        ];
-
         if (messageId) {
-          await editTelegramMessage(chatId, messageId, targetPrompt, targetKb);
+          await editTelegramMessage(chatId, messageId, goalPrompt, goalKb);
         } else {
-          await sendTelegramMessage(chatId, targetPrompt, targetKb);
+          await sendTelegramMessage(chatId, goalPrompt, goalKb);
         }
         return NextResponse.json({ ok: true });
       }
 
-      // --- WIZARD: Step 4 Skip / Confirm Target -> Finalize Task ---
-      if (callbackData === "wizard_skip:target" || callbackData === "wizard_confirm:tick") {
+      // --- WIZARD: Step 4 Pick Goal (Button Click) -> Prompt Reminder ---
+      if (callbackData.startsWith("wizard_target:")) {
+        const valStr = callbackData.split(":")[1];
+        const targetVal = parseInt(valStr, 10);
         const session = await getWizardSession(chatId);
-        if (!session || !session.task_data.name) {
-          await sendTelegramMessage(chatId, "⚠️ Task session expired. Please type /addtask to start again.");
+        if (!session) {
+          await sendTelegramMessage(chatId, "⚠️ Session expired. Type /addtask to start again.");
           return NextResponse.json({ ok: true });
         }
 
         const type = session.task_data.type || "timer";
-        const taskName = session.task_data.name;
-        const reminderTime = session.task_data.reminder_time || null;
+        const unit = type === "timer" ? "minutes" : type === "counter" ? "ml" : "status";
 
-        let targetValue = 60;
-        let unit = "minutes";
+        const taskData = {
+          ...session.task_data,
+          target_value: targetVal,
+          unit,
+        };
+        await saveWizardSession(chatId, "awaiting_reminder", taskData);
 
-        if (type === "timer") {
-          targetValue = 60;
-          unit = "minutes";
-        } else if (type === "counter") {
-          targetValue = taskName.toLowerCase().includes("water") ? 5000 : 10;
-          unit = taskName.toLowerCase().includes("water") ? "ml" : "units";
-        } else if (type === "tick") {
-          targetValue = 1;
-          unit = "status";
+        const reminderPrompt =
+          `⏰ <b>Step 5 of 5: Daily Reminder Time</b>\n\n` +
+          `Task: <b>${taskData.name}</b>\n` +
+          `Goal: <b>${formatGoalDisplay(targetVal, unit)}</b> | Schedule: <b>${formatScheduleDisplay(taskData.target_days)}</b>\n\n` +
+          `What time would you like a daily reminder?\n` +
+          `<i>(e.g., "08:00 AM", "8am", "18:30", "8:30 pm")</i>\n\n` +
+          `Or tap <b>Skip</b> if you don't need a reminder:`;
+
+        const reminderKb: InlineKeyboard = [
+          [{ text: "⏭️ Skip Reminder", callback_data: "wizard_skip:reminder" }],
+          [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+        ];
+
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, reminderPrompt, reminderKb);
+        } else {
+          await sendTelegramMessage(chatId, reminderPrompt, reminderKb);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- WIZARD: Step 5 Skip Reminder -> Finalize Task Creation ---
+      if (callbackData === "wizard_skip:reminder") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.name) {
+          await sendTelegramMessage(chatId, "⚠️ Session expired. Type /addtask to start again.");
+          return NextResponse.json({ ok: true });
         }
 
+        const taskData = session.task_data;
         const newTask = await createTask({
-          name: taskName,
-          type,
-          reminder_time: reminderTime,
-          target_value: targetValue,
-          unit,
+          name: taskData.name,
+          type: taskData.type || "timer",
+          target_days: taskData.target_days || "daily",
+          target_value: taskData.target_value || (taskData.type === "timer" ? 60 : 5000),
+          unit: taskData.unit || (taskData.type === "timer" ? "minutes" : "ml"),
+          reminder_time: null,
         });
 
         await clearWizardSession(chatId);
 
         if (!newTask) {
-          await sendTelegramMessage(chatId, `⚠️ Could not create task (a task named "${taskName}" may already exist).`);
+          await sendTelegramMessage(chatId, `⚠️ Could not create task (name may already exist).`);
           return NextResponse.json({ ok: true });
         }
 
-        const typeIcon = type === "timer" ? "⏱️" : type === "counter" ? "💧" : "✅";
+        const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "✅";
         const successText =
           `🎉 <b>Task Created Successfully!</b>\n\n` +
           `📌 <b>${newTask.name}</b>\n` +
           `${typeIcon} Type: <b>${newTask.type.toUpperCase()}</b>\n` +
-          `⏰ Reminder: <b>${formatReminderTime(newTask.reminder_time)}</b>\n` +
-          `🎯 Daily Goal: <b>${newTask.target_value} ${newTask.unit}</b>\n\n` +
+          `🎯 Daily Goal: <b>${formatGoalDisplay(newTask.target_value, newTask.unit)}</b>\n` +
+          `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(newTask))}</b>\n` +
+          `⏰ Reminder: <b>None</b>\n\n` +
           `Type /tasks to view your routines anytime!`;
 
         const actionButtons: InlineKeyboard = [];
         if (newTask.type === "timer") {
           actionButtons.push([{ text: `▶️ Start ${newTask.name} Now`, callback_data: `start_task:${newTask.id}` }]);
         } else if (newTask.type === "counter") {
-          actionButtons.push([{ text: `💧 Log +500 ${newTask.unit}`, callback_data: `counter_add:${newTask.id}:500` }]);
+          actionButtons.push([{ text: `💧 Log +500ml`, callback_data: `counter_add:${newTask.id}:500` }]);
         } else if (newTask.type === "tick") {
           actionButtons.push([{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${newTask.id}` }]);
         }
-
         actionButtons.push([{ text: "📋 View Tasks", callback_data: "menu_tasks" }]);
 
         if (messageId) {
@@ -358,7 +481,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Show Task List (CLEAN - ONLY TASKS, NO ADDTASK BUTTON) ---
+      // --- Button: Show Task List (CLEAN - ONLY TASKS) ---
       if (callbackData === "menu_tasks") {
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
@@ -383,7 +506,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `⏱️ ${t.name} (${todayMins}m / ${t.target_value || 60}m)`,
+                text: `⏱️ ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -391,7 +514,7 @@ export async function POST(req: NextRequest) {
             const todayCount = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `💧 ${t.name} (${todayCount}${t.unit ? " " + t.unit : ""})`,
+                text: `💧 ${t.name} (${todayCount.toLocaleString()} / ${formatGoalDisplay(t.target_value, "ml")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -437,7 +560,8 @@ export async function POST(req: NextRequest) {
           await sendTelegramMessage(
             chatId,
             `⏱️ <b>${task.name}</b>\n` +
-              `🎯 Daily Goal: <b>${target} minutes</b>\n` +
+              `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
+              `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
               `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
               `Choose how to track this session:`,
             timerKeyboard
@@ -458,8 +582,9 @@ export async function POST(req: NextRequest) {
           await sendTelegramMessage(
             chatId,
             `💧 <b>${task.name}</b>\n` +
-              `🎯 Goal: <b>${target} ${task.unit || "ml"}</b>\n` +
-              `📊 Today: <b>${todayTotal} / ${target} ${task.unit || "ml"}</b> (${percent}%)\n\n` +
+              `🎯 Goal: <b>${formatGoalDisplay(target, "ml")}</b>\n` +
+              `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
+              `📊 Today: <b>${todayTotal.toLocaleString()} / ${target.toLocaleString()} ml</b> (${percent}%)\n\n` +
               `Log an amount:`,
             counterKeyboard
           );
@@ -482,7 +607,7 @@ export async function POST(req: NextRequest) {
             ];
             await sendTelegramMessage(
               chatId,
-              `⬜ <b>${task.name}</b>\nDaily routine for today:`,
+              `⬜ <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
               tickKeyboard
             );
           }
@@ -576,7 +701,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Stop Active Timer (With Cumulative Daily Total) ---
+      // --- Button: Stop Active Timer ---
       if (callbackData === "stop_active_timer") {
         const result = await stopActiveTimer(chatId);
         if (!result) {
@@ -634,8 +759,8 @@ export async function POST(req: NextRequest) {
         ];
 
         const text =
-          `💧 <b>${taskName}</b>: Logged +${amount}!\n` +
-          `📊 Today: <b>${total} / ${target} ${task?.unit || "ml"}</b> (${percent}%)`;
+          `💧 <b>${taskName}</b>: Logged +${amount}ml!\n` +
+          `📊 Today: <b>${total.toLocaleString()} / ${target.toLocaleString()} ml</b> (${percent}%)`;
 
         if (messageId) {
           await editTelegramMessage(chatId, messageId, text, replyKb);
@@ -736,7 +861,6 @@ export async function POST(req: NextRequest) {
         const noteContent = text.replace(/^\/(log|diary)\s*/i, "").trim();
 
         if (noteContent.length >= 3) {
-          // Explicit diary text provided directly on the command line!
           const ai = await parseUserMessageWithAI(noteContent, []);
           await logActivity({
             task_name: "Diary",
@@ -760,7 +884,6 @@ export async function POST(req: NextRequest) {
           await sendTelegramMessage(chatId, reply);
           return NextResponse.json({ ok: true });
         } else {
-          // Command sent alone -> Prompt for notes
           await saveWizardSession(chatId, "awaiting_diary_text", {});
           await sendTelegramMessage(
             chatId,
@@ -773,7 +896,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // --- Command: /addtask ---
+      // --- Command: /addtask (START 5-STEP WIZARD) ---
       if (text === "/addtask") {
         await clearWizardSession(chatId);
         const typeKeyboard: InlineKeyboard = [
@@ -786,17 +909,17 @@ export async function POST(req: NextRequest) {
         ];
 
         const promptText =
-          `➕ <b>Create a New Task (Step 1 of 4)</b>\n\n` +
-          `Choose the type of task you want to track:\n` +
-          `• ⏱️ <b>Timer:</b> For study, coding, work (tracks minutes)\n` +
-          `• 💧 <b>Counter:</b> For water, pages, reps (tracks quantity)\n` +
-          `• ✅ <b>Daily Tick:</b> For wake up, routines (done once a day)`;
+          `➕ <b>Create a New Task (Step 1 of 5)</b>\n\n` +
+          `What kind of task is this?\n` +
+          `• ⏱️ <b>Timer:</b> Study, coding, workout (time goal in hours & minutes)\n` +
+          `• 💧 <b>Counter:</b> Water, pages, reps (amount goal in ml)\n` +
+          `• ✅ <b>Daily Tick:</b> Wake up, meditation (yes/no daily completion)`;
 
         await sendTelegramMessage(chatId, promptText, typeKeyboard);
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /tasks or /task (CLEAN - ONLY TASKS, NO ADDTASK BUTTON) ---
+      // --- Command: /tasks or /task (CLEAN - ONLY TASKS) ---
       if (text === "/tasks" || text === "/task") {
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
@@ -821,7 +944,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `⏱️ ${t.name} (${todayMins}m / ${t.target_value || 60}m)`,
+                text: `⏱️ ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -829,7 +952,7 @@ export async function POST(req: NextRequest) {
             const todayCount = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `💧 ${t.name} (${todayCount}${t.unit ? " " + t.unit : ""})`,
+                text: `💧 ${t.name} (${todayCount.toLocaleString()} / ${formatGoalDisplay(t.target_value, "ml")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -857,7 +980,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /today (CLEAN - NO BULKY MAIN MENU BUTTONS) ---
+      // --- Command: /today ---
       if (text === "/today") {
         const scorecard = await buildTodayScorecard();
         await sendTelegramMessage(chatId, scorecard);
@@ -934,7 +1057,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // --- State: Step 2 User Typed Task Name ---
+        // --- State: Step 2 User Typed Task Name -> Prompt Which Days ---
         if (activeSession.step === "awaiting_name") {
           const taskName = text;
           if (taskName.length < 2) {
@@ -947,14 +1070,156 @@ export async function POST(req: NextRequest) {
           }
 
           const updatedData = { ...activeSession.task_data, name: taskName };
+          await saveWizardSession(chatId, "awaiting_days", updatedData);
+
+          const daysPrompt =
+            `📅 <b>Step 3 of 5: Active Days</b>\n\n` +
+            `Task: <b>${taskName}</b>\n\n` +
+            `Which days will you do this task?`;
+
+          const daysKb: InlineKeyboard = [
+            [{ text: "🌟 Every Day", callback_data: "wizard_days:daily" }],
+            [
+              { text: "💼 Weekdays (Mon-Fri)", callback_data: "wizard_days:weekdays" },
+              { text: "🌴 Weekends (Sat-Sun)", callback_data: "wizard_days:weekends" },
+            ],
+            [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+          ];
+
+          await sendTelegramMessage(chatId, daysPrompt, daysKb);
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Step 3 User Typed Custom Days -> Prompt Goal ---
+        if (activeSession.step === "awaiting_days") {
+          let chosenDays = text.toLowerCase().trim();
+          if (chosenDays.includes("every") || chosenDays === "daily" || chosenDays === "all") {
+            chosenDays = "daily";
+          } else if (chosenDays.includes("weekday")) {
+            chosenDays = "weekdays";
+          } else if (chosenDays.includes("weekend")) {
+            chosenDays = "weekends";
+          }
+
+          const updatedData = { ...activeSession.task_data, target_days: chosenDays };
+          await saveWizardSession(chatId, "awaiting_target", updatedData);
+
+          const type = updatedData.type || "timer";
+          let goalPrompt = "";
+          let goalKb: InlineKeyboard = [];
+
+          if (type === "timer") {
+            goalPrompt =
+              `🎯 <b>Step 4 of 5: Daily Time Goal</b>\n\n` +
+              `Task: <b>${updatedData.name}</b>\n` +
+              `Schedule: <b>${formatScheduleDisplay(chosenDays)}</b>\n\n` +
+              `How much time is your daily goal?\n` +
+              `Type in <b>hours & minutes</b>:\n` +
+              `<i>(e.g., "2 hours", "1h 30m", "45 mins", "4 hours")</i>\n\n` +
+              `Or select a quick target:`;
+
+            goalKb = [
+              [
+                { text: "30 mins", callback_data: "wizard_target:30" },
+                { text: "1 hour", callback_data: "wizard_target:60" },
+                { text: "2 hours", callback_data: "wizard_target:120" },
+              ],
+              [
+                { text: "3 hours", callback_data: "wizard_target:180" },
+                { text: "4 hours", callback_data: "wizard_target:240" },
+              ],
+              [
+                { text: "⏭️ Skip (Default: 1 hour)", callback_data: "wizard_target:60" },
+                { text: "❌ Cancel", callback_data: "wizard_cancel" },
+              ],
+            ];
+          } else if (type === "counter") {
+            goalPrompt =
+              `🎯 <b>Step 4 of 5: Daily Amount Goal</b>\n\n` +
+              `Task: <b>${updatedData.name}</b>\n` +
+              `Schedule: <b>${formatScheduleDisplay(chosenDays)}</b>\n\n` +
+              `What is your daily target in <b>ml</b>?\n` +
+              `<i>(e.g., "3000", "5000", "4000 ml", "3.5 liters")</i>\n\n` +
+              `Or select a quick target:`;
+
+            goalKb = [
+              [
+                { text: "2,000 ml", callback_data: "wizard_target:2000" },
+                { text: "3,000 ml", callback_data: "wizard_target:3000" },
+                { text: "5,000 ml", callback_data: "wizard_target:5000" },
+              ],
+              [
+                { text: "⏭️ Skip (Default: 5,000 ml)", callback_data: "wizard_target:5000" },
+                { text: "❌ Cancel", callback_data: "wizard_cancel" },
+              ],
+            ];
+          } else {
+            goalPrompt =
+              `🎯 <b>Step 4 of 5: Daily Goal</b>\n\n` +
+              `Task: <b>${updatedData.name}</b>\n` +
+              `Schedule: <b>${formatScheduleDisplay(chosenDays)}</b>\n\n` +
+              `Daily Tick habits have a target of <b>1 completion</b> per day.\n\n` +
+              `Tap below to set a reminder time:`;
+
+            goalKb = [
+              [{ text: "➡️ Next: Set Reminder", callback_data: "wizard_target:1" }],
+              [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+            ];
+          }
+
+          await sendTelegramMessage(chatId, goalPrompt, goalKb);
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Step 4 User Typed Goal -> Prompt Reminder ---
+        if (activeSession.step === "awaiting_target") {
+          const type = activeSession.task_data.type || "timer";
+          let targetValue = 60;
+          let unit = "minutes";
+
+          if (type === "timer") {
+            const parsedMins = parseTimerGoal(text);
+            if (!parsedMins || parsedMins <= 0) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ Please enter hours & minutes like <b>2 hours</b>, <b>1h 30m</b>, or <b>45 mins</b>:`,
+                [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+              );
+              return NextResponse.json({ ok: true });
+            }
+            targetValue = parsedMins;
+            unit = "minutes";
+          } else if (type === "counter") {
+            const parsedAmount = parseCounterGoal(text);
+            if (!parsedAmount || parsedAmount <= 0) {
+              await sendTelegramMessage(
+                chatId,
+                `⚠️ Please enter amount in ml like <b>3000</b>, <b>5000 ml</b>, or <b>3 liters</b>:`,
+                [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+              );
+              return NextResponse.json({ ok: true });
+            }
+            targetValue = parsedAmount;
+            unit = "ml";
+          } else {
+            targetValue = 1;
+            unit = "status";
+          }
+
+          const updatedData = {
+            ...activeSession.task_data,
+            target_value: targetValue,
+            unit,
+          };
           await saveWizardSession(chatId, "awaiting_reminder", updatedData);
 
           const reminderPrompt =
-            `⏰ <b>Step 3 of 4: Daily Reminder Time</b>\n\n` +
-            `Task: <b>${taskName}</b>\n\n` +
+            `⏰ <b>Step 5 of 5: Daily Reminder Time</b>\n\n` +
+            `Task: <b>${updatedData.name}</b>\n` +
+            `Goal: <b>${formatGoalDisplay(targetValue, unit)}</b> | Schedule: <b>${formatScheduleDisplay(updatedData.target_days)}</b>\n\n` +
             `What time would you like a daily reminder?\n` +
-            `<i>(e.g., "08:00 AM", "8am", or "18:30")</i>\n\n` +
-            `Or tap <b>Skip Reminder</b> below:`;
+            `<i>(e.g., "08:00 AM", "8am", "18:30", "8:30 pm")</i>\n\n` +
+            `Or tap <b>Skip</b> if you don't need a reminder:`;
 
           const reminderKb: InlineKeyboard = [
             [{ text: "⏭️ Skip Reminder", callback_data: "wizard_skip:reminder" }],
@@ -965,14 +1230,14 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // --- State: Step 3 User Typed Reminder Time ---
+        // --- State: Step 5 User Typed Reminder Time -> Finalize Task ---
         if (activeSession.step === "awaiting_reminder") {
           const parsedTime = parseReminderTime(text);
           if (!parsedTime) {
             await sendTelegramMessage(
               chatId,
               `⚠️ I didn't recognize that time format.\n\n` +
-                `Please try formats like <b>08:00 AM</b>, <b>8am</b>, or <b>18:30</b>.\n` +
+                `Please try like <b>08:00 AM</b>, <b>8am</b>, or <b>18:30</b>.\n` +
                 `Or tap <b>Skip Reminder</b> below:`,
               [
                 [{ text: "⏭️ Skip Reminder", callback_data: "wizard_skip:reminder" }],
@@ -982,82 +1247,14 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ ok: true });
           }
 
-          const updatedData = { ...activeSession.task_data, reminder_time: parsedTime };
-          await saveWizardSession(chatId, "awaiting_target", updatedData);
-
-          const type = updatedData.type || "timer";
-          let targetPrompt = "";
-          let skipButtonText = "⏭️ Skip Target";
-
-          if (type === "timer") {
-            targetPrompt =
-              `🎯 <b>Step 4 of 4: Daily Goal</b>\n\n` +
-              `Task: <b>${updatedData.name}</b>\n` +
-              `Reminder: <b>${formatReminderTime(parsedTime)}</b>\n\n` +
-              `How many <b>minutes</b> is your daily goal?\n` +
-              `<i>(e.g., 30, 45, 60, 120, 240)</i>\n\n` +
-              `Or tap <b>Skip</b> for default (60 mins):`;
-            skipButtonText = "⏭️ Skip (Default: 60 mins)";
-          } else if (type === "counter") {
-            targetPrompt =
-              `🎯 <b>Step 4 of 4: Daily Goal</b>\n\n` +
-              `Task: <b>${updatedData.name}</b>\n` +
-              `Reminder: <b>${formatReminderTime(parsedTime)}</b>\n\n` +
-              `What is your daily target amount?\n` +
-              `<i>(e.g., 5000 for water, 20 for pages)</i>\n\n` +
-              `Or tap <b>Skip</b> for default:`;
-            skipButtonText = "⏭️ Skip (Default: 5000)";
-          } else {
-            targetPrompt =
-              `🎯 <b>Step 4 of 4: Confirm Task</b>\n\n` +
-              `Task: <b>${updatedData.name}</b>\n` +
-              `Reminder: <b>${formatReminderTime(parsedTime)}</b>\n\n` +
-              `Daily Tick tasks are marked complete once per day.\n` +
-              `Tap below to save:`;
-            skipButtonText = "✅ Confirm & Save";
-          }
-
-          const targetKb: InlineKeyboard = [
-            [{ text: skipButtonText, callback_data: "wizard_skip:target" }],
-            [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
-          ];
-
-          await sendTelegramMessage(chatId, targetPrompt, targetKb);
-          return NextResponse.json({ ok: true });
-        }
-
-        // --- State: Step 4 User Typed Daily Target ---
-        if (activeSession.step === "awaiting_target") {
-          const num = parseInt(text.replace(/[^0-9]/g, ""), 10);
-          if (isNaN(num) || num <= 0) {
-            await sendTelegramMessage(
-              chatId,
-              `⚠️ Please enter a valid number (e.g. <b>60</b> or <b>5000</b>) or tap <b>Skip Target</b> below:`,
-              [
-                [{ text: "⏭️ Skip Target", callback_data: "wizard_skip:target" }],
-                [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
-              ]
-            );
-            return NextResponse.json({ ok: true });
-          }
-
-          const type = activeSession.task_data.type || "timer";
-          const taskName = activeSession.task_data.name!;
-          const reminderTime = activeSession.task_data.reminder_time || null;
-          const targetValue = num;
-          const unit =
-            type === "timer"
-              ? "minutes"
-              : taskName.toLowerCase().includes("water")
-              ? "ml"
-              : "units";
-
+          const taskData = activeSession.task_data;
           const newTask = await createTask({
-            name: taskName,
-            type,
-            reminder_time: reminderTime,
-            target_value: targetValue,
-            unit,
+            name: taskData.name!,
+            type: taskData.type || "timer",
+            target_days: taskData.target_days || "daily",
+            target_value: taskData.target_value || (taskData.type === "timer" ? 60 : 5000),
+            unit: taskData.unit || (taskData.type === "timer" ? "minutes" : "ml"),
+            reminder_time: parsedTime,
           });
 
           await clearWizardSession(chatId);
@@ -1065,29 +1262,29 @@ export async function POST(req: NextRequest) {
           if (!newTask) {
             await sendTelegramMessage(
               chatId,
-              `⚠️ Could not create task (a task named "${taskName}" may already exist).`
+              `⚠️ Could not create task (a task named "${taskData.name}" may already exist).`
             );
             return NextResponse.json({ ok: true });
           }
 
-          const typeIcon = type === "timer" ? "⏱️" : type === "counter" ? "💧" : "✅";
+          const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "✅";
           const successText =
             `🎉 <b>Task Created Successfully!</b>\n\n` +
             `📌 <b>${newTask.name}</b>\n` +
             `${typeIcon} Type: <b>${newTask.type.toUpperCase()}</b>\n` +
-            `⏰ Reminder: <b>${formatReminderTime(newTask.reminder_time)}</b>\n` +
-            `🎯 Daily Goal: <b>${newTask.target_value} ${newTask.unit}</b>\n\n` +
+            `🎯 Daily Goal: <b>${formatGoalDisplay(newTask.target_value, newTask.unit)}</b>\n` +
+            `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(newTask))}</b>\n` +
+            `⏰ Reminder: <b>${formatReminderTime(newTask.reminder_time)}</b>\n\n` +
             `Type /tasks to view your routines anytime!`;
 
           const actionButtons: InlineKeyboard = [];
           if (newTask.type === "timer") {
             actionButtons.push([{ text: `▶️ Start ${newTask.name} Now`, callback_data: `start_task:${newTask.id}` }]);
           } else if (newTask.type === "counter") {
-            actionButtons.push([{ text: `💧 Log +500 ${newTask.unit}`, callback_data: `counter_add:${newTask.id}:500` }]);
+            actionButtons.push([{ text: `💧 Log +500ml`, callback_data: `counter_add:${newTask.id}:500` }]);
           } else if (newTask.type === "tick") {
             actionButtons.push([{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${newTask.id}` }]);
           }
-
           actionButtons.push([{ text: "📋 View Tasks", callback_data: "menu_tasks" }]);
 
           await sendTelegramMessage(chatId, successText, actionButtons);
@@ -1125,8 +1322,8 @@ export async function POST(req: NextRequest) {
             chatId,
             `✅ <b>Created ${newTask.type.toUpperCase()} Task:</b>\n` +
               `📌 <b>${newTask.name}</b>\n` +
+              `🎯 Goal: <b>${formatGoalDisplay(newTask.target_value, newTask.unit)}</b>\n` +
               `${newTask.reminder_time ? `⏰ Reminder: ${formatReminderTime(newTask.reminder_time)}\n` : ""}` +
-              `${newTask.target_value ? `🎯 Goal: ${newTask.target_value} ${newTask.unit}\n` : ""}` +
               `\nYou can start it anytime via /tasks!`
           );
         } else {
@@ -1183,12 +1380,12 @@ export async function POST(req: NextRequest) {
         const total = await getTodayTaskTotal("Drink Water");
         await sendTelegramMessage(
           chatId,
-          `💧 <b>+${amount}ml logged!</b> Today: <b>${total}/5000ml</b>`
+          `💧 <b>+${amount}ml logged!</b> Today: <b>${total.toLocaleString()}/5,000ml</b>`
         );
         return NextResponse.json({ ok: true });
       }
 
-      // CASUAL CHAT / QUESTIONS / TYPOS (CLEAN - NO BULKY BUTTONS, NO ACCIDENTAL SAVES)
+      // CASUAL CHAT / QUESTIONS / TYPOS (CLEAN)
       await sendTelegramMessage(
         chatId,
         ai.replyMessage ||
