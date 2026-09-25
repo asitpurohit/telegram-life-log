@@ -164,12 +164,18 @@ function formatGoalDisplay(targetValue?: number | null, unit?: string | null): s
   return `${targetValue.toLocaleString()} ${cleanUnit || "units"}`;
 }
 
-// Parse schedule days: supports "daily", or comma-separated days e.g. "Mon, Wed, Fri"
-function parseScheduleDays(input: string): string {
+// Parse schedule days: supports "daily", or comma/dot-separated days e.g. "Mon, Wed, Fri"
+function parseScheduleDays(input: string): string | null {
   const clean = input.trim();
   const lower = clean.toLowerCase();
 
-  if (lower === "daily" || lower.includes("every") || lower === "all") {
+  if (
+    lower === "daily" ||
+    lower === "every day" ||
+    lower === "everyday" ||
+    lower === "all" ||
+    lower === "all days"
+  ) {
     return "daily";
   }
   if (lower === "weekdays" || lower === "weekday") {
@@ -189,31 +195,29 @@ function parseScheduleDays(input: string): string {
     sun: "Sun", sunday: "Sun", sundays: "Sun",
   };
 
-  const parts = clean
-    .split(",")
-    .map((p) => p.trim())
+  // Split by comma, dot, slash, or whitespace
+  const rawParts = clean
+    .split(/[,.\s/]+/)
+    .map((p) => p.trim().toLowerCase())
     .filter(Boolean);
 
-  if (parts.length > 0) {
-    const recognizedDays: string[] = [];
-    for (const part of parts) {
-      const partLower = part.toLowerCase();
-      if (dayMap[partLower]) {
-        if (!recognizedDays.includes(dayMap[partLower])) {
-          recognizedDays.push(dayMap[partLower]);
-        }
-      } else {
-        const formatted = part.charAt(0).toUpperCase() + part.slice(1);
-        if (!recognizedDays.includes(formatted)) {
-          recognizedDays.push(formatted);
-        }
-      }
+  if (rawParts.length === 0) return null;
+
+  const recognizedDays: string[] = [];
+  for (const part of rawParts) {
+    if (!dayMap[part]) {
+      // Reject any unrecognized token (e.g. typos, junk words)
+      return null;
     }
-    if (recognizedDays.length === 7) return "daily";
-    if (recognizedDays.length > 0) return recognizedDays.join(", ");
+    const standardName = dayMap[part];
+    if (!recognizedDays.includes(standardName)) {
+      recognizedDays.push(standardName);
+    }
   }
 
-  return clean;
+  if (recognizedDays.length === 7) return "daily";
+  if (recognizedDays.length > 0) return recognizedDays.join(", ");
+  return null;
 }
 
 // Build a clean, unbloated Today Scorecard
@@ -1095,11 +1099,21 @@ export async function POST(req: NextRequest) {
 
         // --- State: Step 1 Name Input -> Branch by Task Type ---
         if (activeSession.step === "awaiting_name") {
-          const taskName = text;
+          const taskName = text.trim();
           if (taskName.length < 2) {
             await sendTelegramMessage(
               chatId,
-              "⚠️ Please provide a name with at least 2 characters:",
+              "⚠️ Please provide a task name with at least 2 characters:",
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const existing = await findTaskByName(taskName);
+          if (existing && existing.name.toLowerCase() === taskName.toLowerCase()) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ A task named <b>"${existing.name}"</b> already exists.\n\nPlease choose a different name:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
             return NextResponse.json({ ok: true });
@@ -1303,6 +1317,23 @@ export async function POST(req: NextRequest) {
         // --- State: User Typed Custom Days -> Finalize & Save Task ---
         if (activeSession.step === "awaiting_days") {
           const chosenDays = parseScheduleDays(text);
+          if (!chosenDays) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ <b>Invalid Days of Week</b>\n\n` +
+                `I couldn't recognize those days.\n` +
+                `Please type valid days separated by comma, like:\n` +
+                `• <b>Mon, Wed, Fri</b>\n` +
+                `• <b>Saturday, Sunday</b>\n` +
+                `• <b>Tue, Thu</b>\n\n` +
+                `Or tap <b>[ 🌟 Daily (Every Day) ]</b> below:`,
+              [
+                [{ text: "🌟 Daily (Every Day)", callback_data: "wizard_days:daily" }],
+                [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+              ]
+            );
+            return NextResponse.json({ ok: true });
+          }
 
           const taskData = activeSession.task_data;
           const newTask = await createTask({
