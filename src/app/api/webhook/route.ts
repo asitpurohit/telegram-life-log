@@ -1330,9 +1330,6 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Any typed message retires the previous interactive keyboard
-      await retireTrackedUi(chatId);
-
       // --- Command: /cancel ---
       if (text === "/cancel") {
         await clearWizardSessionAndRetirePrompt(chatId);
