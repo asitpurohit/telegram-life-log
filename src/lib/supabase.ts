@@ -273,29 +273,6 @@ export async function getWizardSession(chatId: string | number): Promise<WizardS
     if (!error && data) {
       return data as WizardSession;
     }
-
-    // Fallback if not found in wizard_sessions (e.g. while RLS policy is being applied)
-    const { data: logData } = await supabase
-      .from("logs")
-      .select("*")
-      .eq("task_name", "__wizard_session__")
-      .ilike("notes", `%"chat_id":"${cId}"%`)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (logData && logData.notes) {
-      try {
-        const parsed = JSON.parse(logData.notes);
-        return {
-          chat_id: parsed.chat_id,
-          step: parsed.step,
-          task_data: parsed.task_data,
-        };
-      } catch {
-        return null;
-      }
-    }
   } catch (err) {
     console.error("Error fetching wizard session:", err);
   }
@@ -318,53 +295,33 @@ export async function saveWizardSession(
         updated_at: new Date().toISOString(),
       });
 
-    if (!error) return true;
-
-    // Resilient fallback to logs table if RLS blocks or error
     if (error) {
-      await supabase
-        .from("logs")
-        .delete()
-        .eq("task_name", "__wizard_session__")
-        .ilike("notes", `%"chat_id":"${cId}"%`);
-
-      const { error: insertErr } = await supabase.from("logs").insert([
-        {
-          task_name: "__wizard_session__",
-          value: 0,
-          notes: JSON.stringify({
-            chat_id: cId,
-            step,
-            task_data: taskData,
-          }),
-        },
-      ]);
-
-      return !insertErr;
+      console.error("Error saving wizard session:", error);
+      return false;
     }
+    return true;
   } catch (err) {
     console.error("Error saving wizard session:", err);
+    return false;
   }
-  return false;
 }
 
 export async function clearWizardSession(chatId: string | number): Promise<boolean> {
   const cId = String(chatId);
   try {
-    await supabase.from("wizard_sessions").delete().eq("chat_id", cId);
-  } catch {
-    // Ignore error
-  }
-
-  try {
-    await supabase
-      .from("logs")
+    const { error } = await supabase
+      .from("wizard_sessions")
       .delete()
-      .eq("task_name", "__wizard_session__")
-      .ilike("notes", `%"chat_id":"${cId}"%`);
+      .eq("chat_id", cId);
+
+    if (error) {
+      console.error("Error clearing wizard session:", error);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.error("Error clearing wizard session:", err);
+    return false;
   }
-  return true;
 }
 
