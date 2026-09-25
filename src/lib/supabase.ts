@@ -39,12 +39,45 @@ export async function getTaskById(taskId: string): Promise<Task | null> {
   return data;
 }
 
+function escapeLikePattern(text: string): string {
+  return text.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 export async function findTaskByName(name: string): Promise<Task | null> {
+  const escaped = escapeLikePattern(name);
+
+  // Prefer an exact (case-insensitive) match before falling back to fuzzy search,
+  // so "phy" resolves to "Phy" instead of "Physics".
+  const { data: exactMatch, error: exactError } = await supabase
+    .from("tasks")
+    .select("*")
+    .ilike("name", escaped)
+    .eq("is_archived", false)
+    .limit(1)
+    .maybeSingle();
+
+  if (!exactError && exactMatch) return exactMatch;
+
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
-    .ilike("name", `%${name}%`)
+    .ilike("name", `%${escaped}%`)
     .eq("is_archived", false)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return null;
+  return data;
+}
+
+// Case-insensitive EXACT name check for duplicate detection.
+// Archived rows are included because the DB UNIQUE(name) constraint counts them.
+export async function taskNameExists(name: string): Promise<Task | null> {
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .ilike("name", escapeLikePattern(name))
     .limit(1)
     .maybeSingle();
 

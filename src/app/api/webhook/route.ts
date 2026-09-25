@@ -9,6 +9,7 @@ import {
   getActiveTasks,
   getTaskById,
   findTaskByName,
+  taskNameExists,
   createTask,
   startActiveTimer,
   getActiveTimer,
@@ -1109,8 +1110,8 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ ok: true });
           }
 
-          const existing = await findTaskByName(taskName);
-          if (existing && existing.name.toLowerCase() === taskName.toLowerCase()) {
+          const existing = await taskNameExists(taskName);
+          if (existing) {
             await sendTelegramMessage(
               chatId,
               `⚠️ A task named <b>"${existing.name}"</b> already exists.\n\nPlease choose a different name:`,
