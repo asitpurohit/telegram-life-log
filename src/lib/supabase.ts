@@ -522,6 +522,20 @@ export async function getTimerMessage(chatId: string | number): Promise<number |
   return getTrackedMessage(TIMER_MSG_PREFIX, chatId);
 }
 
+// Heartbeat so we can verify the external cron is actually reaching the app
+export async function recordCronHeartbeat(source: string): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `__cron__:${source}`,
+      step: "ui_cron",
+      task_data: { at: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error recording cron heartbeat:", error);
+}
+
 const ACTIVE_TASK_PREFIX = "__task__:";
 
 export async function setActiveTask(chatId: string | number, taskId: string | null): Promise<void> {
