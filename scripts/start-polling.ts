@@ -6,6 +6,7 @@
 
 import { POST } from "../src/app/api/webhook/route";
 import { refreshRunningTimerMessages } from "../src/lib/timerRuntime";
+import { sendDueReminders } from "../src/lib/reminders";
 import { setBotCommands } from "../src/lib/telegram";
 import { NextRequest } from "next/server";
 
@@ -31,6 +32,13 @@ async function startPolling() {
       console.error("Timer refresh error:", err.message)
     );
   }, 5000);
+
+  // Send due reminders every 30s (deduped per minute so nothing is sent twice)
+  setInterval(() => {
+    sendDueReminders().catch((err) =>
+      console.error("Reminder check error:", err.message)
+    );
+  }, 30000);
 
   const meRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe`);
   const me = await meRes.json();

@@ -50,6 +50,7 @@ import {
   clearTimerPaused,
   getTimerPaused,
 } from "@/lib/timerRuntime";
+import { localDateLabel, localTimeString } from "@/lib/time";
 import { TaskType, Task, WizardSession } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -439,11 +440,7 @@ function parseScheduleDays(input: string): string | null {
 
 // Build a clean, unbloated Today Scorecard
 async function buildTodayScorecard(): Promise<string> {
-  const todayStr = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    day: "numeric",
-    month: "short",
-  });
+  const todayStr = localDateLabel();
 
   const tasks = await getActiveTasks();
   let text = `📊 <b>Today's Scorecard</b> — ${todayStr}\n\n`;
@@ -478,12 +475,7 @@ async function buildTodayScorecard(): Promise<string> {
   if (diaryLogs.length > 0) {
     text += `\n📖 <b>Today's Diary:</b>\n`;
     for (const d of diaryLogs) {
-      const timeStr = d.created_at
-        ? new Date(d.created_at).toLocaleTimeString("en-US", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        : "";
+      const timeStr = d.created_at ? localTimeString(new Date(d.created_at)) : "";
       const moodBadge = d.mood ? `[${formatMoodDisplay(d.mood)}] ` : "";
       text += `• ${timeStr ? `<i>[${timeStr}]</i> ` : ""}${moodBadge}${d.summary || d.notes}\n`;
     }
@@ -594,7 +586,7 @@ export async function POST(req: NextRequest) {
         ];
 
         if (messageId) {
-          await editTelegramMessage(
+          await editUiMessage(
             chatId,
             messageId,
             `📖 <b>Diary Saved for Today!</b>\n\n` +
@@ -1313,7 +1305,7 @@ export async function POST(req: NextRequest) {
             task_id: taskId,
             task_name: taskName,
             value: 1,
-            notes: `Completed at ${new Date().toLocaleTimeString()}`,
+            notes: `Completed at ${localTimeString(new Date(), true)}`,
           });
         }
         await deduplicateTodayTickLogs(taskId);
@@ -1460,7 +1452,7 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
-          await sendTelegramMessage(chatId, reply, moodKb);
+          await sendUiMessage(chatId, reply, moodKb);
           return NextResponse.json({ ok: true });
         } else {
           await sendWizardPrompt(
@@ -1681,7 +1673,7 @@ export async function POST(req: NextRequest) {
             ],
           ];
 
-          await sendTelegramMessage(chatId, reply, moodKb);
+          await sendUiMessage(chatId, reply, moodKb);
           if (diaryPromptId) {
             await removeInlineKeyboard(chatId, diaryPromptId);
           }

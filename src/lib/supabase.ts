@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { Task, Log, ActiveTimer, WizardSession } from "./types";
+import { localDateString, localTimeString, localWeekday } from "./time";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co";
 const supabaseKey = 
@@ -162,13 +163,11 @@ export function isTaskScheduledForToday(targetDays?: string | null): boolean {
   if (!targetDays || targetDays === "daily" || targetDays.toLowerCase() === "every day") {
     return true;
   }
-  const now = new Date();
-  const dayNameShort = now.toLocaleDateString("en-US", { weekday: "short" });
-  const dayNameLong = now.toLocaleDateString("en-US", { weekday: "long" });
-  const dayOfWeek = now.getDay();
+  const { short: dayNameShort, long: dayNameLong } = localWeekday();
+  const dayOfWeekShort = dayNameShort.toLowerCase();
 
-  if (targetDays === "weekdays") return dayOfWeek >= 1 && dayOfWeek <= 5;
-  if (targetDays === "weekends") return dayOfWeek === 0 || dayOfWeek === 6;
+  if (targetDays === "weekdays") return ["mon", "tue", "wed", "thu", "fri"].includes(dayOfWeekShort);
+  if (targetDays === "weekends") return ["sat", "sun"].includes(dayOfWeekShort);
 
   const days = targetDays.split(",").map((d) => d.trim().toLowerCase());
   return (
@@ -268,7 +267,7 @@ export async function stopActiveTimer(
     task_id: active.task_id,
     task_name: active.task_name,
     value: durationMinutes,
-    notes: `Timer session from ${startedAt.toLocaleTimeString()} to ${endedAt.toLocaleTimeString()}`,
+    notes: `Timer session from ${localTimeString(startedAt, true)} to ${localTimeString(endedAt, true)}`,
   });
 
   // Remove from active timers
@@ -290,7 +289,7 @@ export async function logActivity(log: Log): Promise<Log | null> {
   const insertPayload: any = {
     task_id: log.task_id || null,
     task_name: log.task_name,
-    log_date: log.log_date || new Date().toISOString().split("T")[0],
+    log_date: log.log_date || localDateString(),
     value: log.value ?? 1,
     notes: log.notes || null,
   };
@@ -341,7 +340,7 @@ export function formatMoodDisplay(mood?: string | null): string {
 }
 
 export async function getTodayTaskTotal(taskName: string): Promise<number> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { data, error } = await supabase
     .from("logs")
     .select("value")
@@ -353,7 +352,7 @@ export async function getTodayTaskTotal(taskName: string): Promise<number> {
 }
 
 export async function getTodayLogs(): Promise<Log[]> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { data, error } = await supabase
     .from("logs")
     .select("*")
@@ -365,7 +364,7 @@ export async function getTodayLogs(): Promise<Log[]> {
 }
 
 export async function isTaskCompletedToday(taskId: string): Promise<boolean> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { data, error } = await supabase
     .from("logs")
     .select("id, value")
@@ -379,7 +378,7 @@ export async function isTaskCompletedToday(taskId: string): Promise<boolean> {
 }
 
 export async function getTodayLogForTask(taskId: string): Promise<Log | null> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { data, error } = await supabase
     .from("logs")
     .select("*")
@@ -394,7 +393,7 @@ export async function getTodayLogForTask(taskId: string): Promise<Log | null> {
 }
 
 export async function untickTaskToday(taskId: string): Promise<boolean> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { error } = await supabase
     .from("logs")
     .delete()
@@ -405,7 +404,7 @@ export async function untickTaskToday(taskId: string): Promise<boolean> {
 }
 
 export async function deduplicateTodayTickLogs(taskId: string): Promise<void> {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateString();
   const { data } = await supabase
     .from("logs")
     .select("id, created_at")

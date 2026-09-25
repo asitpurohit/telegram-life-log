@@ -1,5 +1,6 @@
 import { getAllActiveTimers, getTimerMessage } from "./supabase";
 import { editTelegramMessage, InlineKeyboard } from "./telegram";
+import { localTimeString } from "./time";
 
 // In-memory pause state (per chat). Pausing writes NOTHING to the database:
 // the paused timestamp travels inside the button callback data, and this map
@@ -35,7 +36,7 @@ export function buildTimerView(
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(0, Math.floor((endMs - new Date(startedAtIso).getTime()) / 1000));
   const isPaused = pausedAtMs > 0;
-  const startedTime = new Date(startedAtIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const startedTime = localTimeString(new Date(startedAtIso));
 
   const text = isPaused
     ? `⏸️ <b>${taskName}</b> — Paused\n` +
