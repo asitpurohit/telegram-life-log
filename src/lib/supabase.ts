@@ -228,8 +228,30 @@ export async function getActiveTimer(chatId: string | number): Promise<ActiveTim
   return data;
 }
 
-export async function stopActiveTimer(chatId: string | number): Promise<{
+export async function getAllActiveTimers(): Promise<ActiveTimer[]> {
+  const { data, error } = await supabase.from("active_timers").select("*");
+  if (error) return [];
+  return data || [];
+}
+
+export async function updateActiveTimerStart(
+  chatId: string | number,
+  startedAtIso: string
+): Promise<boolean> {
+  const { error } = await supabase
+    .from("active_timers")
+    .update({ started_at: startedAtIso })
+    .eq("chat_id", String(chatId));
+
+  return !error;
+}
+
+export async function stopActiveTimer(
+  chatId: string | number,
+  endTimeMs?: number
+): Promise<{
   taskName: string;
+  durationSeconds: number;
   durationMinutes: number;
   taskId: string;
 } | null> {
@@ -237,10 +259,11 @@ export async function stopActiveTimer(chatId: string | number): Promise<{
   if (!active) return null;
 
   const startedAt = new Date(active.started_at);
-  const endedAt = new Date();
-  const durationMinutes = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 60000));
+  const endedAt = new Date(endTimeMs ?? Date.now());
+  const durationSeconds = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+  const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
-  // Log completed session to logs table
+  // Log completed session to logs table (the ONLY database write for a timer)
   await logActivity({
     task_id: active.task_id,
     task_name: active.task_name,
@@ -253,6 +276,7 @@ export async function stopActiveTimer(chatId: string | number): Promise<{
 
   return {
     taskName: active.task_name,
+    durationSeconds,
     durationMinutes,
     taskId: active.task_id,
   };
@@ -420,30 +444,51 @@ export async function saveWizardSession(
 // ==========================================
 
 const UI_TRACK_PREFIX = "__ui__:";
+const TIMER_MSG_PREFIX = "__timer__:";
 
-export async function trackUiMessage(chatId: string | number, messageId: number): Promise<void> {
+async function setTrackedMessage(
+  prefix: string,
+  chatId: string | number,
+  messageId: number
+): Promise<void> {
   const { error } = await supabase
     .from("wizard_sessions")
     .upsert({
-      chat_id: `${UI_TRACK_PREFIX}${chatId}`,
+      chat_id: `${prefix}${chatId}`,
       step: "ui_menu",
       task_data: { promptMessageId: messageId },
       updated_at: new Date().toISOString(),
     });
 
-  if (error) console.error("Error tracking UI message:", error);
+  if (error) console.error("Error tracking message:", error);
 }
 
-export async function getTrackedUiMessage(chatId: string | number): Promise<number | null> {
+async function getTrackedMessage(prefix: string, chatId: string | number): Promise<number | null> {
   const { data, error } = await supabase
     .from("wizard_sessions")
     .select("task_data")
-    .eq("chat_id", `${UI_TRACK_PREFIX}${chatId}`)
+    .eq("chat_id", `${prefix}${chatId}`)
     .maybeSingle();
 
   if (error || !data) return null;
   const messageId = (data.task_data as { promptMessageId?: unknown } | null)?.promptMessageId;
   return typeof messageId === "number" ? messageId : null;
+}
+
+export async function trackUiMessage(chatId: string | number, messageId: number): Promise<void> {
+  return setTrackedMessage(UI_TRACK_PREFIX, chatId, messageId);
+}
+
+export async function getTrackedUiMessage(chatId: string | number): Promise<number | null> {
+  return getTrackedMessage(UI_TRACK_PREFIX, chatId);
+}
+
+export async function trackTimerMessage(chatId: string | number, messageId: number): Promise<void> {
+  return setTrackedMessage(TIMER_MSG_PREFIX, chatId, messageId);
+}
+
+export async function getTimerMessage(chatId: string | number): Promise<number | null> {
+  return getTrackedMessage(TIMER_MSG_PREFIX, chatId);
 }
 
 export async function clearWizardSession(chatId: string | number): Promise<boolean> {

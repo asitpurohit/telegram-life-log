@@ -16,6 +16,7 @@ import {
   archiveTask,
   startActiveTimer,
   getActiveTimer,
+  updateActiveTimerStart,
   stopActiveTimer,
   logActivity,
   getTodayTaskTotal,
@@ -25,6 +26,8 @@ import {
   clearWizardSession,
   trackUiMessage,
   getTrackedUiMessage,
+  trackTimerMessage,
+  getTimerMessage,
   isTaskCompletedToday,
   untickTaskToday,
   deduplicateTodayTickLogs,
@@ -33,6 +36,13 @@ import {
   isTaskScheduledForToday,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
+import {
+  buildTimerView,
+  formatDuration,
+  setTimerPaused,
+  clearTimerPaused,
+  getTimerPaused,
+} from "@/lib/timerRuntime";
 import { TaskType, Task, WizardSession } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +53,16 @@ export const dynamic = "force-dynamic";
 // prompt stores its message id: stale taps are rejected and the previous
 // prompt's keyboard is removed as soon as the flow advances.
 // =========================================================================
+
+function isTimerCallback(data: string): boolean {
+  return (
+    data === "timer_pause" ||
+    data === "stop_active_timer" ||
+    data.startsWith("timer_resume:") ||
+    data.startsWith("timer_refresh:") ||
+    data.startsWith("timer_stop:")
+  );
+}
 
 function isWizardCallback(data: string): boolean {
   return (
@@ -443,6 +463,15 @@ export async function POST(req: NextRequest) {
           await answerCallbackQuery(
             callbackQuery.id,
             "⚠️ This option is outdated — please use the latest message."
+          );
+          return NextResponse.json({ ok: true });
+        }
+      } else if (isTimerCallback(callbackData)) {
+        const trackedTimerId = await getTimerMessage(chatId);
+        if (trackedTimerId && messageId && trackedTimerId !== messageId) {
+          await answerCallbackQuery(
+            callbackQuery.id,
+            "⚠️ This timer is outdated — please use the latest timer message."
           );
           return NextResponse.json({ ok: true });
         }
@@ -1094,29 +1123,100 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Start Timer ---
+      // --- Button: Start Timer (live stopwatch) ---
       if (callbackData.startsWith("start_task:")) {
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
 
-        await startActiveTimer(chatId, taskId, taskName);
+        const active = await startActiveTimer(chatId, taskId, taskName);
+        clearTimerPaused(chatId);
 
-        const stopKeyboard: InlineKeyboard = [
-          [{ text: `⏹️ End & Log ${taskName}`, callback_data: "stop_active_timer" }],
-        ];
+        const startedAt = active?.started_at || new Date().toISOString();
+        const view = buildTimerView(taskName, startedAt, 0);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
 
-        const text = `⏱️ <b>${taskName}</b> timer started at <b>${new Date().toLocaleTimeString()}</b>!\nFocus mode on. Tap Stop when finished:`;
-
-        await respondUi(chatId, messageId, text, stopKeyboard);
+        const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
+        if (timerMsgId) {
+          await trackTimerMessage(chatId, timerMsgId);
+        }
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Stop Active Timer ---
-      if (callbackData === "stop_active_timer") {
-        const result = await stopActiveTimer(chatId);
+      // --- Timer: Pause (local only, nothing written to the database) ---
+      if (callbackData === "timer_pause") {
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pausedAt = Date.now();
+        setTimerPaused(chatId, pausedAt);
+
+        const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Timer: Resume (paused time is excluded from the final total) ---
+      if (callbackData.startsWith("timer_resume:")) {
+        const pausedAt = parseInt(callbackData.split(":")[1], 10);
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pausedDurationMs = Math.max(0, Date.now() - pausedAt);
+        const shiftedStart = new Date(
+          new Date(active.started_at).getTime() + pausedDurationMs
+        ).toISOString();
+        await updateActiveTimerStart(chatId, shiftedStart);
+        clearTimerPaused(chatId);
+
+        const view = buildTimerView(active.task_name, shiftedStart, 0);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Timer: Refresh Elapsed Time ---
+      if (callbackData.startsWith("timer_refresh:")) {
+        const pausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Timer: Stop & Log (paused time excluded; only write of the session) ---
+      if (callbackData.startsWith("timer_stop:") || callbackData === "stop_active_timer") {
+        const pausedAt = callbackData.startsWith("timer_stop:")
+          ? parseInt(callbackData.split(":")[1], 10) || 0
+          : getTimerPaused(chatId);
+
+        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
+        clearTimerPaused(chatId);
+
         if (!result) {
-          await sendTelegramMessage(chatId, "⏱️ No active timer was running.");
+          await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);
           return NextResponse.json({ ok: true });
         }
 
@@ -1132,9 +1232,9 @@ export async function POST(req: NextRequest) {
 
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
-          `⏱️ This Session: <b>+${result.durationMinutes} minutes</b>\n` +
+          `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
-          `Saved cleanly to your database!`;
+          `Saved to your log!`;
 
         await respondUi(chatId, messageId, text, stopKb);
         return NextResponse.json({ ok: true });
@@ -1387,15 +1487,14 @@ export async function POST(req: NextRequest) {
       if (text === "/status") {
         const active = await getActiveTimer(chatId);
         if (!active) {
-          await sendTelegramMessage(chatId, "⏱️ <i>No timer currently running.</i>");
+          await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
         } else {
-          const startedAt = new Date(active.started_at);
-          const elapsed = Math.round((Date.now() - startedAt.getTime()) / 60000);
-          await sendUiMessage(
-            chatId,
-            `⏱️ Running: <b>${active.task_name}</b> for <b>${elapsed} mins</b>\n(Started: ${startedAt.toLocaleTimeString()})`,
-            [[{ text: "⏹️ End & Log", callback_data: "stop_active_timer" }]]
-          );
+          const pausedAt = getTimerPaused(chatId);
+          const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+          const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
+          if (sentId) {
+            await trackTimerMessage(chatId, sentId);
+          }
         }
         return NextResponse.json({ ok: true });
       }
@@ -1930,30 +2029,35 @@ export async function POST(req: NextRequest) {
         const taskId = matchedTask ? matchedTask.id : "ad-hoc";
         const taskName = matchedTask ? matchedTask.name : targetName;
 
-        await startActiveTimer(chatId, taskId, taskName);
-        await sendTelegramMessage(
-          chatId,
-          `⏱️ <b>${taskName}</b> timer started at <b>${new Date().toLocaleTimeString()}</b>!\nFocus mode on:`,
-          [[{ text: `⏹️ End & Log ${taskName}`, callback_data: "stop_active_timer" }]]
-        );
+        const active = await startActiveTimer(chatId, taskId, taskName);
+        clearTimerPaused(chatId);
+
+        const startedAt = active?.started_at || new Date().toISOString();
+        const view = buildTimerView(taskName, startedAt, 0);
+        const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
+        if (sentId) {
+          await trackTimerMessage(chatId, sentId);
+        }
         return NextResponse.json({ ok: true });
       }
 
       // AI Intent: STOP TIMER
       if (ai.intent === "STOP_TIMER") {
-        const result = await stopActiveTimer(chatId);
+        const pausedAt = getTimerPaused(chatId);
+        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
+        clearTimerPaused(chatId);
         if (!result) {
-          await sendTelegramMessage(chatId, "⏱️ No active timer was running.");
+          await sendUiMessage(chatId, "⏱️ No active timer was running.");
         } else {
           const task = await findTaskByName(result.taskName);
           const totalToday = await getTodayTaskTotal(result.taskName);
           const target = task?.target_value || 60;
           const percent = Math.round((totalToday / target) * 100);
 
-          await sendTelegramMessage(
+          await sendUiMessage(
             chatId,
             `🎉 <b>${result.taskName}</b> finished!\n` +
-              `⏱️ This Session: <b>+${result.durationMinutes} mins</b>\n` +
+              `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
               `📊 Today's Total: <b>${totalToday} / ${target} mins</b> (${percent}% of goal)`
           );
         }

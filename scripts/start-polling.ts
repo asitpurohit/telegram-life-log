@@ -5,6 +5,7 @@
  */
 
 import { POST } from "../src/app/api/webhook/route";
+import { refreshRunningTimerMessages } from "../src/lib/timerRuntime";
 import { NextRequest } from "next/server";
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -22,6 +23,13 @@ async function startPolling() {
   // First, delete any existing webhook so polling can receive updates
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook`);
   console.log("✅ Webhook cleared for live local polling.");
+
+  // Keep running stopwatch messages ticking while this process stays alive
+  setInterval(() => {
+    refreshRunningTimerMessages().catch((err) =>
+      console.error("Timer refresh error:", err.message)
+    );
+  }, 10000);
 
   const meRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe`);
   const me = await meRes.json();
