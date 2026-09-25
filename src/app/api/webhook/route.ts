@@ -42,7 +42,7 @@ import {
   updateDiaryMood,
   formatMoodDisplay,
 } from "@/lib/supabase";
-import { parseUserMessageWithAI } from "@/lib/ai";
+import { parseUserMessageWithAI, isQuickGibberishCheck } from "@/lib/ai";
 import {
   buildTimerView,
   formatDuration,
@@ -1406,6 +1406,17 @@ export async function POST(req: NextRequest) {
 
         if (noteContent.length >= 3) {
           const ai = await parseUserMessageWithAI(noteContent, []);
+
+          if (!ai.isMeaningful) {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ <b>Meaningless or unclear log detected.</b>\n\n` +
+                `I couldn't understand that reflection. Please share what you worked on, learned, or how your day went:\n\n` +
+                `<i>(e.g., "Studied physics for 2 hours, finished chapter 3, feeling productive!")</i>`
+            );
+            return NextResponse.json({ ok: true });
+          }
+
           const mood = ai.diary?.mood || "okay";
           const summary = ai.diary?.summary || noteContent.slice(0, 120);
 
@@ -1609,8 +1620,22 @@ export async function POST(req: NextRequest) {
         // --- State: User Answering Diary Prompt ---
         if (activeSession.step === "awaiting_diary_text") {
           const diaryPromptId = activeSession.task_data.promptMessageId;
-          await clearWizardSession(chatId);
           const ai = await parseUserMessageWithAI(text, []);
+
+          if (!ai.isMeaningful) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_diary_text",
+              activeSession.task_data,
+              `⚠️ <b>That doesn't look like a meaningful log.</b>\n\n` +
+                `I couldn't understand that reflection. Please share what you worked on, learned, or how your day went:\n\n` +
+                `<i>(e.g., "Studied physics for 2 hours and finished chapter 3, feeling productive!")</i>`,
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          await clearWizardSession(chatId);
           const mood = ai.diary?.mood || "okay";
           const summary = ai.diary?.summary || text.slice(0, 120);
 
@@ -1732,9 +1757,18 @@ export async function POST(req: NextRequest) {
 
           if (activeSession.step === "awaiting_edit_name") {
             const newName = text.trim();
-            if (newName.length < 2) {
-              await failEdit("⚠️ Please provide a name with at least 2 characters:");
+            if (newName.length < 2 || isQuickGibberishCheck(newName)) {
+              await failEdit("⚠️ Please provide a clear, valid name with at least 2 characters:");
               return NextResponse.json({ ok: true });
+            }
+            if (newName.length >= 6) {
+              const aiCheck = await parseUserMessageWithAI(newName, []);
+              if (!aiCheck.isMeaningful) {
+                await failEdit(
+                  `⚠️ That doesn't look like a valid task name.\n\nPlease choose a clear name like <b>Physics Study</b> or <b>Reading</b>:`
+                );
+                return NextResponse.json({ ok: true });
+              }
             }
             const existing = await taskNameExists(newName);
             if (existing && existing.id !== task.id && !existing.is_archived) {
@@ -1805,15 +1839,29 @@ export async function POST(req: NextRequest) {
         // --- State: Step 1 Name Input -> Branch by Task Type ---
         if (activeSession.step === "awaiting_name") {
           const taskName = text.trim();
-          if (taskName.length < 2) {
+          if (taskName.length < 2 || isQuickGibberishCheck(taskName)) {
             await sendWizardPrompt(
               chatId,
               "awaiting_name",
               activeSession.task_data,
-              "⚠️ Please provide a task name with at least 2 characters:",
+              "⚠️ Please provide a clear, valid task name with at least 2 characters (e.g. <b>Physics Study</b>, <b>Reading</b>):",
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
             return NextResponse.json({ ok: true });
+          }
+
+          if (taskName.length >= 6) {
+            const aiCheck = await parseUserMessageWithAI(taskName, []);
+            if (!aiCheck.isMeaningful) {
+              await sendWizardPrompt(
+                chatId,
+                "awaiting_name",
+                activeSession.task_data,
+                "⚠️ That doesn't look like a valid task name.\n\nPlease enter a clear name like <b>Physics Study</b>, <b>Work</b>, or <b>Reading</b>:",
+                [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+              );
+              return NextResponse.json({ ok: true });
+            }
           }
 
           const existing = await taskNameExists(taskName);
@@ -2144,6 +2192,14 @@ export async function POST(req: NextRequest) {
       const taskNames = activeTasks.map((t) => t.name);
 
       const ai = await parseUserMessageWithAI(text, taskNames);
+
+      // Silently delete or ignore random keyboard mash / meaningless messages
+      if (!ai.isMeaningful) {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
 
       // AI Intent: CREATE A TASK VIA TEXT (e.g. "Add task: Read books")
       if (ai.intent === "CREATE_TASK" && ai.task) {

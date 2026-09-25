@@ -5,6 +5,8 @@ const genAI = new GoogleGenerativeAI(apiKey);
 
 export interface AIParsedIntent {
   intent: "CREATE_TASK" | "START_TIMER" | "STOP_TIMER" | "ADD_WATER" | "DIARY_ENTRY" | "QUERY" | "UNKNOWN";
+  isMeaningful: boolean; // true if text is meaningful human reflection/activity/query; false if gibberish, keyboard mash, random nonsense, abrupt noise, or accidental spam
+  reason?: string;
   task?: {
     name: string;
     type: "timer" | "counter" | "tick";
@@ -25,16 +27,33 @@ export interface AIParsedIntent {
   replyMessage?: string;
 }
 
+export function isQuickGibberishCheck(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return true;
+  // Non-alphanumeric only (e.g. "...", "???", "!@#$")
+  if (/^[^a-zA-Z0-9]+$/.test(t)) return true;
+  // Repeated single character 4+ times (e.g. "aaaaa", "zzzzz")
+  if (/(.)\1{3,}/i.test(t)) return true;
+  return false;
+}
+
 export async function parseUserMessageWithAI(
   userText: string,
   existingTaskNames: string[] = []
 ): Promise<AIParsedIntent> {
+  if (isQuickGibberishCheck(userText)) {
+    return {
+      intent: "UNKNOWN",
+      isMeaningful: false,
+      reason: "Text consists of repetitive characters or symbols with no semantic meaning.",
+      replyMessage: "",
+    };
+  }
+
   if (!apiKey) {
     console.warn("GEMINI_API_KEY not configured, using fallback parsing.");
     return fallbackParser(userText, existingTaskNames);
   }
-
-  const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
   const prompt = `
 You are the AI brain of a personal life-log & habit assistant.
@@ -42,6 +61,11 @@ The user sent this message in Telegram:
 "${userText}"
 
 Known existing tasks: ${JSON.stringify(existingTaskNames)}
+
+First, evaluate whether the user message is MEANINGFUL or MEANINGLESS/GIBBERISH:
+- Set "isMeaningful": true if the text expresses genuine human thoughts, activities, habits, reflections, questions, or requests (e.g. "studied physics", "finished chapter 3", "drank 500ml", "feeling great today").
+- Set "isMeaningful": false if the text is random keyboard mashing (e.g. "ishusabuasuasuasbsa", "asdfghjkl"), nonsense characters, repetitive symbols, or abrupt incoherent noise with no semantic meaning.
+- If "isMeaningful" is false, provide a brief "reason" explaining why, and set intent to "UNKNOWN".
 
 Classify the user's intent into ONE of these:
 1. CREATE_TASK: User wants to define/create a new habit or task (e.g. "remind me at 8 am to study physics", "add task wake up at 5am", "add counter task 5 liter water").
@@ -70,10 +94,12 @@ Classify the user's intent into ONE of these:
 
 6. QUERY: User is asking a question about their past logs or status (e.g. "how much did I study?", "show my water logs").
 
-7. UNKNOWN: Casual greeting or unrecognized statement.
+7. UNKNOWN: Casual greeting, unrecognized statement, or meaningless gibberish.
 
 Respond ONLY with valid JSON matching this schema:
 {
+  "isMeaningful": boolean,
+  "reason": "short explanation",
   "intent": "CREATE_TASK" | "START_TIMER" | "STOP_TIMER" | "ADD_WATER" | "DIARY_ENTRY" | "QUERY" | "UNKNOWN",
   "task": { "name": "...", "type": "timer"|"counter"|"tick", "reminder_time": "HH:MM:SS"|null, "target_value": 0, "unit": "..." },
   "timerTaskName": "...",
@@ -84,7 +110,13 @@ Respond ONLY with valid JSON matching this schema:
 }
 `;
 
-  const modelsToTry = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash"];
+  const modelsToTry = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+  ];
 
   for (const modelName of modelsToTry) {
     try {
@@ -95,7 +127,11 @@ Respond ONLY with valid JSON matching this schema:
       });
 
       const responseText = result.response.text();
-      return JSON.parse(responseText);
+      const parsed: AIParsedIntent = JSON.parse(responseText);
+      if (typeof parsed.isMeaningful !== "boolean") {
+        parsed.isMeaningful = !isQuickGibberishCheck(userText);
+      }
+      return parsed;
     } catch (err: any) {
       console.warn(`Gemini model ${modelName} error, trying next fallback:`, err.message || err);
     }
@@ -107,10 +143,20 @@ Respond ONLY with valid JSON matching this schema:
 function fallbackParser(text: string, existingTasks: string[]): AIParsedIntent {
   const lower = text.toLowerCase().trim();
 
+  if (isQuickGibberishCheck(text)) {
+    return {
+      intent: "UNKNOWN",
+      isMeaningful: false,
+      reason: "Text appears to be accidental or meaningless characters.",
+      replyMessage: "",
+    };
+  }
+
   if (lower.startsWith("water") || lower.includes("drank water")) {
     const match = lower.match(/\d+/);
     return {
       intent: "ADD_WATER",
+      isMeaningful: true,
       waterAmount: match ? parseInt(match[0], 10) : 500,
       replyMessage: "Logged water intake!",
     };
@@ -119,6 +165,7 @@ function fallbackParser(text: string, existingTasks: string[]): AIParsedIntent {
   if (lower.startsWith("start") || lower.includes("starting")) {
     return {
       intent: "START_TIMER",
+      isMeaningful: true,
       timerTaskName: text.replace(/start(ing)?/i, "").trim() || "Work",
       replyMessage: "Starting timer!",
     };
@@ -127,12 +174,14 @@ function fallbackParser(text: string, existingTasks: string[]): AIParsedIntent {
   if (lower.startsWith("stop") || lower.includes("done")) {
     return {
       intent: "STOP_TIMER",
+      isMeaningful: true,
       replyMessage: "Stopping timer!",
     };
   }
 
   return {
     intent: "UNKNOWN",
+    isMeaningful: lower.length >= 3 && !isQuickGibberishCheck(lower),
     replyMessage: "",
   };
 }
