@@ -9,14 +9,11 @@ export interface BotCommand {
 }
 
 export const BOT_COMMANDS: BotCommand[] = [
-  { command: "start", description: "Show the welcome message & commands" },
-  { command: "addtask", description: "Create a new task (guided wizard)" },
-  { command: "tasks", description: "View and log your tasks" },
-  { command: "edit", description: "Edit or delete a task" },
-  { command: "today", description: "Today's scorecard" },
-  { command: "log", description: "Write daily diary / notes" },
-  { command: "status", description: "Check or stop the active timer" },
-  { command: "cancel", description: "Cancel the current action" },
+  { command: "today", description: "Today's scorecard & progress" },
+  { command: "tasks", description: "View routines & log habits" },
+  { command: "log", description: "Daily diary & mood reflection" },
+  { command: "addtask", description: "Create a new habit / routine" },
+  { command: "edit", description: "Edit or delete tasks" },
 ];
 
 export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {

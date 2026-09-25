@@ -1386,13 +1386,11 @@ export async function POST(req: NextRequest) {
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
-          `• <b>/addtask</b> — ➕ Create a new task (guided wizard)\n` +
-          `• <b>/tasks</b> — 📋 View and log your tasks\n` +
-          `• <b>/edit</b> — ✏️ Edit or delete a task\n` +
-          `• <b>/today</b> — 📊 View today's scorecard\n` +
-          `• <b>/log</b> — 📖 Write daily diary / notes\n` +
-          `• <b>/status</b> — ⏱️ Check or stop active timer\n` +
-          `• <b>/cancel</b> — ❌ Cancel current action\n\n` +
+          `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
+          `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
+          `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
+          `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
+          `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
           `Type any command above or tap <b>/</b> on your keyboard to begin!`;
 
         await sendTelegramMessage(chatId, welcomeText);
@@ -1589,18 +1587,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /status ---
+      // --- Command: /status (graceful fallback: timer if running, else scorecard) ---
       if (text === "/status") {
+        await setActiveTask(chatId, null);
         const active = await getActiveTimer(chatId);
-        if (!active) {
-          await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
-        } else {
+        if (active) {
           const pausedAt = getTimerPaused(chatId);
           const view = buildTimerView(active.task_name, active.started_at, pausedAt);
           const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
           if (sentId) {
             await trackTimerMessage(chatId, sentId);
           }
+        } else {
+          const scorecard = await buildTodayScorecard();
+          await sendTelegramMessage(chatId, scorecard);
         }
         return NextResponse.json({ ok: true });
       }
