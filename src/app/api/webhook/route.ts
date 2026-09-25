@@ -1147,6 +1147,23 @@ export async function POST(req: NextRequest) {
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
 
+        // Never silently discard a running session — ask to stop it first
+        const alreadyRunning = await getActiveTimer(chatId);
+        if (alreadyRunning) {
+          const warnKb: InlineKeyboard = [
+            [{ text: `⏹ Stop ${alreadyRunning.task_name}`, callback_data: "stop_active_timer" }],
+            [{ text: `▶️ Start ${taskName}`, callback_data: `start_task:${taskId}` }],
+          ];
+          await respondUi(
+            chatId,
+            messageId,
+            `⚠️ <b>${alreadyRunning.task_name}</b> is already running.\n\n` +
+              `Stop & log it first, then start <b>${taskName}</b>:`,
+            warnKb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         const active = await startActiveTimer(chatId, taskId, taskName);
         clearTimerPaused(chatId);
         await setActiveTask(chatId, taskId);

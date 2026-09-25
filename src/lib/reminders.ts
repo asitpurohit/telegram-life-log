@@ -81,8 +81,22 @@ export async function sendDueReminders(
       text += `Scheduled routine.\nTap below when done:`;
       keyboard = [[{ text: `✅ Done with ${task.name}`, callback_data: `tick_task:${task.id}` }]];
     } else {
-      text += `Goal check-in (Target: ${task.target_value} ${task.unit || "units"}).`;
-      keyboard = [[{ text: `💧 +500ml`, callback_data: `water_add:500` }]];
+      const unit = task.unit || "units";
+      const unitLower = unit.toLowerCase();
+      const quickAmount = unitLower.includes("ml") || unitLower.includes("liter")
+        ? 500
+        : unitLower.includes("km") || unitLower.includes("mile")
+        ? 1
+        : unitLower.includes("step")
+        ? 1000
+        : unitLower.includes("page")
+        ? 10
+        : 1;
+
+      text += `Goal check-in (Target: ${task.target_value} ${unit}).`;
+      keyboard = [
+        [{ text: `➕ +${quickAmount} ${unit}`, callback_data: `counter_add:${task.id}:${quickAmount}` }],
+      ];
     }
 
     await sendTelegramMessage(targetChatId, text, keyboard);
