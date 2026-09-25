@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(apiKey);
+const ai = new GoogleGenAI({ apiKey });
 
 export interface AIParsedIntent {
   intent: "CREATE_TASK" | "START_TIMER" | "STOP_TIMER" | "ADD_WATER" | "DIARY_ENTRY" | "QUERY" | "UNKNOWN";
@@ -113,20 +113,20 @@ Respond ONLY with valid JSON matching this schema:
   const modelsToTry = [
     "gemini-flash-lite-latest",
     "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
     "gemini-flash-latest",
     "gemini-3.5-flash",
+    "gemini-3.8-flash",
   ];
 
   for (const modelName of modelsToTry) {
     try {
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" },
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: { responseMimeType: "application/json" },
       });
 
-      const responseText = result.response.text();
+      const responseText = response.text ?? "";
       const parsed: AIParsedIntent = JSON.parse(responseText);
       if (typeof parsed.isMeaningful !== "boolean") {
         parsed.isMeaningful = !isQuickGibberishCheck(userText);

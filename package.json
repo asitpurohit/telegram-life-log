@@ -10,7 +10,7 @@
     "test:bot": "tsx scripts/test-local.ts"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.0",
+    "@google/genai": "^2.24.0",
     "@supabase/supabase-js": "^2.49.1",
     "next": "^15.1.0",
     "react": "^19.0.0",

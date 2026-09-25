@@ -15,6 +15,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "log", description: "Daily diary & mood reflection" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },
+  { command: "ask", description: "Ask AI about your data & progress" },
 ];
 
 export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {

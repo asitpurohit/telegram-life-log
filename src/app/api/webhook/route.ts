@@ -48,6 +48,7 @@ import {
   deleteTodo,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck } from "@/lib/ai";
+import { askAboutData } from "@/lib/analytics";
 import {
   buildTimerView,
   formatDuration,
@@ -1691,7 +1692,8 @@ export async function POST(req: NextRequest) {
           `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
-          `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
+          `• <b>/edit</b> — ✏️ Edit or delete tasks\n` +
+          `• <b>/ask</b> — 🤖 Ask AI about your data & progress\n\n` +
           `Type any command above or tap <b>/</b> on your keyboard to begin!`;
 
         await sendTelegramMessage(chatId, welcomeText);
@@ -1871,6 +1873,29 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const todos = await getTodos();
         await sendUiMessage(chatId, buildTodoListText(todos), buildTodoListKeyboard(todos));
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /ask (AI analytics over your data via tool calling) ---
+      if (text === "/ask" || text.startsWith("/ask ")) {
+        const question = text.replace(/^\/ask\s*/i, "").trim();
+        if (question.length < 3) {
+          await sendUiMessage(
+            chatId,
+            `🤖 <b>Ask about your data</b>\n\n` +
+              `Examples:\n` +
+              `• <code>/ask how much did I study this week?</code>\n` +
+              `• <code>/ask physics percentage last 30 days</code>\n` +
+              `• <code>/ask my mood trend this month</code>\n` +
+              `• <code>/ask pending todos</code>`
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        await sendUiMessage(chatId, "🤖 <i>Looking at your data…</i>");
+        const taskNames = (await getActiveTasks()).map((t) => t.name);
+        const answer = await askAboutData(question, taskNames);
+        await sendUiMessage(chatId, answer);
         return NextResponse.json({ ok: true });
       }
 
@@ -2693,6 +2718,14 @@ export async function POST(req: NextRequest) {
           chatId,
           `💧 <b>+${amount}ml logged!</b> Today: <b>${total.toLocaleString()}/5,000ml</b>`
         );
+        return NextResponse.json({ ok: true });
+      }
+
+      // AI Intent: QUERY (e.g. "how much did I study this week?")
+      if (ai.intent === "QUERY") {
+        await sendUiMessage(chatId, "🤖 <i>Looking at your data…</i>");
+        const answer = await askAboutData(text, taskNames);
+        await sendUiMessage(chatId, answer);
         return NextResponse.json({ ok: true });
       }
 
