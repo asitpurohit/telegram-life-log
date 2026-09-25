@@ -1117,18 +1117,10 @@ export async function POST(req: NextRequest) {
             const timerPrompt =
               `🎯 <b>Daily Time Goal</b>\n\n` +
               `Task: <b>${taskName}</b>\n\n` +
-              `How much time is your daily goal?\n` +
-              `Type in <b>hours & minutes</b>:\n` +
-              `<i>(e.g., "2 hours", "1h 30m", "45 mins", "4 hours")</i>\n\n` +
-              `Or choose a quick target:`;
+              `Type your daily goal in <b>hours & minutes</b>:\n` +
+              `<i>(e.g., "2 hours", "1h 30m", "45 mins", "3h 15m")</i>`;
 
             const timerKb: InlineKeyboard = [
-              [
-                { text: "30 mins", callback_data: "wizard_timer_target:30" },
-                { text: "1 hour", callback_data: "wizard_timer_target:60" },
-                { text: "2 hours", callback_data: "wizard_timer_target:120" },
-                { text: "4 hours", callback_data: "wizard_timer_target:240" },
-              ],
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
@@ -1142,19 +1134,12 @@ export async function POST(req: NextRequest) {
             });
 
             const counterPrompt =
-              `🎯 <b>Daily Count Goal</b>\n\n` +
+              `🎯 <b>Daily Goal & Unit</b>\n\n` +
               `Task: <b>${taskName}</b>\n\n` +
-              `What is your target amount and unit?\n` +
-              `Type the amount and unit:\n` +
-              `<i>(e.g., "10 km", "5000 ml", "3 liters", "50 pages", "10000 steps")</i>\n\n` +
-              `Or choose a quick target:`;
+              `Type your daily goal amount and unit:\n` +
+              `<i>(e.g., "10 km", "5000 ml", "8000 steps", "50 pages", "2.5 liters")</i>`;
 
             const counterKb: InlineKeyboard = [
-              [
-                { text: "5,000 ml", callback_data: "wizard_count_target:5000:ml" },
-                { text: "10 km", callback_data: "wizard_count_target:10:km" },
-                { text: "50 pages", callback_data: "wizard_count_target:50:pages" },
-              ],
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
             ];
 
