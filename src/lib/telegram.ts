@@ -111,6 +111,25 @@ export async function editTelegramMessage(
   }
 }
 
+export async function deleteTelegramMessage(chatId: string | number, messageId: number) {
+  if (!TELEGRAM_TOKEN) return null;
+
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+      }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    console.error("deleteTelegramMessage network error:", err.message);
+    return null;
+  }
+}
+
 export async function removeInlineKeyboard(chatId: string | number, messageId: number) {
   if (!TELEGRAM_TOKEN) return null;
 

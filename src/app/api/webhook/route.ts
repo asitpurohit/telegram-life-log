@@ -4,6 +4,7 @@ import {
   editTelegramMessage,
   answerCallbackQuery,
   removeInlineKeyboard,
+  deleteTelegramMessage,
   setBotCommands,
   BOT_COMMANDS,
   InlineKeyboard,
@@ -1310,6 +1311,20 @@ export async function POST(req: NextRequest) {
     if (body.message?.text) {
       const text = body.message.text.trim();
       const chatId = body.message.chat.id;
+      const messageId = body.message.message_id;
+
+      // While a timer is running, plain text is ignored and removed so the
+      // timer's Pause / Stop / Refresh buttons stay untouched.
+      const activeSession = await getWizardSession(chatId);
+      if (!text.startsWith("/") && !activeSession) {
+        const runningTimer = await getActiveTimer(chatId);
+        if (runningTimer) {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
+          return NextResponse.json({ ok: true });
+        }
+      }
 
       // Any typed message retires the previous interactive keyboard
       await retireTrackedUi(chatId);
@@ -1500,8 +1515,6 @@ export async function POST(req: NextRequest) {
       // =======================================================================
       // 3. CONVERSATIONAL WIZARD STATE HANDLER
       // =======================================================================
-      const activeSession = await getWizardSession(chatId);
-
       if (activeSession) {
         // --- State: User Answering Diary Prompt ---
         if (activeSession.step === "awaiting_diary_text") {
