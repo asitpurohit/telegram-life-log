@@ -19,6 +19,9 @@ import {
   getWizardSession,
   saveWizardSession,
   clearWizardSession,
+  isTaskCompletedToday,
+  untickTaskToday,
+  deduplicateTodayTickLogs,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI } from "@/lib/ai";
 import { TaskType } from "@/lib/types";
@@ -36,6 +39,7 @@ const MAIN_MENU_KEYBOARD: InlineKeyboard = [
     { text: "⏱️ Active Timer", callback_data: "timer_status" },
   ],
   [
+    { text: "📖 Daily Diary", callback_data: "menu_diary" },
     { text: "📊 Today's Scorecard", callback_data: "menu_today" },
   ],
 ];
@@ -132,10 +136,10 @@ export async function POST(req: NextRequest) {
       // Acknowledge receipt to remove button loading spinner on phone
       await answerCallbackQuery(callbackQuery.id);
 
-      // --- WIZARD: Cancel Active Creation ---
+      // --- WIZARD: Cancel Active Creation or Diary Prompt ---
       if (callbackData === "wizard_cancel") {
         await clearWizardSession(chatId);
-        const cancelText = "❌ <i>Task creation cancelled.</i>";
+        const cancelText = "❌ <i>Action cancelled.</i>";
         if (messageId) {
           await editTelegramMessage(chatId, messageId, cancelText, MAIN_MENU_KEYBOARD);
         } else {
@@ -215,7 +219,7 @@ export async function POST(req: NextRequest) {
             `Task: <b>${taskData.name}</b>\n` +
             `Reminder: <i>None (Skipped)</i>\n\n` +
             `How many <b>minutes</b> is your daily goal?\n` +
-            `<i>(e.g., 30, 45, 60, 120)</i>\n\n` +
+            `<i>(e.g., 30, 45, 60, 120, 240)</i>\n\n` +
             `Or tap <b>Skip</b> for default (60 mins):`;
           skipButtonText = "⏭️ Skip (Default: 60 mins)";
         } else if (type === "counter") {
@@ -322,7 +326,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Show Task List ---
+      // --- MENU: Prompt for Diary Entry ---
+      if (callbackData === "menu_diary") {
+        await saveWizardSession(chatId, "awaiting_diary_text", {});
+        const diaryPrompt =
+          `📖 <b>Daily Diary & Summary</b>\n\n` +
+          `Please send your reflection, key highlights, or accomplishments for today.\n\n` +
+          `<i>(e.g., "Studied physics for 2 hours and finished chapter 3 problems. Met Vishnu to discuss textures for 3D game.")</i>`;
+
+        const cancelKb: InlineKeyboard = [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]];
+        await sendTelegramMessage(chatId, diaryPrompt, cancelKb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Show Task List with Completion / Progress Status ---
       if (callbackData === "menu_tasks") {
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
@@ -334,55 +351,185 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const taskButtons: InlineKeyboard = tasks.map((t) => {
-          let icon = "⏱️";
-          if (t.type === "counter") icon = "💧";
-          if (t.type === "tick") icon = "✅";
-          return [{ text: `${icon} ${t.name}`, callback_data: `select_task:${t.id}` }];
-        });
+        const taskButtons: InlineKeyboard = [];
+        for (const t of tasks) {
+          if (t.type === "tick") {
+            const isDone = await isTaskCompletedToday(t.id);
+            taskButtons.push([
+              {
+                text: `${isDone ? "✅" : "⬜"} ${t.name}${isDone ? " (Done)" : ""}`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          } else if (t.type === "timer") {
+            const todayMins = await getTodayTaskTotal(t.name);
+            taskButtons.push([
+              {
+                text: `⏱️ ${t.name} (${todayMins}m / ${t.target_value || 60}m)`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          } else {
+            const todayCount = await getTodayTaskTotal(t.name);
+            taskButtons.push([
+              {
+                text: `💧 ${t.name} (${todayCount}${t.unit ? " " + t.unit : ""})`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          }
+        }
 
         taskButtons.push([{ text: "➕ Add New Task", callback_data: "start_wizard" }]);
 
-        await sendTelegramMessage(chatId, "📋 <b>Select a task to start or log:</b>", taskButtons);
+        await sendTelegramMessage(chatId, "📋 <b>Your Tasks & Routines:</b>", taskButtons);
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Selected a Task ---
+      // --- Button: Selected a Task (Detailed View & Actions) ---
       if (callbackData.startsWith("select_task:")) {
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         if (!task) {
-          await sendTelegramMessage(chatId, "⚠️ Task not found or already archived.");
+          await sendTelegramMessage(chatId, "⚠️ Task not found or already archived.", MAIN_MENU_KEYBOARD);
           return NextResponse.json({ ok: true });
         }
 
         if (task.type === "timer") {
+          const todayMins = await getTodayTaskTotal(task.name);
+          const target = task.target_value || 60;
+          const percent = Math.min(100, Math.round((todayMins / target) * 100));
+
           const timerKeyboard: InlineKeyboard = [
-            [{ text: `▶️ Start ${task.name}`, callback_data: `start_task:${task.id}` }],
+            [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
+            [
+              { text: "+15m", callback_data: `timer_add:${task.id}:15` },
+              { text: "+30m", callback_data: `timer_add:${task.id}:30` },
+              { text: "+60m", callback_data: `timer_add:${task.id}:60` },
+            ],
+            [
+              { text: "✏️ Custom Minutes", callback_data: `timer_custom_prompt:${task.id}` },
+              { text: "📋 All Tasks", callback_data: "menu_tasks" },
+            ],
           ];
+
           await sendTelegramMessage(
             chatId,
-            `⏱️ <b>${task.name}</b> (Target: ${task.target_value || 60} mins)\nReady to begin?`,
+            `⏱️ <b>${task.name}</b>\n` +
+              `🎯 Daily Goal: <b>${target} minutes</b>\n` +
+              `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
+              `Choose how to track this session:`,
             timerKeyboard
           );
         } else if (task.type === "counter") {
+          const todayTotal = await getTodayTaskTotal(task.name);
+          const target = task.target_value || 5000;
+          const percent = Math.min(100, Math.round((todayTotal / target) * 100));
+
           const counterKeyboard: InlineKeyboard = [
             [
               { text: "💧 +250ml", callback_data: `counter_add:${task.id}:250` },
               { text: "💧 +500ml", callback_data: `counter_add:${task.id}:500` },
             ],
+            [{ text: "📋 All Tasks", callback_data: "menu_tasks" }],
           ];
+
           await sendTelegramMessage(
             chatId,
-            `💧 <b>${task.name}</b> (Target: ${task.target_value || 5000} ${task.unit || "ml"})\nLog an amount:`,
+            `💧 <b>${task.name}</b>\n` +
+              `🎯 Goal: <b>${target} ${task.unit || "ml"}</b>\n` +
+              `📊 Today: <b>${todayTotal} / ${target} ${task.unit || "ml"}</b> (${percent}%)\n\n` +
+              `Log an amount:`,
             counterKeyboard
           );
         } else if (task.type === "tick") {
-          const tickKeyboard: InlineKeyboard = [
-            [{ text: `✅ Done with ${task.name}`, callback_data: `tick_task:${task.id}` }],
-          ];
-          await sendTelegramMessage(chatId, `✅ <b>${task.name}</b>:`, tickKeyboard);
+          const isDone = await isTaskCompletedToday(task.id);
+          if (isDone) {
+            const tickKeyboard: InlineKeyboard = [
+              [{ text: `⭕ Mark Incomplete (Undo)`, callback_data: `untick_task:${task.id}` }],
+              [{ text: "📋 All Tasks", callback_data: "menu_tasks" }],
+            ];
+            await sendTelegramMessage(
+              chatId,
+              `✅ <b>${task.name}</b> is marked complete for today!\nTap below if you want to undo:`,
+              tickKeyboard
+            );
+          } else {
+            const tickKeyboard: InlineKeyboard = [
+              [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
+              [{ text: "📋 All Tasks", callback_data: "menu_tasks" }],
+            ];
+            await sendTelegramMessage(
+              chatId,
+              `⬜ <b>${task.name}</b>\nDaily routine for today:`,
+              tickKeyboard
+            );
+          }
         }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Quick Add Minutes to Timer Task ---
+      if (callbackData.startsWith("timer_add:")) {
+        const [, taskId, minsStr] = callbackData.split(":");
+        const mins = parseInt(minsStr, 10);
+        const task = await getTaskById(taskId);
+        const taskName = task ? task.name : "Study/Work";
+        const target = task?.target_value || 60;
+
+        await logActivity({
+          task_id: taskId,
+          task_name: taskName,
+          value: mins,
+          notes: `Manual log +${mins}m`,
+        });
+
+        const newTotal = await getTodayTaskTotal(taskName);
+        const percent = Math.round((newTotal / target) * 100);
+
+        const replyKb: InlineKeyboard = [
+          [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${taskId}` }],
+          [
+            { text: "+15m", callback_data: `timer_add:${taskId}:15` },
+            { text: "+30m", callback_data: `timer_add:${taskId}:30` },
+          ],
+          [
+            { text: "📋 All Tasks", callback_data: "menu_tasks" },
+            { text: "📊 Scorecard", callback_data: "menu_today" },
+          ],
+        ];
+
+        await sendTelegramMessage(
+          chatId,
+          `⏱️ <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
+            `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`,
+          replyKb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Prompt for Custom Minutes ---
+      if (callbackData.startsWith("timer_custom_prompt:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await sendTelegramMessage(chatId, "⚠️ Task not found.", MAIN_MENU_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        }
+
+        await saveWizardSession(chatId, "awaiting_timer_custom", {
+          taskId: task.id,
+          name: task.name,
+          target_value: task.target_value,
+        });
+
+        await sendTelegramMessage(
+          chatId,
+          `✏️ <b>Log Custom Minutes for ${task.name}</b>\n\n` +
+            `How many minutes did you spend?\n` +
+            `<i>(e.g., 25, 45, 90, 150)</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -408,19 +555,37 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Stop Active Timer ---
+      // --- Button: Stop Active Timer (With Cumulative Daily Total) ---
       if (callbackData === "stop_active_timer") {
         const result = await stopActiveTimer(chatId);
         if (!result) {
-          await sendTelegramMessage(chatId, "⚠️ No active timer was found.");
+          await sendTelegramMessage(chatId, "⚠️ No active timer was found.", MAIN_MENU_KEYBOARD);
           return NextResponse.json({ ok: true });
         }
 
-        const text = `🎉 <b>${result.taskName} Session Completed!</b>\n⏱️ Duration logged: <b>${result.durationMinutes} minutes</b>\nSaved cleanly to your database!`;
+        const task = await findTaskByName(result.taskName);
+        const totalToday = await getTodayTaskTotal(result.taskName);
+        const target = task?.target_value || 60;
+        const percent = Math.round((totalToday / target) * 100);
+
+        const stopKb: InlineKeyboard = [
+          [{ text: `▶️ Start ${result.taskName} Again`, callback_data: `start_task:${result.taskId}` }],
+          [
+            { text: "📋 My Tasks", callback_data: "menu_tasks" },
+            { text: "📊 Scorecard", callback_data: "menu_today" },
+          ],
+        ];
+
+        const text =
+          `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
+          `⏱️ This Session: <b>+${result.durationMinutes} minutes</b>\n` +
+          `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
+          `Saved cleanly to your database!`;
+
         if (messageId) {
-          await editTelegramMessage(chatId, messageId, text, MAIN_MENU_KEYBOARD);
+          await editTelegramMessage(chatId, messageId, text, stopKb);
         } else {
-          await sendTelegramMessage(chatId, text, MAIN_MENU_KEYBOARD);
+          await sendTelegramMessage(chatId, text, stopKb);
         }
         return NextResponse.json({ ok: true });
       }
@@ -487,23 +652,56 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Tick Task ---
+      // --- Button: Tick Task (Mark Done - Idempotent with Undo Button) ---
       if (callbackData.startsWith("tick_task:")) {
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Routine";
 
-        await logActivity({
-          task_id: taskId,
-          task_name: taskName,
-          value: 1,
-          notes: `Completed at ${new Date().toLocaleTimeString()}`,
-        });
+        const alreadyDone = await isTaskCompletedToday(taskId);
+        if (!alreadyDone) {
+          await logActivity({
+            task_id: taskId,
+            task_name: taskName,
+            value: 1,
+            notes: `Completed at ${new Date().toLocaleTimeString()}`,
+          });
+        }
+        await deduplicateTodayTickLogs(taskId);
 
-        await sendTelegramMessage(
-          chatId,
-          `✅ <b>${taskName}</b> marked as completed for today!`
-        );
+        const undoKeyboard: InlineKeyboard = [
+          [{ text: `↩️ Undo (Mark Incomplete)`, callback_data: `untick_task:${taskId}` }],
+          [{ text: "📋 View Tasks", callback_data: "menu_tasks" }],
+        ];
+
+        const text = `✅ <b>${taskName}</b> marked as completed for today!`;
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, undoKeyboard);
+        } else {
+          await sendTelegramMessage(chatId, text, undoKeyboard);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Untick Task (Undo / Mark Incomplete) ---
+      if (callbackData.startsWith("untick_task:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        const taskName = task ? task.name : "Routine";
+
+        await untickTaskToday(taskId);
+
+        const tickKeyboard: InlineKeyboard = [
+          [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${taskId}` }],
+          [{ text: "📋 View Tasks", callback_data: "menu_tasks" }],
+        ];
+
+        const text = `⭕ <b>${taskName}</b> unmarked for today.`;
+        if (messageId) {
+          await editTelegramMessage(chatId, messageId, text, tickKeyboard);
+        } else {
+          await sendTelegramMessage(chatId, text, tickKeyboard);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -518,7 +716,7 @@ export async function POST(req: NextRequest) {
         let summary = "📊 <b>Today's Activity Log:</b>\n\n";
         for (const log of logs) {
           if (log.task_name === "Diary") {
-            summary += `📖 <b>Diary:</b> ${log.notes?.slice(0, 80)}...\n`;
+            summary += `📖 <b>Diary:</b> ${log.notes?.slice(0, 100)}...\n`;
           } else {
             summary += `• <b>${log.task_name}:</b> ${log.value} ${log.notes ? `(${log.notes})` : ""}\n`;
           }
@@ -530,7 +728,7 @@ export async function POST(req: NextRequest) {
     }
 
     // =========================================================================
-    // 2. HANDLE TEXT MESSAGES (Commands, Wizard Steps, Freeform AI)
+    // 2. HANDLE TEXT MESSAGES (Commands, Wizard Steps, Dedicated Diary)
     // =========================================================================
     if (body.message?.text) {
       const text = body.message.text.trim();
@@ -541,7 +739,7 @@ export async function POST(req: NextRequest) {
         await clearWizardSession(chatId);
         await sendTelegramMessage(
           chatId,
-          "❌ <i>Task creation cancelled.</i>",
+          "❌ <i>Action cancelled.</i>",
           MAIN_MENU_KEYBOARD
         );
         return NextResponse.json({ ok: true });
@@ -553,13 +751,55 @@ export async function POST(req: NextRequest) {
         await sendTelegramMessage(
           chatId,
           `👋 <b>Welcome to your Personal AI Life-Log Assistant!</b>\n\n` +
-            `• Type <b>/addtask</b> (or click slash /) to create a new task.\n` +
+            `• Type <b>/addtask</b> (or click slash /) to create a routine.\n` +
+            `• Type <b>/diary</b> or <b>/log</b> to write your daily reflection.\n` +
             `• Tap buttons below for fast tracking.\n` +
-            `• Type naturally to log your <b>daily diary</b>.\n` +
             `• Say <i>"Starting physics study"</i> anytime to track a timer.`,
           MAIN_MENU_KEYBOARD
         );
         return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /diary or /log (Dedicated Diary Command) ---
+      if (text.startsWith("/diary") || text.startsWith("/log")) {
+        const noteContent = text.replace(/^\/(diary|log)\s*/i, "").trim();
+
+        if (noteContent.length >= 3) {
+          // Explicit diary text provided directly on the command line!
+          const ai = await parseUserMessageWithAI(noteContent, []);
+          await logActivity({
+            task_name: "Diary",
+            notes: noteContent,
+            value: 1,
+          });
+
+          const summary = ai.diary?.summary || noteContent.slice(0, 120);
+          let reply = `📖 <b>Diary Saved for Today!</b>\n\n📝 <b>Summary:</b> ${summary}`;
+
+          if (ai.diary?.projects && ai.diary.projects.length > 0) {
+            reply += `\n🎯 <b>Projects:</b> ${ai.diary.projects.join(", ")}`;
+          }
+          if (ai.diary?.people && ai.diary.people.length > 0) {
+            reply += `\n👥 <b>People:</b> ${ai.diary.people.join(", ")}`;
+          }
+          if (ai.diary?.decisions && ai.diary.decisions.length > 0) {
+            reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
+          }
+
+          await sendTelegramMessage(chatId, reply, MAIN_MENU_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        } else {
+          // Command sent alone -> Prompt for notes
+          await saveWizardSession(chatId, "awaiting_diary_text", {});
+          await sendTelegramMessage(
+            chatId,
+            `📖 <b>Daily Diary & Summary</b>\n\n` +
+              `Please send your reflection, key highlights, or accomplishments for today.\n\n` +
+              `<i>(e.g., "Studied physics for 2 hours and finished chapter 3 problems. Met Vishnu to discuss textures for 3D game.")</i>`,
+            [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
       }
 
       // --- Command: /addtask ---
@@ -597,15 +837,38 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const taskButtons: InlineKeyboard = tasks.map((t) => [
-          {
-            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "✅"} ${t.name}`,
-            callback_data: `select_task:${t.id}`,
-          },
-        ]);
+        const taskButtons: InlineKeyboard = [];
+        for (const t of tasks) {
+          if (t.type === "tick") {
+            const isDone = await isTaskCompletedToday(t.id);
+            taskButtons.push([
+              {
+                text: `${isDone ? "✅" : "⬜"} ${t.name}${isDone ? " (Done)" : ""}`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          } else if (t.type === "timer") {
+            const todayMins = await getTodayTaskTotal(t.name);
+            taskButtons.push([
+              {
+                text: `⏱️ ${t.name} (${todayMins}m / ${t.target_value || 60}m)`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          } else {
+            const todayCount = await getTodayTaskTotal(t.name);
+            taskButtons.push([
+              {
+                text: `💧 ${t.name} (${todayCount}${t.unit ? " " + t.unit : ""})`,
+                callback_data: `select_task:${t.id}`,
+              },
+            ]);
+          }
+        }
+
         taskButtons.push([{ text: "➕ Add New Task", callback_data: "start_wizard" }]);
 
-        await sendTelegramMessage(chatId, "📋 <b>Active Tasks & Routines:</b>", taskButtons);
+        await sendTelegramMessage(chatId, "📋 <b>Your Tasks & Routines:</b>", taskButtons);
         return NextResponse.json({ ok: true });
       }
 
@@ -637,7 +900,7 @@ export async function POST(req: NextRequest) {
         let summary = "📊 <b>Today's Activity Log:</b>\n\n";
         for (const log of logs) {
           if (log.task_name === "Diary") {
-            summary += `📖 <b>Diary:</b> ${log.notes?.slice(0, 80)}...\n`;
+            summary += `📖 <b>Diary:</b> ${log.notes?.slice(0, 100)}...\n`;
           } else {
             summary += `• <b>${log.task_name}:</b> ${log.value} ${log.notes ? `(${log.notes})` : ""}\n`;
           }
@@ -648,12 +911,77 @@ export async function POST(req: NextRequest) {
       }
 
       // =======================================================================
-      // 3. CONVERSATIONAL WIZARD STATE HANDLER
+      // 3. CONVERSATIONAL STATE HANDLER (Addtask Wizard, Diary, Custom Timer)
       // =======================================================================
       const activeSession = await getWizardSession(chatId);
 
       if (activeSession) {
-        // --- Step 2: User Typed Task Name ---
+        // --- State: User Answering Diary Prompt ---
+        if (activeSession.step === "awaiting_diary_text") {
+          await clearWizardSession(chatId);
+          const ai = await parseUserMessageWithAI(text, []);
+
+          await logActivity({
+            task_name: "Diary",
+            notes: text,
+            value: 1,
+          });
+
+          const summary = ai.diary?.summary || text.slice(0, 120);
+          let reply = `📖 <b>Diary Saved for Today!</b>\n\n📝 <b>Summary:</b> ${summary}`;
+
+          if (ai.diary?.projects && ai.diary.projects.length > 0) {
+            reply += `\n🎯 <b>Projects:</b> ${ai.diary.projects.join(", ")}`;
+          }
+          if (ai.diary?.people && ai.diary.people.length > 0) {
+            reply += `\n👥 <b>People:</b> ${ai.diary.people.join(", ")}`;
+          }
+          if (ai.diary?.decisions && ai.diary.decisions.length > 0) {
+            reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
+          }
+
+          await sendTelegramMessage(chatId, reply, MAIN_MENU_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: User Typing Custom Minutes for Timer Task ---
+        if (activeSession.step === "awaiting_timer_custom") {
+          const num = parseInt(text.replace(/[^0-9]/g, ""), 10);
+          if (isNaN(num) || num <= 0) {
+            await sendTelegramMessage(
+              chatId,
+              "⚠️ Please enter a valid number of minutes (e.g. <b>45</b> or <b>90</b>):",
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskId = activeSession.task_data.taskId || "";
+          const taskName = activeSession.task_data.name || "Study/Work";
+          const target = activeSession.task_data.target_value || 60;
+
+          await logActivity({
+            task_id: taskId || null,
+            task_name: taskName,
+            value: num,
+            notes: `Manual log +${num}m`,
+          });
+
+          await clearWizardSession(chatId);
+
+          const newTotal = await getTodayTaskTotal(taskName);
+          const percent = Math.round((newTotal / target) * 100);
+
+          await sendTelegramMessage(
+            chatId,
+            `⏱️ <b>+${num} mins logged for ${taskName}!</b>\n\n` +
+              `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`,
+            MAIN_MENU_KEYBOARD
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Step 2 User Typed Task Name ---
         if (activeSession.step === "awaiting_name") {
           const taskName = text;
           if (taskName.length < 2) {
@@ -684,7 +1012,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // --- Step 3: User Typed Reminder Time ---
+        // --- State: Step 3 User Typed Reminder Time ---
         if (activeSession.step === "awaiting_reminder") {
           const parsedTime = parseReminderTime(text);
           if (!parsedTime) {
@@ -714,7 +1042,7 @@ export async function POST(req: NextRequest) {
               `Task: <b>${updatedData.name}</b>\n` +
               `Reminder: <b>${formatReminderTime(parsedTime)}</b>\n\n` +
               `How many <b>minutes</b> is your daily goal?\n` +
-              `<i>(e.g., 30, 45, 60, 120)</i>\n\n` +
+              `<i>(e.g., 30, 45, 60, 120, 240)</i>\n\n` +
               `Or tap <b>Skip</b> for default (60 mins):`;
             skipButtonText = "⏭️ Skip (Default: 60 mins)";
           } else if (type === "counter") {
@@ -745,7 +1073,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // --- Step 4: User Typed Daily Target ---
+        // --- State: Step 4 User Typed Daily Target ---
         if (activeSession.step === "awaiting_target") {
           const num = parseInt(text.replace(/[^0-9]/g, ""), 10);
           if (isNaN(num) || num <= 0) {
@@ -818,14 +1146,14 @@ export async function POST(req: NextRequest) {
       }
 
       // =======================================================================
-      // 4. FREEFORM AI INTENT PROCESSING
+      // 4. FREEFORM MESSAGE HANDLING (NO ACCIDENTAL DIARY SAVES)
       // =======================================================================
       const activeTasks = await getActiveTasks();
       const taskNames = activeTasks.map((t) => t.name);
 
       const ai = await parseUserMessageWithAI(text, taskNames);
 
-      // AI Intent: CREATE A TASK VIA TEXT
+      // AI Intent: CREATE A TASK VIA TEXT (e.g. "Add task: Read books")
       if (ai.intent === "CREATE_TASK" && ai.task) {
         if (!ai.task.name || ai.task.name.trim().length < 2) {
           await sendTelegramMessage(
@@ -862,7 +1190,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // AI Intent: START TIMER
+      // AI Intent: START TIMER (e.g. "Starting physics now")
       if (ai.intent === "START_TIMER") {
         const targetName = ai.timerTaskName || "Study/Work";
         const matchedTask = await findTaskByName(targetName);
@@ -884,16 +1212,23 @@ export async function POST(req: NextRequest) {
         if (!result) {
           await sendTelegramMessage(chatId, "⚠️ No active timer was running.", MAIN_MENU_KEYBOARD);
         } else {
+          const task = await findTaskByName(result.taskName);
+          const totalToday = await getTodayTaskTotal(result.taskName);
+          const target = task?.target_value || 60;
+          const percent = Math.round((totalToday / target) * 100);
+
           await sendTelegramMessage(
             chatId,
-            `🎉 <b>${result.taskName}</b> finished!\nLogged <b>${result.durationMinutes} minutes</b> to database.`,
+            `🎉 <b>${result.taskName}</b> finished!\n` +
+              `⏱️ This Session: <b>+${result.durationMinutes} mins</b>\n` +
+              `📊 Today's Total: <b>${totalToday} / ${target} mins</b> (${percent}% of goal)`,
             MAIN_MENU_KEYBOARD
           );
         }
         return NextResponse.json({ ok: true });
       }
 
-      // AI Intent: ADD WATER
+      // AI Intent: ADD WATER (e.g. "Drank 500ml water")
       if (ai.intent === "ADD_WATER") {
         const amount = ai.waterAmount || 500;
         await logActivity({
@@ -909,35 +1244,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // AI Intent: DIARY ENTRY
-      if (ai.intent === "DIARY_ENTRY") {
-        await logActivity({
-          task_name: "Diary",
-          notes: text,
-          value: 1,
-        });
-
-        const summary = ai.diary?.summary || text.slice(0, 100);
-        let reply = `📖 <b>Diary Saved for Today!</b>\n\n📝 <b>Summary:</b> ${summary}`;
-
-        if (ai.diary?.projects && ai.diary.projects.length > 0) {
-          reply += `\n🎯 <b>Projects:</b> ${ai.diary.projects.join(", ")}`;
-        }
-        if (ai.diary?.people && ai.diary.people.length > 0) {
-          reply += `\n👥 <b>People:</b> ${ai.diary.people.join(", ")}`;
-        }
-        if (ai.diary?.decisions && ai.diary.decisions.length > 0) {
-          reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
-        }
-
-        await sendTelegramMessage(chatId, reply);
-        return NextResponse.json({ ok: true });
-      }
-
-      // AI Intent: QUERY OR FALLBACK
+      // CASUAL CHAT / QUESTIONS / TYPOS (NEVER SAVED AS DIARY ACCIDENTALLY)
       await sendTelegramMessage(
         chatId,
-        ai.replyMessage || "Logged your message! Type /tasks to see your routines or /today to see your scorecard.",
+        ai.replyMessage ||
+          `👋 I received: <i>"${text}"</i>\n\n` +
+            `• To save a diary reflection, type: <b>/diary</b>\n` +
+            `• To view your scorecard, type: <b>/today</b>\n` +
+            `• To manage your routines, type: <b>/tasks</b>`,
         MAIN_MENU_KEYBOARD
       );
     }

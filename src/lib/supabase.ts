@@ -196,6 +196,62 @@ export async function getTodayLogs(): Promise<Log[]> {
   return data || [];
 }
 
+export async function isTaskCompletedToday(taskId: string): Promise<boolean> {
+  const today = new Date().toISOString().split("T")[0];
+  const { data, error } = await supabase
+    .from("logs")
+    .select("id, value")
+    .eq("task_id", taskId)
+    .eq("log_date", today)
+    .gt("value", 0)
+    .limit(1);
+
+  if (error || !data) return false;
+  return data.length > 0;
+}
+
+export async function getTodayLogForTask(taskId: string): Promise<Log | null> {
+  const today = new Date().toISOString().split("T")[0];
+  const { data, error } = await supabase
+    .from("logs")
+    .select("*")
+    .eq("task_id", taskId)
+    .eq("log_date", today)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+}
+
+export async function untickTaskToday(taskId: string): Promise<boolean> {
+  const today = new Date().toISOString().split("T")[0];
+  const { error } = await supabase
+    .from("logs")
+    .delete()
+    .eq("task_id", taskId)
+    .eq("log_date", today);
+
+  return !error;
+}
+
+export async function deduplicateTodayTickLogs(taskId: string): Promise<void> {
+  const today = new Date().toISOString().split("T")[0];
+  const { data } = await supabase
+    .from("logs")
+    .select("id, created_at")
+    .eq("task_id", taskId)
+    .eq("log_date", today)
+    .order("created_at", { ascending: true });
+
+  if (data && data.length > 1) {
+    const idsToDelete = data.slice(1).map((d) => d.id);
+    await supabase.from("logs").delete().in("id", idsToDelete);
+  }
+}
+
+
 // ==========================================
 // WIZARD SESSIONS (Guided /addtask Flow)
 // ==========================================

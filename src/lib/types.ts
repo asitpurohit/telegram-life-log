@@ -30,14 +30,16 @@ export interface ActiveTimer {
 
 export interface WizardSession {
   chat_id: string;
-  step: 'awaiting_name' | 'awaiting_reminder' | 'awaiting_target';
+  step: 'awaiting_name' | 'awaiting_reminder' | 'awaiting_target' | 'awaiting_diary_text' | 'awaiting_timer_custom';
   task_data: {
     type?: TaskType;
     name?: string;
+    taskId?: string;
     reminder_time?: string | null;
     target_value?: number | null;
     unit?: string | null;
   };
   updated_at?: string;
 }
+
 
