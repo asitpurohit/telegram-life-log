@@ -381,7 +381,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
 
 // One-line task summary used in edit/delete confirmations
 function buildTaskSummary(task: Task): string {
-  const typeIcon = task.type === "timer" ? "⏱️" : task.type === "counter" ? "💧" : "✅";
+  const typeIcon = task.type === "timer" ? "⏱️" : task.type === "counter" ? "💧" : "📌";
   return (
     `${typeIcon} <b>${task.name}</b>\n` +
     `🎯 Goal: <b>${formatGoalDisplay(task.target_value, task.unit)}</b>\n` +
@@ -1041,7 +1041,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "✅";
+        const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "📌";
         const successText =
           `🎉 <b>Task Created Successfully!</b>\n\n` +
           `📌 <b>${newTask.name}</b>\n` +
@@ -1252,7 +1252,7 @@ export async function POST(req: NextRequest) {
 
         const listKb: InlineKeyboard = tasks.map((t) => [
           {
-            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "✅"} ${t.name}`,
+            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "📌"} ${t.name}`,
             callback_data: `manage_task:${t.id}`,
           },
         ]);
@@ -1785,7 +1785,7 @@ export async function POST(req: NextRequest) {
           [
             { text: "⏱️ Timer", callback_data: "wizard_type:timer" },
             { text: "💧 Counter", callback_data: "wizard_type:counter" },
-            { text: "✅ Daily Tick", callback_data: "wizard_type:tick" },
+            { text: "📌 Daily Tick", callback_data: "wizard_type:tick" },
           ],
           [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
         ];
@@ -1795,7 +1795,7 @@ export async function POST(req: NextRequest) {
           `What kind of task is this?\n` +
           `• ⏱️ <b>Timer:</b> Study, coding, workout (time goal in hours & minutes)\n` +
           `• 💧 <b>Counter:</b> Amount & unit goal (e.g. 10 km, 5000 ml, 50 pages)\n` +
-          `• ✅ <b>Daily Tick:</b> Wake up, meditation (yes/no daily completion)`;
+          `• 📌 <b>Daily Tick:</b> Wake up, meditation (yes/no daily completion)`;
 
         await sendUiMessage(chatId, promptText, typeKeyboard);
         return NextResponse.json({ ok: true });
@@ -1857,7 +1857,7 @@ export async function POST(req: NextRequest) {
 
         const taskButtons: InlineKeyboard = tasks.map((t) => [
           {
-            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "✅"} ${t.name}`,
+            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "📌"} ${t.name}`,
             callback_data: `manage_task:${t.id}`,
           },
         ]);
@@ -2525,7 +2525,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ ok: true });
           }
 
-          const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "✅";
+          const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "📌";
           const successText =
             `🎉 <b>Task Created Successfully!</b>\n\n` +
             `📌 <b>${newTask.name}</b>\n` +
