@@ -69,8 +69,22 @@ VALUES
     ('Wake Up', 'tick', '05:00:00', 1, 'status')
 ON CONFLICT (name) DO NOTHING;
 
+-- 5. To-Dos Table (one-time tasks with an exact date & time)
+CREATE TABLE IF NOT EXISTS todos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    due_at TIMESTAMPTZ NOT NULL,                     -- exact date + time (one-time)
+    is_done BOOLEAN DEFAULT false,
+    done_at TIMESTAMPTZ,
+    reminded_at TIMESTAMPTZ,                         -- set when the reminder was sent
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_at);
+
 -- Ensure tables are accessible via API keys
 ALTER TABLE tasks DISABLE ROW LEVEL SECURITY;
 ALTER TABLE logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE active_timers DISABLE ROW LEVEL SECURITY;
 ALTER TABLE wizard_sessions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE todos DISABLE ROW LEVEL SECURITY;

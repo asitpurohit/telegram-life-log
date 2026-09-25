@@ -41,6 +41,11 @@ import {
   isTaskScheduledForToday,
   updateDiaryMood,
   formatMoodDisplay,
+  createTodo,
+  getTodos,
+  getTodoById,
+  setTodoDone,
+  deleteTodo,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck } from "@/lib/ai";
 import {
@@ -50,8 +55,8 @@ import {
   clearTimerPaused,
   getTimerPaused,
 } from "@/lib/timerRuntime";
-import { localDateLabel, localTimeString } from "@/lib/time";
-import { TaskType, Task, WizardSession } from "@/lib/types";
+import { localDateLabel, localTimeString, localDateString, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
+import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -83,7 +88,10 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("wizard_days:") ||
     data.startsWith("timer_custom_prompt:") ||
     data.startsWith("edit_clear_reminder:") ||
-    data.startsWith("edit_set_days:")
+    data.startsWith("edit_set_days:") ||
+    data.startsWith("todo_add:") ||
+    data.startsWith("todo_date:") ||
+    data.startsWith("todo_time:")
   );
 }
 
@@ -382,6 +390,150 @@ function buildTaskSummary(task: Task): string {
   );
 }
 
+// =========================================================================
+// TODO HELPERS (one-time, date + time)
+// =========================================================================
+
+const TODO_MONTHS: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11,
+  dec: 12, december: 12,
+};
+
+function buildTodoDate(y: number, mo: number, d: number): string | null {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const probe = new Date(Date.UTC(y, mo - 1, d));
+  if (probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+  return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function parseTodoDate(input: string): string | null {
+  const clean = input.trim().toLowerCase().replace(/,/g, " ").replace(/\s+/g, " ");
+  const now = new Date();
+
+  if (clean === "today") return localDateString(now);
+  if (["tomorrow", "tmrw", "tmr"].includes(clean)) {
+    return localDateString(new Date(now.getTime() + 86400000));
+  }
+
+  let m = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return buildTodoDate(+m[1], +m[2], +m[3]);
+
+  m = clean.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?$/);
+  if (m) {
+    let y = m[3] ? +m[3] : now.getFullYear();
+    if (y < 100) y += 2000;
+    return buildTodoDate(y, +m[2], +m[1]);
+  }
+
+  m = clean.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{2,4}))?$/);
+  if (m && TODO_MONTHS[m[2]]) {
+    let y = m[3] ? +m[3] : now.getFullYear();
+    if (y < 100) y += 2000;
+    return buildTodoDate(y, TODO_MONTHS[m[2]], +m[1]);
+  }
+
+  m = clean.match(/^([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?$/);
+  if (m && TODO_MONTHS[m[1]]) {
+    let y = m[3] ? +m[3] : now.getFullYear();
+    if (y < 100) y += 2000;
+    return buildTodoDate(y, TODO_MONTHS[m[1]], +m[2]);
+  }
+
+  return null;
+}
+
+function todoStatusIcon(todo: Todo): string {
+  if (todo.is_done) return "✅";
+  return new Date(todo.due_at).getTime() < Date.now() ? "⌛" : "⬜";
+}
+
+function buildTodoListText(todos: Todo[]): string {
+  const pending = todos.filter((t) => !t.is_done);
+  if (pending.length === 0) {
+    return "📝 <b>Your To-Dos</b>\n\n<i>Nothing pending. Tap below to add one.</i>";
+  }
+  return (
+    `📝 <b>Your To-Dos</b> — <b>${pending.length}</b>\n` +
+    `<i>One-time reminders with a date & time.</i>`
+  );
+}
+
+function buildTodoListKeyboard(todos: Todo[]): InlineKeyboard {
+  const pending = todos.filter((t) => !t.is_done);
+
+  const kb: InlineKeyboard = pending.map((t) => [
+    {
+      text: `${todoStatusIcon(t)} ${t.title.slice(0, 28)} — ${todoDueLabel(t.due_at)}`,
+      callback_data: `todo_view:${t.id}`,
+    },
+  ]);
+  kb.push([{ text: "➕ Add To-Do", callback_data: "todo_add:new" }]);
+  return kb;
+}
+
+function buildTodoView(todo: Todo): { text: string; keyboard: InlineKeyboard } {
+  const overdue = new Date(todo.due_at).getTime() < Date.now();
+  const status = overdue ? "⌛ Overdue (not done)" : "⬜ Pending";
+
+  const text =
+    `📝 <b>${todo.title}</b>\n` +
+    `🕐 Scheduled: <b>${todoDueLabel(todo.due_at)}</b>\n` +
+    `📌 Status: <b>${status}</b>`;
+
+  const keyboard: InlineKeyboard = [
+    [{ text: "✅ Mark Done", callback_data: `todo_done:${todo.id}` }],
+    [{ text: "🗑️ Delete", callback_data: `todo_delete:${todo.id}` }],
+    [{ text: "📋 All To-Dos", callback_data: "todo_list" }],
+  ];
+
+  return { text, keyboard };
+}
+
+function todoDatePrompt(title: string): string {
+  return (
+    `📅 <b>Which date?</b>\n\n` +
+    `To-Do: <b>${title}</b>\n\n` +
+    `Type a date:\n<i>(e.g., "today", "tomorrow", "25 Sep", "28/09", "2026-09-30")</i>\n\n` +
+    `<b>— OR tap:</b>`
+  );
+}
+
+function todoDateKb(): InlineKeyboard {
+  return [
+    [
+      { text: "📅 Today", callback_data: "todo_date:today" },
+      { text: "🌅 Tomorrow", callback_data: "todo_date:tomorrow" },
+    ],
+    [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+  ];
+}
+
+function todoTimePrompt(title: string, dateStr: string): string {
+  return (
+    `🕐 <b>What time?</b>\n\n` +
+    `To-Do: <b>${title}</b>\n` +
+    `Date: <b>${dateStr}</b>\n\n` +
+    `Type a time:\n<i>(e.g., "8am", "2:30 pm", "18:30")</i>\n\n` +
+    `<b>— OR tap:</b>`
+  );
+}
+
+function todoTimeKb(): InlineKeyboard {
+  return [
+    [
+      { text: "8:00 AM", callback_data: "todo_time:08:00" },
+      { text: "12:00 PM", callback_data: "todo_time:12:00" },
+    ],
+    [
+      { text: "6:00 PM", callback_data: "todo_time:18:00" },
+      { text: "9:00 PM", callback_data: "todo_time:21:00" },
+    ],
+    [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+  ];
+}
+
 // Parse schedule days: supports "daily", or comma/dot-separated days e.g. "Mon, Wed, Fri"
 function parseScheduleDays(input: string): string | null {
   const clean = input.trim();
@@ -595,6 +747,145 @@ export async function POST(req: NextRequest) {
             updatedButtons
           );
         }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Show / Refresh List (pending only; done items are hidden) ---
+      if (callbackData === "todo_list") {
+        const todos = await getTodos();
+        await respondUi(chatId, messageId, buildTodoListText(todos), buildTodoListKeyboard(todos));
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Start Add Flow ---
+      if (callbackData.startsWith("todo_add:")) {
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_todo_title",
+          {},
+          `📝 <b>New To-Do</b>\n\nWhat's the task?\n<i>(e.g., "Submit assignment", "Call plumber")</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Quick Date Buttons -> Time Step ---
+      if (callbackData.startsWith("todo_date:")) {
+        const session = await getWizardSession(chatId);
+        if (!session || session.step !== "awaiting_todo_date" || !session.task_data.todoTitle) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Type /todo to start again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const which = callbackData.split(":")[1];
+        const dateStr = localDateString(new Date(Date.now() + (which === "tomorrow" ? 86400000 : 0)));
+        const taskData = { ...session.task_data, todoDate: dateStr };
+
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_todo_time",
+          taskData,
+          todoTimePrompt(taskData.todoTitle!, dateStr),
+          todoTimeKb(),
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Quick Time Buttons -> Save ---
+      if (callbackData.startsWith("todo_time:")) {
+        const session = await getWizardSession(chatId);
+        if (!session || session.step !== "awaiting_todo_time" || !session.task_data.todoTitle || !session.task_data.todoDate) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Type /todo to start again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const hhmm = callbackData.split(":")[1];
+        const dueAt = zonedDateTimeToUtc(session.task_data.todoDate, `${hhmm}:00`);
+        if (dueAt.getTime() <= Date.now()) {
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_todo_time",
+            session.task_data,
+            `⚠️ That time has already passed. Please pick a later time:`,
+            todoTimeKb(),
+            messageId
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const todo = await createTodo(session.task_data.todoTitle, dueAt.toISOString());
+        await clearWizardSession(chatId);
+
+        if (!todo) {
+          await respondUi(chatId, messageId, "⚠️ Could not save the to-do. Please try again.", []);
+          return NextResponse.json({ ok: true });
+        }
+        const view = buildTodoView(todo);
+        await respondUi(chatId, messageId, `✅ <b>To-Do saved!</b>\n\n${view.text}`, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: View ---
+      if (callbackData.startsWith("todo_view:")) {
+        const todo = await getTodoById(callbackData.split(":")[1]);
+        if (!todo) {
+          await respondUi(chatId, messageId, "⚠️ To-Do not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+        const view = buildTodoView(todo);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Mark Done (stays in DB, no reminder will fire) ---
+      if (callbackData.startsWith("todo_done:")) {
+        const todo = await setTodoDone(callbackData.split(":")[1], true);
+        if (!todo) {
+          await respondUi(chatId, messageId, "⚠️ To-Do not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+        const todos = await getTodos();
+        await respondUi(
+          chatId,
+          messageId,
+          `🎉 <b>Ticked:</b> ${todo.title}\n\n${buildTodoListText(todos)}`,
+          buildTodoListKeyboard(todos)
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Delete (only reachable for not-done todos; done ones are hidden) ---
+      if (callbackData.startsWith("todo_delete:")) {
+        const todo = await getTodoById(callbackData.split(":")[1]);
+        if (!todo) {
+          await respondUi(chatId, messageId, "⚠️ To-Do not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+        await respondUi(
+          chatId,
+          messageId,
+          `🗑️ <b>Delete "${todo.title}"?</b>\n\nThis removes it from your to-do list.`,
+          [
+            [{ text: "🗑️ Yes, Delete", callback_data: `todo_confirm_delete:${todo.id}` }],
+            [{ text: "❌ Cancel", callback_data: `todo_view:${todo.id}` }],
+          ]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- TODO: Delete (confirmed) ---
+      if (callbackData.startsWith("todo_confirm_delete:")) {
+        const todo = await getTodoById(callbackData.split(":")[1]);
+        if (todo) await deleteTodo(todo.id);
+        const todos = await getTodos();
+        await respondUi(
+          chatId,
+          messageId,
+          `🗑️ Deleted${todo ? `: <b>${todo.title}</b>` : ""}.\n\n${buildTodoListText(todos)}`,
+          buildTodoListKeyboard(todos)
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -1397,6 +1688,7 @@ export async function POST(req: NextRequest) {
           `<b>Available Commands:</b>\n` +
           `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
           `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
+          `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
           `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
@@ -1571,6 +1863,14 @@ export async function POST(req: NextRequest) {
         ]);
 
         await sendUiMessage(chatId, "✏️ <b>Edit Tasks</b>\nTap a task to edit or delete:", taskButtons);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /todo (one-time reminders with date & time) ---
+      if (text === "/todo" || text === "/todos") {
+        await setActiveTask(chatId, null);
+        const todos = await getTodos();
+        await sendUiMessage(chatId, buildTodoListText(todos), buildTodoListKeyboard(todos));
         return NextResponse.json({ ok: true });
       }
 
@@ -1842,6 +2142,101 @@ export async function POST(req: NextRequest) {
             chatId,
             `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`
           );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: New To-Do (title -> date -> time) ---
+        if (activeSession.step === "awaiting_todo_title") {
+          const title = text.trim();
+          if (title.length < 2 || isQuickGibberishCheck(title)) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_todo_title",
+              activeSession.task_data,
+              "⚠️ Please send a clear to-do title (at least 2 characters):",
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskData = { ...activeSession.task_data, todoTitle: title };
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_todo_date",
+            taskData,
+            todoDatePrompt(title),
+            todoDateKb()
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        if (activeSession.step === "awaiting_todo_date") {
+          const dateStr = parseTodoDate(text);
+          if (!dateStr || dateStr < localDateString()) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_todo_date",
+              activeSession.task_data,
+              `⚠️ Please send a valid upcoming date:\n` +
+                `<i>(e.g., "today", "tomorrow", "25 Sep", "28/09", "2026-09-30")</i>`,
+              todoDateKb()
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskData = { ...activeSession.task_data, todoDate: dateStr };
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_todo_time",
+            taskData,
+            todoTimePrompt(activeSession.task_data.todoTitle || "To-Do", dateStr),
+            todoTimeKb()
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        if (activeSession.step === "awaiting_todo_time") {
+          const parsedTime = parseReminderTime(text);
+          if (!parsedTime) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_todo_time",
+              activeSession.task_data,
+              `⚠️ I didn't recognize that time.\n\nPlease try like <b>8am</b>, <b>2:30 pm</b>, or <b>18:30</b>:`,
+              todoTimeKb()
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const { todoTitle, todoDate } = activeSession.task_data;
+          if (!todoTitle || !todoDate) {
+            await clearWizardSession(chatId);
+            await sendUiMessage(chatId, "⚠️ Session expired. Type /todo to start again.");
+            return NextResponse.json({ ok: true });
+          }
+
+          const dueAt = zonedDateTimeToUtc(todoDate, parsedTime);
+          if (dueAt.getTime() <= Date.now()) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_todo_time",
+              activeSession.task_data,
+              `⚠️ That time (<b>${todoDate} ${formatReminderTime(parsedTime)}</b>) has already passed.\n\nPlease pick a later time:`,
+              todoTimeKb()
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const todo = await createTodo(todoTitle, dueAt.toISOString());
+          await clearWizardSession(chatId);
+
+          if (!todo) {
+            await sendUiMessage(chatId, "⚠️ Could not save the to-do. Please try again.");
+            return NextResponse.json({ ok: true });
+          }
+
+          const view = buildTodoView(todo);
+          await sendUiMessage(chatId, `✅ <b>To-Do saved!</b>\n\n${view.text}`, view.keyboard);
           return NextResponse.json({ ok: true });
         }
 

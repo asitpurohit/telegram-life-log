@@ -11,6 +11,7 @@ export interface BotCommand {
 export const BOT_COMMANDS: BotCommand[] = [
   { command: "today", description: "Today's scorecard & progress" },
   { command: "tasks", description: "View routines & log habits" },
+  { command: "todo", description: "One-time to-dos with date & time" },
   { command: "log", description: "Daily diary & mood reflection" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },

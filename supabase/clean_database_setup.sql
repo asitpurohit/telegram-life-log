@@ -74,8 +74,22 @@ CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(is_archived);
 CREATE INDEX IF NOT EXISTS idx_logs_date ON logs(log_date);
 CREATE INDEX IF NOT EXISTS idx_logs_task_name ON logs(task_name);
 
--- 7. Ensure direct access permissions (disable RLS blocks)
+-- 7. To-Dos table (one-time tasks with an exact date & time)
+CREATE TABLE IF NOT EXISTS todos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    due_at TIMESTAMPTZ NOT NULL,
+    is_done BOOLEAN DEFAULT false,
+    done_at TIMESTAMPTZ,
+    reminded_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_at);
+
+-- 8. Ensure direct access permissions (disable RLS blocks)
 ALTER TABLE tasks DISABLE ROW LEVEL SECURITY;
 ALTER TABLE logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE active_timers DISABLE ROW LEVEL SECURITY;
 ALTER TABLE wizard_sessions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE todos DISABLE ROW LEVEL SECURITY;

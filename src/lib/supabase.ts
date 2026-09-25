@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { Task, Log, ActiveTimer, WizardSession } from "./types";
+import { Task, Log, ActiveTimer, WizardSession, Todo } from "./types";
 import { localDateString, localTimeString, localWeekday } from "./time";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co";
@@ -466,6 +466,98 @@ export async function saveWizardSession(
     console.error("Error saving wizard session:", err);
     return false;
   }
+}
+
+// ==========================================
+// TODO OPERATIONS (one-time, date + time)
+// ==========================================
+
+export async function createTodo(title: string, dueAtIso: string): Promise<Todo | null> {
+  const { data, error } = await supabase
+    .from("todos")
+    .insert([{ title, due_at: dueAtIso }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error creating todo:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function getTodos(): Promise<Todo[]> {
+  const { data, error } = await supabase
+    .from("todos")
+    .select("*")
+    .order("is_done", { ascending: true })
+    .order("due_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching todos:", error);
+    return [];
+  }
+  return data || [];
+}
+
+export async function getTodoById(id: string): Promise<Todo | null> {
+  const { data, error } = await supabase.from("todos").select("*").eq("id", id).maybeSingle();
+  if (error) return null;
+  return data;
+}
+
+export async function setTodoDone(id: string, done: boolean): Promise<Todo | null> {
+  const { data, error } = await supabase
+    .from("todos")
+    .update({ is_done: done, done_at: done ? new Date().toISOString() : null })
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error updating todo:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function deleteTodo(id: string): Promise<boolean> {
+  const { error } = await supabase.from("todos").delete().eq("id", id);
+  return !error;
+}
+
+// Pending todos whose time has arrived (with an optional catch-up window)
+export async function getDueTodos(catchUpHours = 6): Promise<Todo[]> {
+  const now = Date.now();
+  const { data, error } = await supabase
+    .from("todos")
+    .select("*")
+    .eq("is_done", false)
+    .is("reminded_at", null)
+    .lte("due_at", new Date(now).toISOString())
+    .gte("due_at", new Date(now - catchUpHours * 3600000).toISOString());
+
+  if (error) {
+    console.error("Error fetching due todos:", error);
+    return [];
+  }
+  return data || [];
+}
+
+// Marks a todo as reminded; returns false if someone else already claimed it
+export async function claimTodoReminder(id: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("todos")
+    .update({ reminded_at: new Date().toISOString() })
+    .eq("id", id)
+    .is("reminded_at", null)
+    .select("id");
+
+  if (error) {
+    console.error("Error claiming todo reminder:", error);
+    return true;
+  }
+  return (data?.length || 0) > 0;
 }
 
 // ==========================================

@@ -27,6 +27,16 @@ export interface Log {
   created_at?: string;
 }
 
+export interface Todo {
+  id: string;
+  title: string;
+  due_at: string; // ISO timestamp (one-time)
+  is_done: boolean;
+  done_at?: string | null;
+  reminded_at?: string | null;
+  created_at?: string;
+}
+
 export interface ActiveTimer {
   chat_id: string;
   task_id: string;
@@ -47,7 +57,10 @@ export interface WizardSession {
     | 'awaiting_edit_name'
     | 'awaiting_edit_goal'
     | 'awaiting_edit_reminder'
-    | 'awaiting_edit_days';
+    | 'awaiting_edit_days'
+    | 'awaiting_todo_title'
+    | 'awaiting_todo_date'
+    | 'awaiting_todo_time';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -57,6 +70,8 @@ export interface WizardSession {
     target_value?: number | null;
     unit?: string | null;
     promptMessageId?: number;
+    todoTitle?: string;
+    todoDate?: string; // YYYY-MM-DD
   };
   updated_at?: string;
 }

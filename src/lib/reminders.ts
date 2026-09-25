@@ -1,6 +1,6 @@
-import { supabase, isTaskScheduledForToday } from "./supabase";
+import { supabase, isTaskScheduledForToday, getDueTodos, claimTodoReminder } from "./supabase";
 import { sendTelegramMessage, InlineKeyboard } from "./telegram";
-import { localDateString, localHHMMSS } from "./time";
+import { localDateString, localHHMMSS, todoDueLabel } from "./time";
 
 // DB-backed dedupe (works across serverless invocations): a unique row in
 // wizard_sessions acts as a lock so a reminder is sent at most once per day.
@@ -39,13 +39,13 @@ async function resolveChatId(override?: string | null): Promise<string | null> {
 export async function sendDueReminders(
   timeToMatch?: string,
   chatIdOverride?: string | null
-): Promise<{ status: string; count: number; tasks: string[]; time: string }> {
+): Promise<{ status: string; count: number; tasks: string[]; todos: string[]; time: string }> {
   // Reminder times are stored at minute precision (e.g. "08:00:00")
   const time = timeToMatch || `${localHHMMSS().slice(0, 5)}:00`;
   const targetChatId = await resolveChatId(chatIdOverride);
 
   if (!targetChatId) {
-    return { status: "no_target_chat", count: 0, tasks: [], time };
+    return { status: "no_target_chat", count: 0, tasks: [], todos: [], time };
   }
 
   const { data: dueTasks, error } = await supabase
@@ -56,16 +56,12 @@ export async function sendDueReminders(
 
   if (error) {
     console.error("Error querying reminders:", error);
-    return { status: "error", count: 0, tasks: [], time };
-  }
-
-  if (!dueTasks || dueTasks.length === 0) {
-    return { status: "no_reminders_due", count: 0, tasks: [], time };
+    return { status: "error", count: 0, tasks: [], todos: [], time };
   }
 
   const sentTasks: string[] = [];
 
-  for (const task of dueTasks) {
+  for (const task of dueTasks || []) {
     if (!isTaskScheduledForToday(task.target_days)) continue;
 
     const canSend = await claimReminderSend(task.id, localDateString(), time);
@@ -103,10 +99,31 @@ export async function sendDueReminders(
     sentTasks.push(task.name);
   }
 
+  // One-time todos due now (catch-up window handled inside getDueTodos)
+  const dueTodos = await getDueTodos(6);
+  const sentTodos: string[] = [];
+
+  for (const todo of dueTodos) {
+    const claimed = await claimTodoReminder(todo.id);
+    if (!claimed) continue;
+
+    await sendTelegramMessage(
+      targetChatId,
+      `⏰ <b>Todo: ${todo.title}</b>\n` +
+        `🕐 ${todoDueLabel(todo.due_at)}\n\n` +
+        `Tap below when it's done:`,
+      [[{ text: `✅ Done: ${todo.title.slice(0, 30)}`, callback_data: `todo_done:${todo.id}` }]]
+    );
+    sentTodos.push(todo.title);
+  }
+
+  const total = sentTasks.length + sentTodos.length;
+
   return {
-    status: sentTasks.length > 0 ? "reminders_sent" : "no_reminders_due",
-    count: sentTasks.length,
+    status: total > 0 ? "reminders_sent" : "no_reminders_due",
+    count: total,
     tasks: sentTasks,
+    todos: sentTodos,
     time,
   };
 }
