@@ -2159,18 +2159,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // CASUAL CHAT / QUESTIONS / TYPOS (CLEAN)
-      await sendUiMessage(
-        chatId,
-        ai.replyMessage ||
-          `👋 I received: <i>"${text}"</i>\n\n` +
-            `<b>Commands:</b>\n` +
-            `• <b>/tasks</b> — View your task list\n` +
-            `• <b>/today</b> — View today's scorecard\n` +
-            `• <b>/addtask</b> — Create a new task\n` +
-            `• <b>/log</b> — Write your daily diary\n` +
-            `• <b>/status</b> — Check active timer`
-      );
+      // NO CONTEXT / MEANINGLESS TEXT: delete silently, no reply
+      if (messageId) {
+        await deleteTelegramMessage(chatId, messageId);
+      }
     }
 
     return NextResponse.json({ ok: true });

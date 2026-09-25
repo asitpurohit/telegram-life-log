@@ -130,13 +130,7 @@ function fallbackParser(text: string, existingTasks: string[]): AIParsedIntent {
   }
 
   return {
-    intent: "DIARY_ENTRY",
-    diary: {
-      summary: text.slice(0, 100),
-      people: [],
-      projects: [],
-      decisions: [],
-    },
-    replyMessage: "Saved to your diary!",
+    intent: "UNKNOWN",
+    replyMessage: "",
   };
 }
