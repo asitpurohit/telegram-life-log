@@ -1688,12 +1688,12 @@ export async function POST(req: NextRequest) {
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
           `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
-          `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
           `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
+          `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
+          `• <b>/ask</b> — 🤖 Ask AI about your data & progress\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
-          `• <b>/edit</b> — ✏️ Edit or delete tasks\n` +
-          `• <b>/ask</b> — 🤖 Ask AI about your data & progress\n\n` +
+          `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
           `Type any command above or tap <b>/</b> on your keyboard to begin!`;
 
         await sendTelegramMessage(chatId, welcomeText);
