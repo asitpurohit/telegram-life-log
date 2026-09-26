@@ -255,6 +255,7 @@ export async function stopActiveTimer(
   durationSeconds: number;
   durationMinutes: number;
   taskId: string;
+  logId: string | null;
 } | null> {
   const active = await getActiveTimer(chatId);
   if (!active) return null;
@@ -265,7 +266,7 @@ export async function stopActiveTimer(
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
   // Log completed session to logs table (the ONLY database write for a timer)
-  await logActivity({
+  const sessionLog = await logActivity({
     task_id: active.task_id,
     task_name: active.task_name,
     value: durationMinutes,
@@ -280,6 +281,7 @@ export async function stopActiveTimer(
     durationSeconds,
     durationMinutes,
     taskId: active.task_id,
+    logId: sessionLog?.id || null,
   };
 }
 
@@ -301,6 +303,7 @@ export async function logActivity(log: Log): Promise<Log | null> {
   if (log.people !== undefined) insertPayload.people = log.people;
   if (log.decisions !== undefined) insertPayload.decisions = log.decisions;
   if (log.mood !== undefined) insertPayload.mood = log.mood;
+  if (log.focus !== undefined) insertPayload.focus = log.focus;
 
   const { data, error } = await supabase
     .from("logs")
@@ -326,6 +329,95 @@ export async function updateDiaryMood(logId: string, mood: string): Promise<bool
     return false;
   }
   return true;
+}
+
+// ==========================================
+// SESSION FOCUS (per task entry: focused / casual / distracted)
+// ==========================================
+
+export interface FocusTotals {
+  focused: number;
+  casual: number;
+  distracted: number;
+  tagged: number;
+}
+
+export async function updateLogFocus(logId: string, focus: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("logs")
+    .update({ focus })
+    .eq("id", logId);
+
+  if (error) {
+    console.error("Error updating log focus:", error);
+    return false;
+  }
+  return true;
+}
+
+// Focus totals for one task today (only positive tagged entries are counted)
+export async function getTodayTaskFocus(taskName: string): Promise<FocusTotals> {
+  const today = localDateString();
+  const { data, error } = await supabase
+    .from("logs")
+    .select("focus, value")
+    .eq("task_name", taskName)
+    .eq("log_date", today)
+    .not("focus", "is", null);
+
+  if (error || !data) return { focused: 0, casual: 0, distracted: 0, tagged: 0 };
+  return sumFocusRows(data);
+}
+
+// Focus totals per task over a date range (used by /ask)
+export async function getFocusTotals(
+  from: string,
+  to: string,
+  taskName?: string
+): Promise<Array<{ task: string } & FocusTotals>> {
+  let query = supabase
+    .from("logs")
+    .select("task_name, focus, value")
+    .gte("log_date", from)
+    .lte("log_date", to)
+    .not("focus", "is", null)
+    .limit(2000);
+
+  if (taskName) query = query.ilike("task_name", `%${taskName}%`);
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  const byTask = new Map<string, FocusTotals>();
+  for (const row of data) {
+    const value = row.value || 0;
+    if (value <= 0 || !row.focus) continue;
+    if (!["focused", "casual", "distracted"].includes(row.focus)) continue;
+
+    const entry = byTask.get(row.task_name) || { focused: 0, casual: 0, distracted: 0, tagged: 0 };
+    if (row.focus === "focused") entry.focused += value;
+    else if (row.focus === "casual") entry.casual += value;
+    else entry.distracted += value;
+    entry.tagged += value;
+    byTask.set(row.task_name, entry);
+  }
+
+  return Array.from(byTask.entries()).map(([task, totals]) => ({ task, ...totals }));
+}
+
+function sumFocusRows(rows: Array<{ focus: string | null; value: number | null }>): FocusTotals {
+  const totals: FocusTotals = { focused: 0, casual: 0, distracted: 0, tagged: 0 };
+  for (const row of rows) {
+    const value = row.value || 0;
+    if (value <= 0 || !row.focus) continue;
+    if (!["focused", "casual", "distracted"].includes(row.focus)) continue;
+
+    if (row.focus === "focused") totals.focused += value;
+    else if (row.focus === "casual") totals.casual += value;
+    else totals.distracted += value;
+    totals.tagged += value;
+  }
+  return totals;
 }
 
 export function formatMoodDisplay(mood?: string | null): string {

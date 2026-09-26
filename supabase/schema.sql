@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS logs (
     projects TEXT[],                                 -- Extracted project tags
     people TEXT[],                                   -- Extracted people mentioned
     decisions TEXT[],                                -- Extracted decisions made
+    focus TEXT,                                      -- Per-session focus: 'focused' | 'casual' | 'distracted'
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -38,7 +39,8 @@ ADD COLUMN IF NOT EXISTS mood TEXT,
 ADD COLUMN IF NOT EXISTS summary TEXT,
 ADD COLUMN IF NOT EXISTS projects TEXT[],
 ADD COLUMN IF NOT EXISTS people TEXT[],
-ADD COLUMN IF NOT EXISTS decisions TEXT[];
+ADD COLUMN IF NOT EXISTS decisions TEXT[],
+ADD COLUMN IF NOT EXISTS focus TEXT;
 
 -- 3. Active Timers Table (Tracks currently running stopwatch sessions)
 CREATE TABLE IF NOT EXISTS active_timers (

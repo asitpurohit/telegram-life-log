@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS logs (
     projects TEXT[],
     people TEXT[],
     decisions TEXT[],
+    focus TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -48,7 +49,8 @@ ADD COLUMN IF NOT EXISTS mood TEXT,
 ADD COLUMN IF NOT EXISTS summary TEXT,
 ADD COLUMN IF NOT EXISTS projects TEXT[],
 ADD COLUMN IF NOT EXISTS people TEXT[],
-ADD COLUMN IF NOT EXISTS decisions TEXT[];
+ADD COLUMN IF NOT EXISTS decisions TEXT[],
+ADD COLUMN IF NOT EXISTS focus TEXT;
 
 -- Clean up any temporary session rows from logs
 DELETE FROM logs WHERE task_name = '__wizard_session__';

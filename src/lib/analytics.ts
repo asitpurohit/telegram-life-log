@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, ToolUnion } from "@google/genai";
-import { supabase, getActiveTasks, getTodos } from "./supabase";
+import { supabase, getActiveTasks, getTodos, getFocusTotals } from "./supabase";
 import { localDateString, todoDueLabel } from "./time";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
@@ -40,7 +40,7 @@ async function toolGetLogs(args: ToolArgs) {
   const { from, to } = clampRange(args.from, args.to);
   let query = supabase
     .from("logs")
-    .select("log_date, task_name, value, notes, mood, summary")
+    .select("log_date, task_name, value, notes, mood, focus, summary")
     .gte("log_date", from)
     .lte("log_date", to)
     .order("log_date", { ascending: true })
@@ -60,7 +60,32 @@ async function toolGetLogs(args: ToolArgs) {
       task: l.task_name,
       value: l.value,
       mood: l.mood || undefined,
+      focus: l.focus || undefined,
       note: l.notes ? String(l.notes).slice(0, 200) : undefined,
+    })),
+  };
+}
+
+async function toolGetFocus(args: ToolArgs) {
+  const { from, to } = clampRange(args.from, args.to);
+  const rows = await getFocusTotals(from, to, args.task);
+
+  const pct = (v: number, tagged: number) => (tagged ? Math.round((v / tagged) * 100) : 0);
+
+  return {
+    from,
+    to,
+    note: "Percentages are weighted by entry value (minutes/count) and exclude untagged entries.",
+    tasks: rows.map((r) => ({
+      task: r.task,
+      focused: r.focused,
+      casual: r.casual,
+      distracted: r.distracted,
+      tagged: r.tagged,
+      focusedPct: pct(r.focused, r.tagged),
+      casualPct: pct(r.casual, r.tagged),
+      distractedPct: pct(r.distracted, r.tagged),
+      score: r.tagged ? Math.round(((r.focused - r.distracted) / r.tagged) * 100) / 100 : 0,
     })),
   };
 }
@@ -169,6 +194,8 @@ export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): P
         return await toolGetSummary(args);
       case "search_logs":
         return await toolSearchLogs(args);
+      case "get_focus":
+        return await toolGetFocus(args);
       case "get_todos":
         return await toolGetTodos(args);
       default:
@@ -193,6 +220,7 @@ Rules:
 - ALWAYS call the tools to fetch real data before answering. Never invent numbers.
 - Use get_summary for totals/percentages/averages, get_logs for details and diary notes, get_tasks for goals, get_todos for to-dos.
 - Use search_logs for keyword/text searches (e.g. "when did I mention KTX2", "find entries about the game").
+- Use get_focus for focus/concentration questions (focused / casual / distracted, percentages and score). Untagged entries are excluded from those percentages.
 - IMPORTANT: diary entries describe work done on tasks. For questions like "what did I do in <task>" or "when did I do <task>", ALWAYS call search_logs with the task name as the keyword, because the details live in diary notes. You may also call get_logs/get_summary for that task to add totals.
 - Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
@@ -249,6 +277,20 @@ Rules:
               task: { type: Type.STRING, description: "Optional task name filter" },
             },
             required: ["keyword"],
+          },
+        },
+        {
+          name: "get_focus",
+          description:
+            "Get per-session focus analytics for tasks: focused / casual / distracted totals, percentages (weighted by minutes or count) and a focus score (−1 to +1). Use for questions about focus, concentration or distraction. Untagged entries are excluded.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              from: { type: Type.STRING, description: "Start date, YYYY-MM-DD" },
+              to: { type: Type.STRING, description: "End date, YYYY-MM-DD" },
+              task: { type: Type.STRING, description: "Optional task name filter" },
+            },
+            required: ["from", "to"],
           },
         },
         {

@@ -41,6 +41,8 @@ import {
   isTaskScheduledForToday,
   updateDiaryMood,
   formatMoodDisplay,
+  updateLogFocus,
+  getTodayTaskFocus,
   createTodo,
   getTodos,
   getTodoById,
@@ -409,6 +411,25 @@ function buildTaskSummary(task: Task): string {
   );
 }
 
+// Focus buttons shown after positive task entries (timer stop, minutes, counts)
+function buildFocusKeyboard(logId: string, selected?: string | null): InlineKeyboard {
+  return [
+    [
+      { text: selected === "focused" ? "✅ 🎯 Focused" : "🎯 Focused", callback_data: `set_focus:${logId}:focused` },
+      { text: selected === "casual" ? "✅ 😐 Casual" : "😐 Casual", callback_data: `set_focus:${logId}:casual` },
+      { text: selected === "distracted" ? "✅ 😵 Distracted" : "😵 Distracted", callback_data: `set_focus:${logId}:distracted` },
+    ],
+  ];
+}
+
+function formatFocusBadge(totals: { focused: number; casual: number; distracted: number; tagged: number }): string {
+  if (!totals.tagged) return "";
+  const pct = (v: number) => Math.round((v / totals.tagged) * 100);
+  return ` [🎯 ${pct(totals.focused)}% · 😐 ${pct(totals.casual)}% · 😵 ${pct(totals.distracted)}%]`;
+}
+
+const FOCUS_QUESTION = "\n\n<b>How was this session?</b>";
+
 // Diary mentions become note-only rows on the matching tasks.
 // value is always 0, so totals, counters and ticks are never affected.
 async function attachDiarySubjects(
@@ -666,12 +687,14 @@ async function buildTodayScorecard(): Promise<string> {
         const mins = await getTodayTaskTotal(t.name);
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
-        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${scheduleTag}\n`;
+        const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
+        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${focusBadge}${scheduleTag}\n`;
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;
         const pct = Math.min(100, Math.round((val / target) * 100));
-        text += `💧 <b>${t.name}:</b> ${val.toLocaleString()} / ${formatGoalDisplay(target, t.unit)} (${pct}%)${scheduleTag}\n`;
+        const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
+        text += `💧 <b>${t.name}:</b> ${val.toLocaleString()} / ${formatGoalDisplay(target, t.unit)} (${pct}%)${focusBadge}${scheduleTag}\n`;
       }
     }
   }
@@ -801,6 +824,26 @@ export async function POST(req: NextRequest) {
             updatedButtons
           );
         }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- FOCUS: Tag a task entry's session focus ---
+      if (callbackData.startsWith("set_focus:")) {
+        const [, logId, value] = callbackData.split(":");
+        const allowed = ["focused", "casual", "distracted"];
+        if (!logId || !allowed.includes(value)) {
+          await respondUi(chatId, messageId, "⚠️ Invalid focus option.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        await updateLogFocus(logId, value);
+
+        const label = value === "focused" ? "🎯 Focused" : value === "casual" ? "😐 Casual" : "😵 Distracted";
+        const kb: InlineKeyboard = [
+          ...buildFocusKeyboard(logId, value),
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ];
+        await respondUi(chatId, messageId, `✅ <b>Session focus saved:</b> ${label}`, kb);
         return NextResponse.json({ ok: true });
       }
 
@@ -1438,7 +1481,7 @@ export async function POST(req: NextRequest) {
         const taskName = task ? task.name : "Study/Work";
         const target = task?.target_value || 60;
 
-        await logActivity({
+        const newLog = await logActivity({
           task_id: taskId,
           task_name: taskName,
           value: mins,
@@ -1448,14 +1491,15 @@ export async function POST(req: NextRequest) {
         const newTotal = await getTodayTaskTotal(taskName);
         const percent = Math.round((newTotal / target) * 100);
 
-        const replyKb: InlineKeyboard = [
-          [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${taskId}` }],
-          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-        ];
+        const replyKb: InlineKeyboard = [];
+        if (newLog?.id) replyKb.push(...buildFocusKeyboard(newLog.id));
+        replyKb.push([{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${taskId}` }]);
+        replyKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
 
         const text =
           `⏱️ <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
-          `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`;
+          `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
+          (newLog?.id ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
@@ -1606,16 +1650,17 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
-        const stopKb: InlineKeyboard = [
-          [{ text: `▶️ Start ${result.taskName} Again`, callback_data: `start_task:${result.taskId}` }],
-          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-        ];
+        const stopKb: InlineKeyboard = [];
+        if (result.logId) stopKb.push(...buildFocusKeyboard(result.logId));
+        stopKb.push([{ text: `▶️ Start ${result.taskName} Again`, callback_data: `start_task:${result.taskId}` }]);
+        stopKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
 
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
-          `Saved to your log!`;
+          `Saved to your log!` +
+          (result.logId ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, stopKb);
         return NextResponse.json({ ok: true });
@@ -1628,7 +1673,7 @@ export async function POST(req: NextRequest) {
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Habit";
 
-        await logActivity({
+        const newLog = await logActivity({
           task_id: taskId,
           task_name: taskName,
           value: amount,
@@ -1638,18 +1683,19 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 5000;
         const percent = Math.min(100, Math.round((total / target) * 100));
 
-        const replyKb: InlineKeyboard = [
-          [
-            { text: `+1 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:1` },
-            { text: `+5 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:5` },
-            { text: `+10 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:10` },
-          ],
-          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-        ];
+        const replyKb: InlineKeyboard = [];
+        if (newLog?.id) replyKb.push(...buildFocusKeyboard(newLog.id));
+        replyKb.push([
+          { text: `+1 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:1` },
+          { text: `+5 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:5` },
+          { text: `+10 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:10` },
+        ]);
+        replyKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
 
         const text =
           `💧 <b>${taskName}</b>: Logged +${amount} ${task?.unit || ""}!\n` +
-          `📊 Today: <b>${total.toLocaleString()} / ${formatGoalDisplay(target, task?.unit)}</b> (${percent}%)`;
+          `📊 Today: <b>${total.toLocaleString()} / ${formatGoalDisplay(target, task?.unit)}</b> (${percent}%)` +
+          (newLog?.id ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
@@ -2119,7 +2165,7 @@ export async function POST(req: NextRequest) {
           const taskName = activeSession.task_data.name || "Study/Work";
           const target = activeSession.task_data.target_value || 60;
 
-          await logActivity({
+          const customLog = await logActivity({
             task_id: taskId || null,
             task_name: taskName,
             value: num,
@@ -2132,10 +2178,13 @@ export async function POST(req: NextRequest) {
           const newTotal = await getTodayTaskTotal(taskName);
           const percent = Math.round((newTotal / target) * 100);
 
-          await sendTelegramMessage(
+          const customKb: InlineKeyboard = customLog?.id ? buildFocusKeyboard(customLog.id) : [];
+          await sendUiMessage(
             chatId,
             `⏱️ <b>+${num} mins logged for ${taskName}!</b>\n\n` +
-              `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)`
+              `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
+              (customLog?.id ? FOCUS_QUESTION : ""),
+            customKb
           );
           if (customPromptId) {
             await removeInlineKeyboard(chatId, customPromptId);
@@ -2675,7 +2724,7 @@ export async function POST(req: NextRequest) {
 
             const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
 
-            await logActivity({
+            const newLog = await logActivity({
               task_id: activeTask.id,
               task_name: activeTask.name,
               value: applied,
@@ -2689,6 +2738,8 @@ export async function POST(req: NextRequest) {
 
             const detail = await buildTaskDetail(activeTask);
             let text: string;
+            let keyboard = detail.keyboard;
+
             if (applied < 0) {
               text = `✅ <b>${applied.toLocaleString()} ${unitLabel}</b> correction applied to <b>${activeTask.name}</b>.`;
               if (clampedFrom !== null) {
@@ -2696,8 +2747,12 @@ export async function POST(req: NextRequest) {
               }
             } else {
               text = `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
+              if (newLog?.id) {
+                text += FOCUS_QUESTION;
+                keyboard = [...buildFocusKeyboard(newLog.id), ...detail.keyboard];
+              }
             }
-            await sendUiMessage(chatId, `${text}\n\n${detail.text}`, detail.keyboard);
+            await sendUiMessage(chatId, `${text}\n\n${detail.text}`, keyboard);
             return NextResponse.json({ ok: true });
           }
         }

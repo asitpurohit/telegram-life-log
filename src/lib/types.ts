@@ -12,6 +12,8 @@ export interface Task {
   created_at?: string;
 }
 
+export type FocusMood = "focused" | "casual" | "distracted";
+
 export interface Log {
   id?: string;
   task_id?: string | null;
@@ -24,6 +26,7 @@ export interface Log {
   people?: string[] | null;
   decisions?: string[] | null;
   mood?: string | null;
+  focus?: FocusMood | null;
   created_at?: string;
 }
 
