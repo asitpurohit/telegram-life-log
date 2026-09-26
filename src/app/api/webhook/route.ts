@@ -392,7 +392,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
     };
   }
   return {
-    text: `⬜ <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
+    text: `📌 <b>${task.name}</b>\nSchedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\nReady to mark complete:`,
     keyboard: [
       [{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${task.id}` }],
       [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
@@ -533,7 +533,7 @@ function parseTodoDate(input: string): string | null {
 
 function todoStatusIcon(todo: Todo): string {
   if (todo.is_done) return "✅";
-  return new Date(todo.due_at).getTime() < Date.now() ? "⌛" : "⬜";
+  return new Date(todo.due_at).getTime() < Date.now() ? "⌛" : "🕐";
 }
 
 function buildTodoListText(todos: Todo[]): string {
@@ -562,7 +562,7 @@ function buildTodoListKeyboard(todos: Todo[]): InlineKeyboard {
 
 function buildTodoView(todo: Todo): { text: string; keyboard: InlineKeyboard } {
   const overdue = new Date(todo.due_at).getTime() < Date.now();
-  const status = overdue ? "⌛ Overdue (not done)" : "⬜ Pending";
+  const status = overdue ? "⌛ Overdue (not done)" : "🕐 Pending";
 
   const text =
     `📝 <b>${todo.title}</b>\n` +
@@ -694,7 +694,7 @@ async function buildTodayScorecard(): Promise<string> {
 
       if (t.type === "tick") {
         const isDone = await isTaskCompletedToday(t.id);
-        text += `${isDone ? "✅" : isScheduledToday ? "⬜" : "💤"} <b>${t.name}</b> ${isDone ? "<i>(Done)</i>" : isScheduledToday ? "<i>(Pending)</i>" : scheduleTag}\n`;
+        text += `${isDone ? "✅" : isScheduledToday ? "📌" : "💤"} <b>${t.name}</b> ${isDone ? "<i>(Done)</i>" : isScheduledToday ? "<i>(Pending)</i>" : scheduleTag}\n`;
       } else if (t.type === "timer") {
         const mins = await getTodayTaskTotal(t.name);
         const target = t.target_value || 60;
@@ -1192,7 +1192,7 @@ export async function POST(req: NextRequest) {
             const isDone = await isTaskCompletedToday(t.id);
             taskButtons.push([
               {
-                text: `${isDone ? "✅" : "⬜"} ${t.name}${isDone ? " (Done)" : ""}`,
+                text: `${isDone ? "✅" : "📌"} ${t.name}${isDone ? " (Done)" : ""}`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -1940,7 +1940,7 @@ export async function POST(req: NextRequest) {
             const isDone = await isTaskCompletedToday(t.id);
             taskButtons.push([
               {
-                text: `${isDone ? "✅" : "⬜"} ${t.name}${isDone ? " (Done)" : ""}`,
+                text: `${isDone ? "✅" : "📌"} ${t.name}${isDone ? " (Done)" : ""}`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
