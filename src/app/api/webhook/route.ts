@@ -22,6 +22,9 @@ import {
   getPauseState,
   setPauseState,
   clearPauseState,
+  getNudgeState,
+  setNudgeState,
+  clearNudgeState,
   stopActiveTimer,
   logActivity,
   getTodayTaskTotal,
@@ -53,7 +56,7 @@ import {
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
-import { buildTimerView, formatDuration } from "@/lib/timerRuntime";
+import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
 import { localDateLabel, localTimeString, localDateString, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
@@ -1562,6 +1565,7 @@ export async function POST(req: NextRequest) {
 
         const active = await startActiveTimer(chatId, taskId, taskName);
         await clearPauseState(chatId);
+        await clearNudgeState(chatId);
         await setActiveTask(chatId, taskId);
 
         const startedAt = active?.started_at || new Date().toISOString();
@@ -1587,6 +1591,13 @@ export async function POST(req: NextRequest) {
         // Double-tap: keep the first pause moment
         const pausedAt = pause.pausedAt ?? Date.now();
         await setPauseState(chatId, { pausedAt, pausedSeconds: pause.pausedSeconds });
+
+        // Pausing removes the pending "still running" nudge
+        const nudge = await getNudgeState(chatId);
+        if (nudge.messageId) {
+          await deleteTelegramMessage(chatId, nudge.messageId);
+        }
+        await clearNudgeState(chatId);
 
         const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds);
         await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -1615,6 +1626,13 @@ export async function POST(req: NextRequest) {
         }
         await setPauseState(chatId, { pausedAt: null, pausedSeconds });
 
+        // Nudge interval restarts from the resume moment
+        const nudge = await getNudgeState(chatId);
+        if (nudge.messageId) {
+          await deleteTelegramMessage(chatId, nudge.messageId);
+        }
+        await setNudgeState(chatId, { messageId: null, nextNudgeAt: Date.now() + NUDGE_INTERVAL_MS });
+
         const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -1642,6 +1660,13 @@ export async function POST(req: NextRequest) {
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
+        // Refresh also clears the pending nudge (next one stays on schedule)
+        const nudge = await getNudgeState(chatId);
+        if (nudge.messageId) {
+          await deleteTelegramMessage(chatId, nudge.messageId);
+          await setNudgeState(chatId, { messageId: null, nextNudgeAt: nudge.nextNudgeAt });
+        }
+
         if (messageId) {
           await trackTimerMessage(chatId, messageId);
         }
@@ -1658,6 +1683,13 @@ export async function POST(req: NextRequest) {
 
         const result = await stopActiveTimer(chatId, endMs > 0 ? endMs : undefined, pause.pausedSeconds);
         await clearPauseState(chatId);
+
+        // Stop removes the pending "still running" nudge
+        const nudge = await getNudgeState(chatId);
+        if (nudge.messageId) {
+          await deleteTelegramMessage(chatId, nudge.messageId);
+        }
+        await clearNudgeState(chatId);
 
         if (!result) {
           await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);
@@ -2035,6 +2067,12 @@ export async function POST(req: NextRequest) {
           pause.pausedSeconds
         );
         await clearPauseState(chatId);
+
+        const nudge = await getNudgeState(chatId);
+        if (nudge.messageId) {
+          await deleteTelegramMessage(chatId, nudge.messageId);
+        }
+        await clearNudgeState(chatId);
         if (!result) {
           await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
         } else {

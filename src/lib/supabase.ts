@@ -281,6 +281,51 @@ export async function clearPauseState(chatId: string | number): Promise<void> {
   if (error) console.error("Error clearing pause state:", error);
 }
 
+// Running-timer nudge state (the "still running" notification message)
+const NUDGE_PREFIX = "__nudge__:";
+
+export interface NudgeState {
+  messageId: number | null; // the currently visible nudge message
+  nextNudgeAt: number; // epoch ms when the next nudge is due (0 = never set)
+}
+
+export async function getNudgeState(chatId: string | number): Promise<NudgeState> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${NUDGE_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data) return { messageId: null, nextNudgeAt: 0 };
+
+  const state = data.task_data as { messageId?: unknown; nextNudgeAt?: unknown } | null;
+  const messageId = typeof state?.messageId === "number" ? state.messageId : null;
+  const nextNudgeAt = typeof state?.nextNudgeAt === "number" ? state.nextNudgeAt : 0;
+  return { messageId, nextNudgeAt };
+}
+
+export async function setNudgeState(chatId: string | number, state: NudgeState): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `${NUDGE_PREFIX}${chatId}`,
+      step: "ui_nudge",
+      task_data: { messageId: state.messageId, nextNudgeAt: state.nextNudgeAt },
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error saving nudge state:", error);
+}
+
+export async function clearNudgeState(chatId: string | number): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .delete()
+    .eq("chat_id", `${NUDGE_PREFIX}${chatId}`);
+
+  if (error) console.error("Error clearing nudge state:", error);
+}
+
 export async function stopActiveTimer(
   chatId: string | number,
   endTimeMs?: number,

@@ -1,6 +1,20 @@
-import { getAllActiveTimers, getTimerMessage, getPauseState } from "./supabase";
-import { editTelegramMessage, InlineKeyboard } from "./telegram";
+import {
+  getAllActiveTimers,
+  getTimerMessage,
+  getPauseState,
+  getNudgeState,
+  setNudgeState,
+} from "./supabase";
+import {
+  editTelegramMessage,
+  sendTelegramMessage,
+  deleteTelegramMessage,
+  InlineKeyboard,
+} from "./telegram";
 import { localTimeString } from "./time";
+
+// "Still running" notification interval
+export const NUDGE_INTERVAL_MS = 5 * 60 * 1000;
 
 export function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -60,21 +74,51 @@ export function buildTimerView(
 }
 
 // Called periodically by the local polling runner (5s) and by the Vercel cron
-// (/api/tick, 1 min) to make running timers tick.
+// (/api/tick, 1 min) to make running timers tick and to send "still running"
+// notifications every 5 minutes.
 export async function refreshRunningTimerMessages(): Promise<void> {
   const timers = await getAllActiveTimers();
 
   for (const timer of timers) {
     const messageId = await getTimerMessage(timer.chat_id);
-    if (!messageId) continue;
-
     const pause = await getPauseState(timer.chat_id);
-    const view = buildTimerView(
-      timer.task_name,
-      timer.started_at,
-      pause.pausedAt ?? 0,
-      pause.pausedSeconds
+
+    // 1) Keep the live timer view fresh
+    if (messageId) {
+      const view = buildTimerView(
+        timer.task_name,
+        timer.started_at,
+        pause.pausedAt ?? 0,
+        pause.pausedSeconds
+      );
+      await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
+    }
+
+    // 2) "Still running" nudge every 5 minutes (never while paused)
+    if (pause.pausedAt) continue;
+
+    const now = Date.now();
+    const nudge = await getNudgeState(timer.chat_id);
+    const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;
+    if (now < nextNudgeAt) continue;
+
+    // Replace the previous nudge so only one is ever visible
+    if (nudge.messageId) {
+      await deleteTelegramMessage(timer.chat_id, nudge.messageId);
+    }
+
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((now - new Date(timer.started_at).getTime()) / 1000) - pause.pausedSeconds
     );
-    await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
+    const sent = await sendTelegramMessage(
+      timer.chat_id,
+      `⏱️ <b>${timer.task_name}</b> is still running — <b>${formatDuration(elapsedSeconds)}</b> elapsed.`
+    );
+
+    await setNudgeState(timer.chat_id, {
+      messageId: sent?.result?.message_id ?? null,
+      nextNudgeAt: now + NUDGE_INTERVAL_MS,
+    });
   }
 }
