@@ -47,7 +47,7 @@ import {
   setTodoDone,
   deleteTodo,
 } from "@/lib/supabase";
-import { parseUserMessageWithAI, isQuickGibberishCheck } from "@/lib/ai";
+import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
 import {
   buildTimerView,
@@ -389,6 +389,41 @@ function buildTaskSummary(task: Task): string {
     `⏰ Reminder: <b>${formatReminderTime(task.reminder_time)}</b>\n` +
     `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>`
   );
+}
+
+// Diary mentions become note-only rows on the matching tasks.
+// value is always 0, so totals, counters and ticks are never affected.
+async function attachDiarySubjects(
+  ai: AIParsedIntent,
+  tasks: Task[]
+): Promise<{ task: string; detail: string }[]> {
+  const merged = new Map<string, { name: string; details: string[] }>();
+
+  for (const subject of ai.subjects || []) {
+    const name = String(subject.task || "").trim();
+    const detail = String(subject.detail || "").trim();
+    if (!name || !detail) continue;
+
+    const match = tasks.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (!match) continue;
+
+    const entry = merged.get(match.id) || { name: match.name, details: [] };
+    entry.details.push(detail);
+    merged.set(match.id, entry);
+  }
+
+  const attached: { task: string; detail: string }[] = [];
+  for (const [taskId, entry] of merged.entries()) {
+    const detailText = entry.details.join("; ");
+    await logActivity({
+      task_id: taskId,
+      task_name: entry.name,
+      value: 0,
+      notes: `From diary: ${detailText}`,
+    });
+    attached.push({ task: entry.name, detail: detailText });
+  }
+  return attached;
 }
 
 // =========================================================================
@@ -1706,7 +1741,8 @@ export async function POST(req: NextRequest) {
         const noteContent = text.replace(/^\/(log|diary)\s*/i, "").trim();
 
         if (noteContent.length >= 3) {
-          const ai = await parseUserMessageWithAI(noteContent, []);
+          const diaryTasks = await getActiveTasks();
+          const ai = await parseUserMessageWithAI(noteContent, diaryTasks.map((t) => t.name));
 
           if (!ai.isMeaningful) {
             await sendTelegramMessage(
@@ -1732,6 +1768,8 @@ export async function POST(req: NextRequest) {
             mood,
           });
 
+          const attached = await attachDiarySubjects(ai, diaryTasks);
+
           const moodDisplay = formatMoodDisplay(mood);
           let reply = `📖 <b>Diary Saved for Today!</b>\n\n`;
           if (moodDisplay) {
@@ -1747,6 +1785,13 @@ export async function POST(req: NextRequest) {
           }
           if (ai.diary?.decisions && ai.diary.decisions.length > 0) {
             reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
+          }
+
+          if (attached.length > 0) {
+            reply += `\n\n📝 <b>Attached from diary:</b>`;
+            for (const a of attached) {
+              reply += `\n• <b>${a.task}</b> — ${a.detail}`;
+            }
           }
 
           const logId = newLog?.id || "";
@@ -1957,7 +2002,8 @@ export async function POST(req: NextRequest) {
         // --- State: User Answering Diary Prompt ---
         if (activeSession.step === "awaiting_diary_text") {
           const diaryPromptId = activeSession.task_data.promptMessageId;
-          const ai = await parseUserMessageWithAI(text, []);
+          const diaryTasks = await getActiveTasks();
+          const ai = await parseUserMessageWithAI(text, diaryTasks.map((t) => t.name));
 
           if (!ai.isMeaningful) {
             await sendWizardPrompt(
@@ -1987,6 +2033,8 @@ export async function POST(req: NextRequest) {
             mood,
           });
 
+          const attached = await attachDiarySubjects(ai, diaryTasks);
+
           const moodDisplay = formatMoodDisplay(mood);
           let reply = `📖 <b>Diary Saved for Today!</b>\n\n`;
           if (moodDisplay) {
@@ -2002,6 +2050,13 @@ export async function POST(req: NextRequest) {
           }
           if (ai.diary?.decisions && ai.diary.decisions.length > 0) {
             reply += `\n💡 <b>Decisions:</b> ${ai.diary.decisions.join(", ")}`;
+          }
+
+          if (attached.length > 0) {
+            reply += `\n\n📝 <b>Attached from diary:</b>`;
+            for (const a of attached) {
+              reply += `\n• <b>${a.task}</b> — ${a.detail}`;
+            }
           }
 
           const logId = newLog?.id || "";
