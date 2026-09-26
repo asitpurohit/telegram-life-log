@@ -1,23 +1,6 @@
-import { getAllActiveTimers, getTimerMessage } from "./supabase";
+import { getAllActiveTimers, getTimerMessage, getPauseState } from "./supabase";
 import { editTelegramMessage, InlineKeyboard } from "./telegram";
 import { localTimeString } from "./time";
-
-// In-memory pause state (per chat). Pausing writes NOTHING to the database:
-// the paused timestamp travels inside the button callback data, and this map
-// only lets the auto-refresher know a timer is currently paused.
-const pausedTimers = new Map<string, number>();
-
-export function setTimerPaused(chatId: string | number, pausedAtMs: number): void {
-  pausedTimers.set(String(chatId), pausedAtMs);
-}
-
-export function clearTimerPaused(chatId: string | number): void {
-  pausedTimers.delete(String(chatId));
-}
-
-export function getTimerPaused(chatId: string | number): number {
-  return pausedTimers.get(String(chatId)) || 0;
-}
 
 export function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -28,20 +11,26 @@ export function formatDuration(totalSeconds: number): string {
   return `${seconds}s`;
 }
 
+// elapsed = (pausedAt ?? now) − started_at − pausedSeconds
 export function buildTimerView(
   taskName: string,
   startedAtIso: string,
-  pausedAtMs: number
+  pausedAtMs: number,
+  pausedSeconds = 0
 ): { text: string; keyboard: InlineKeyboard } {
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
-  const elapsedSeconds = Math.max(0, Math.floor((endMs - new Date(startedAtIso).getTime()) / 1000));
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((endMs - new Date(startedAtIso).getTime()) / 1000) - pausedSeconds
+  );
   const isPaused = pausedAtMs > 0;
   const startedTime = localTimeString(new Date(startedAtIso));
 
   const text = isPaused
     ? `⏸️ <b>${taskName}</b> — Paused\n` +
-      `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n\n` +
-      `<i>Pause is local — nothing is saved until you Stop.</i>`
+      `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
+      `🕐 Started: ${startedTime}\n\n` +
+      `<i>Paused time is excluded from the final log.</i>`
     : `⏱️ <b>${taskName}</b> — Running\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
@@ -70,7 +59,8 @@ export function buildTimerView(
   return { text, keyboard };
 }
 
-// Called periodically by the local polling runner to make running timers tick.
+// Called periodically by the local polling runner (5s) and by the Vercel cron
+// (/api/tick, 1 min) to make running timers tick.
 export async function refreshRunningTimerMessages(): Promise<void> {
   const timers = await getAllActiveTimers();
 
@@ -78,8 +68,13 @@ export async function refreshRunningTimerMessages(): Promise<void> {
     const messageId = await getTimerMessage(timer.chat_id);
     if (!messageId) continue;
 
-    const pausedAt = getTimerPaused(timer.chat_id);
-    const view = buildTimerView(timer.task_name, timer.started_at, pausedAt);
+    const pause = await getPauseState(timer.chat_id);
+    const view = buildTimerView(
+      timer.task_name,
+      timer.started_at,
+      pause.pausedAt ?? 0,
+      pause.pausedSeconds
+    );
     await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
   }
 }

@@ -235,21 +235,56 @@ export async function getAllActiveTimers(): Promise<ActiveTimer[]> {
   return data || [];
 }
 
-export async function updateActiveTimerStart(
-  chatId: string | number,
-  startedAtIso: string
-): Promise<boolean> {
-  const { error } = await supabase
-    .from("active_timers")
-    .update({ started_at: startedAtIso })
-    .eq("chat_id", String(chatId));
+// Pause state lives in the DB (KV row) so it survives restarts and works
+// across serverless instances. started_at is NEVER modified.
+const PAUSE_PREFIX = "__pause__:";
 
-  return !error;
+export interface PauseState {
+  pausedAt: number | null; // epoch ms when the current pause began (null = running)
+  pausedSeconds: number; // accumulated paused seconds from earlier pauses
+}
+
+export async function getPauseState(chatId: string | number): Promise<PauseState> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${PAUSE_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data) return { pausedAt: null, pausedSeconds: 0 };
+
+  const state = data.task_data as { pausedAt?: unknown; pausedSeconds?: unknown } | null;
+  const pausedAt = typeof state?.pausedAt === "number" ? state.pausedAt : null;
+  const pausedSeconds = typeof state?.pausedSeconds === "number" ? state.pausedSeconds : 0;
+  return { pausedAt, pausedSeconds };
+}
+
+export async function setPauseState(chatId: string | number, state: PauseState): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `${PAUSE_PREFIX}${chatId}`,
+      step: "ui_pause",
+      task_data: { pausedAt: state.pausedAt, pausedSeconds: state.pausedSeconds },
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error saving pause state:", error);
+}
+
+export async function clearPauseState(chatId: string | number): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .delete()
+    .eq("chat_id", `${PAUSE_PREFIX}${chatId}`);
+
+  if (error) console.error("Error clearing pause state:", error);
 }
 
 export async function stopActiveTimer(
   chatId: string | number,
-  endTimeMs?: number
+  endTimeMs?: number,
+  pausedSeconds = 0
 ): Promise<{
   taskName: string;
   durationSeconds: number;
@@ -262,7 +297,8 @@ export async function stopActiveTimer(
 
   const startedAt = new Date(active.started_at);
   const endedAt = new Date(endTimeMs ?? Date.now());
-  const durationSeconds = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+  const workedSeconds = Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000) - pausedSeconds;
+  const durationSeconds = Math.max(1, workedSeconds);
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
   // Log completed session to logs table (the ONLY database write for a timer)

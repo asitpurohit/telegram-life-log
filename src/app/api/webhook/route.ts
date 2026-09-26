@@ -19,7 +19,9 @@ import {
   archiveTask,
   startActiveTimer,
   getActiveTimer,
-  updateActiveTimerStart,
+  getPauseState,
+  setPauseState,
+  clearPauseState,
   stopActiveTimer,
   logActivity,
   getTodayTaskTotal,
@@ -51,13 +53,7 @@ import {
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
-import {
-  buildTimerView,
-  formatDuration,
-  setTimerPaused,
-  clearTimerPaused,
-  getTimerPaused,
-} from "@/lib/timerRuntime";
+import { buildTimerView, formatDuration } from "@/lib/timerRuntime";
 import { localDateLabel, localTimeString, localDateString, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
@@ -1565,7 +1561,7 @@ export async function POST(req: NextRequest) {
         }
 
         const active = await startActiveTimer(chatId, taskId, taskName);
-        clearTimerPaused(chatId);
+        await clearPauseState(chatId);
         await setActiveTask(chatId, taskId);
 
         const startedAt = active?.started_at || new Date().toISOString();
@@ -1579,7 +1575,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Timer: Pause (local only, nothing written to the database) ---
+      // --- Timer: Pause (paused time is tracked in the DB, started_at untouched) ---
       if (callbackData === "timer_pause" || callbackData.startsWith("timer_pause:")) {
         const active = await getActiveTimer(chatId);
         if (!active) {
@@ -1587,10 +1583,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const pausedAt = Date.now();
-        setTimerPaused(chatId, pausedAt);
+        const pause = await getPauseState(chatId);
+        // Double-tap: keep the first pause moment
+        const pausedAt = pause.pausedAt ?? Date.now();
+        await setPauseState(chatId, { pausedAt, pausedSeconds: pause.pausedSeconds });
 
-        const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+        const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -1599,23 +1597,25 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Timer: Resume (paused time is excluded from the final total) ---
+      // --- Timer: Resume (paused time accumulates; started_at is never changed) ---
       if (callbackData.startsWith("timer_resume:")) {
-        const pausedAt = parseInt(callbackData.split(":")[1], 10);
         const active = await getActiveTimer(chatId);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const pausedDurationMs = Math.max(0, Date.now() - pausedAt);
-        const shiftedStart = new Date(
-          new Date(active.started_at).getTime() + pausedDurationMs
-        ).toISOString();
-        await updateActiveTimerStart(chatId, shiftedStart);
-        clearTimerPaused(chatId);
+        const pause = await getPauseState(chatId);
+        const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
+        const pausedAt = pause.pausedAt ?? fallbackPausedAt;
 
-        const view = buildTimerView(active.task_name, shiftedStart, 0);
+        let pausedSeconds = pause.pausedSeconds;
+        if (pausedAt > 0) {
+          pausedSeconds += Math.max(0, Math.round((Date.now() - pausedAt) / 1000));
+        }
+        await setPauseState(chatId, { pausedAt: null, pausedSeconds });
+
+        const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -1626,14 +1626,20 @@ export async function POST(req: NextRequest) {
 
       // --- Timer: Refresh Elapsed Time ---
       if (callbackData.startsWith("timer_refresh:")) {
-        const pausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
         const active = await getActiveTimer(chatId);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+        const pause = await getPauseState(chatId);
+        const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
+        const view = buildTimerView(
+          active.task_name,
+          active.started_at,
+          pause.pausedAt ?? fallbackPausedAt,
+          pause.pausedSeconds
+        );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -1644,12 +1650,14 @@ export async function POST(req: NextRequest) {
 
       // --- Timer: Stop & Log (paused time excluded; only write of the session) ---
       if (callbackData.startsWith("timer_stop:") || callbackData === "stop_active_timer") {
-        const pausedAt = callbackData.startsWith("timer_stop:")
+        const pause = await getPauseState(chatId);
+        const fallbackPausedAt = callbackData.startsWith("timer_stop:")
           ? parseInt(callbackData.split(":")[1], 10) || 0
-          : getTimerPaused(chatId);
+          : 0;
+        const endMs = pause.pausedAt ?? fallbackPausedAt ?? 0;
 
-        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
-        clearTimerPaused(chatId);
+        const result = await stopActiveTimer(chatId, endMs > 0 ? endMs : undefined, pause.pausedSeconds);
+        await clearPauseState(chatId);
 
         if (!result) {
           await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);
@@ -2020,9 +2028,13 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /stop (emergency escape: works even during focus mode) ---
       if (text === "/stop") {
-        const pausedAt = getTimerPaused(chatId);
-        const result = await stopActiveTimer(chatId, pausedAt > 0 ? pausedAt : undefined);
-        clearTimerPaused(chatId);
+        const pause = await getPauseState(chatId);
+        const result = await stopActiveTimer(
+          chatId,
+          pause.pausedAt ?? undefined,
+          pause.pausedSeconds
+        );
+        await clearPauseState(chatId);
         if (!result) {
           await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
         } else {
@@ -2045,8 +2057,13 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const active = await getActiveTimer(chatId);
         if (active) {
-          const pausedAt = getTimerPaused(chatId);
-          const view = buildTimerView(active.task_name, active.started_at, pausedAt);
+          const pause = await getPauseState(chatId);
+          const view = buildTimerView(
+            active.task_name,
+            active.started_at,
+            pause.pausedAt ?? 0,
+            pause.pausedSeconds
+          );
           const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
           if (sentId) {
             await trackTimerMessage(chatId, sentId);
