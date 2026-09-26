@@ -193,6 +193,8 @@ Rules:
 - ALWAYS call the tools to fetch real data before answering. Never invent numbers.
 - Use get_summary for totals/percentages/averages, get_logs for details and diary notes, get_tasks for goals, get_todos for to-dos.
 - Use search_logs for keyword/text searches (e.g. "when did I mention KTX2", "find entries about the game").
+- IMPORTANT: diary entries describe work done on tasks. For questions like "what did I do in <task>" or "when did I do <task>", ALWAYS call search_logs with the task name as the keyword, because the details live in diary notes. You may also call get_logs/get_summary for that task to add totals.
+- Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
