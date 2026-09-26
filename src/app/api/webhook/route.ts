@@ -566,7 +566,7 @@ function buildTodoView(todo: Todo): { text: string; keyboard: InlineKeyboard } {
   const text =
     `📝 <b>${todo.title}</b>\n` +
     `🕐 Scheduled: <b>${todoDueLabel(todo.due_at)}</b>\n` +
-    `📌 Status: <b>${status}</b>`;
+    `🚦 Status: <b>${status}</b>`;
 
   const keyboard: InlineKeyboard = [
     [{ text: "✅ Mark Done", callback_data: `todo_done:${todo.id}` }],
