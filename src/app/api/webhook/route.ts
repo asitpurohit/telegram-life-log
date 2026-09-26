@@ -430,6 +430,18 @@ function formatFocusBadge(totals: { focused: number; casual: number; distracted:
 
 const FOCUS_QUESTION = "\n\n<b>How was this session?</b>";
 
+// Review-only keyboard: focus options + Back (no repeat/add/start buttons)
+function buildReviewKeyboard(logId: string): InlineKeyboard {
+  return [
+    ...buildFocusKeyboard(logId),
+    [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+  ];
+}
+
+const BACK_ONLY_KEYBOARD: InlineKeyboard = [
+  [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+];
+
 // Diary mentions become note-only rows on the matching tasks.
 // value is always 0, so totals, counters and ticks are never affected.
 async function attachDiarySubjects(
@@ -1491,10 +1503,9 @@ export async function POST(req: NextRequest) {
         const newTotal = await getTodayTaskTotal(taskName);
         const percent = Math.round((newTotal / target) * 100);
 
-        const replyKb: InlineKeyboard = [];
-        if (newLog?.id) replyKb.push(...buildFocusKeyboard(newLog.id));
-        replyKb.push([{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${taskId}` }]);
-        replyKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
+        const replyKb: InlineKeyboard = newLog?.id
+          ? buildReviewKeyboard(newLog.id)
+          : BACK_ONLY_KEYBOARD;
 
         const text =
           `⏱️ <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
@@ -1650,17 +1661,18 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
-        const stopKb: InlineKeyboard = [];
-        if (result.logId) stopKb.push(...buildFocusKeyboard(result.logId));
-        stopKb.push([{ text: `▶️ Start ${result.taskName} Again`, callback_data: `start_task:${result.taskId}` }]);
-        stopKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
+        // Sessions under 5 minutes skip the review entirely
+        const showReview = !!result.logId && result.durationSeconds >= 300;
+        const stopKb: InlineKeyboard = showReview
+          ? buildReviewKeyboard(result.logId as string)
+          : BACK_ONLY_KEYBOARD;
 
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
           `Saved to your log!` +
-          (result.logId ? FOCUS_QUESTION : "");
+          (showReview ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, stopKb);
         return NextResponse.json({ ok: true });
@@ -1683,14 +1695,9 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 5000;
         const percent = Math.min(100, Math.round((total / target) * 100));
 
-        const replyKb: InlineKeyboard = [];
-        if (newLog?.id) replyKb.push(...buildFocusKeyboard(newLog.id));
-        replyKb.push([
-          { text: `+1 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:1` },
-          { text: `+5 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:5` },
-          { text: `+10 ${task?.unit || "units"}`, callback_data: `counter_add:${taskId}:10` },
-        ]);
-        replyKb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
+        const replyKb: InlineKeyboard = newLog?.id
+          ? buildReviewKeyboard(newLog.id)
+          : BACK_ONLY_KEYBOARD;
 
         const text =
           `💧 <b>${taskName}</b>: Logged +${amount} ${task?.unit || ""}!\n` +
@@ -2178,7 +2185,9 @@ export async function POST(req: NextRequest) {
           const newTotal = await getTodayTaskTotal(taskName);
           const percent = Math.round((newTotal / target) * 100);
 
-          const customKb: InlineKeyboard = customLog?.id ? buildFocusKeyboard(customLog.id) : [];
+          const customKb: InlineKeyboard = customLog?.id
+            ? buildReviewKeyboard(customLog.id)
+            : BACK_ONLY_KEYBOARD;
           await sendUiMessage(
             chatId,
             `⏱️ <b>+${num} mins logged for ${taskName}!</b>\n\n` +
@@ -2749,7 +2758,9 @@ export async function POST(req: NextRequest) {
               text = `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
               if (newLog?.id) {
                 text += FOCUS_QUESTION;
-                keyboard = [...buildFocusKeyboard(newLog.id), ...detail.keyboard];
+                keyboard = buildReviewKeyboard(newLog.id);
+              } else {
+                keyboard = BACK_ONLY_KEYBOARD;
               }
             }
             await sendUiMessage(chatId, `${text}\n\n${detail.text}`, keyboard);
