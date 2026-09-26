@@ -285,6 +285,24 @@ function parseCountGoalAndUnit(input: string): { value: number; unit: string } |
   return { value: Math.round(num), unit: rawUnit };
 }
 
+// Signed variants used ONLY for typed corrections with an open task.
+// Creation/edit goals keep using the positive-only parsers above.
+function parseSignedTimerAmount(input: string): number | null {
+  const clean = input.trim();
+  const negative = clean.startsWith("-");
+  const mins = parseTimerGoal(negative ? clean.slice(1).trim() : clean);
+  if (mins === null || mins === 0) return null;
+  return negative ? -mins : mins;
+}
+
+function parseSignedCountAmount(input: string): number | null {
+  const clean = input.trim();
+  const negative = clean.startsWith("-");
+  const parsed = parseCountGoalAndUnit(negative ? clean.slice(1).trim() : clean);
+  if (!parsed || parsed.value === 0) return null;
+  return negative ? -parsed.value : parsed.value;
+}
+
 // Format "HH:MM:SS" to readable "08:00 AM"
 function formatReminderTime(timeStr?: string | null): string {
   if (!timeStr) return "None";
@@ -2625,28 +2643,61 @@ export async function POST(req: NextRequest) {
         if (activeTask && !activeTask.is_archived) {
           let loggedValue: number | null = null;
           if (activeTask.type === "timer") {
-            const mins = parseTimerGoal(text);
-            if (mins && mins > 0) loggedValue = mins;
+            loggedValue = parseSignedTimerAmount(text);
           } else if (activeTask.type === "counter") {
-            const parsed = parseCountGoalAndUnit(text);
-            if (parsed && parsed.value > 0) loggedValue = parsed.value;
+            loggedValue = parseSignedCountAmount(text);
           }
 
           if (loggedValue !== null) {
+            let applied = loggedValue;
+            let clampedFrom: number | null = null;
+            let available = 0;
+
+            if (applied < 0) {
+              available = await getTodayTaskTotal(activeTask.name);
+
+              if (available <= 0) {
+                const detail = await buildTaskDetail(activeTask);
+                await sendUiMessage(
+                  chatId,
+                  `⚠️ <b>${activeTask.name}</b> is already at <b>0</b> — nothing to subtract.\n\n${detail.text}`,
+                  detail.keyboard
+                );
+                return NextResponse.json({ ok: true });
+              }
+
+              const maxSubtract = -available;
+              if (applied < maxSubtract) {
+                clampedFrom = applied;
+                applied = maxSubtract;
+              }
+            }
+
+            const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
+
             await logActivity({
               task_id: activeTask.id,
               task_name: activeTask.name,
-              value: loggedValue,
-              notes: activeTask.type === "timer" ? `Typed log +${loggedValue}m` : "Typed log",
+              value: applied,
+              notes:
+                applied < 0
+                  ? `Manual correction ${applied}${activeTask.type === "timer" ? "m" : ""}`
+                  : activeTask.type === "timer"
+                  ? `Typed log +${applied}m`
+                  : "Typed log",
             });
 
             const detail = await buildTaskDetail(activeTask);
-            const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
-            await sendUiMessage(
-              chatId,
-              `✅ <b>+${loggedValue.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.\n\n${detail.text}`,
-              detail.keyboard
-            );
+            let text: string;
+            if (applied < 0) {
+              text = `✅ <b>${applied.toLocaleString()} ${unitLabel}</b> correction applied to <b>${activeTask.name}</b>.`;
+              if (clampedFrom !== null) {
+                text += `\n<i>Only ${available} available — you tried ${clampedFrom}.</i>`;
+              }
+            } else {
+              text = `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
+            }
+            await sendUiMessage(chatId, `${text}\n\n${detail.text}`, detail.keyboard);
             return NextResponse.json({ ok: true });
           }
         }
