@@ -97,6 +97,51 @@ async function toolGetSummary(args: ToolArgs) {
   };
 }
 
+function snippetAround(text: string, keyword: string, radius = 90): string {
+  const lower = text.toLowerCase();
+  const idx = lower.indexOf(keyword.toLowerCase());
+  if (idx < 0) return text.slice(0, radius * 2);
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(text.length, idx + keyword.length + radius);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+}
+
+async function toolSearchLogs(args: ToolArgs) {
+  const keyword = String(args.keyword || "").trim();
+  if (keyword.length < 2) return { error: "keyword too short" };
+
+  // Strip PostgREST filter syntax characters so the keyword can't break the query
+  const safe = keyword.replace(/[%,()*\\]/g, " ").trim();
+  if (!safe) return { error: "invalid keyword" };
+
+  let query = supabase
+    .from("logs")
+    .select("log_date, task_name, notes, summary, mood")
+    .or(`notes.ilike.%${safe}%,summary.ilike.%${safe}%`)
+    .order("log_date", { ascending: false })
+    .limit(100);
+
+  const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+  if (args.from && isoDate.test(String(args.from))) query = query.gte("log_date", String(args.from));
+  if (args.to && isoDate.test(String(args.to))) query = query.lte("log_date", String(args.to));
+  if (args.task) query = query.ilike("task_name", `%${String(args.task)}%`);
+
+  const { data, error } = await query;
+  if (error) return { error: error.message };
+
+  return {
+    keyword,
+    count: data?.length || 0,
+    matches: (data || []).map((row) => ({
+      date: row.log_date,
+      task: row.task_name,
+      mood: row.mood || undefined,
+      summary: row.summary || undefined,
+      snippet: row.notes ? snippetAround(String(row.notes), keyword) : undefined,
+    })),
+  };
+}
+
 async function toolGetTodos(args: ToolArgs) {
   const todos = await getTodos();
   let filtered = todos;
@@ -122,6 +167,8 @@ export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): P
         return await toolGetLogs(args);
       case "get_summary":
         return await toolGetSummary(args);
+      case "search_logs":
+        return await toolSearchLogs(args);
       case "get_todos":
         return await toolGetTodos(args);
       default:
@@ -145,6 +192,7 @@ Known tasks: ${JSON.stringify(knownTaskNames)}
 Rules:
 - ALWAYS call the tools to fetch real data before answering. Never invent numbers.
 - Use get_summary for totals/percentages/averages, get_logs for details and diary notes, get_tasks for goals, get_todos for to-dos.
+- Use search_logs for keyword/text searches (e.g. "when did I mention KTX2", "find entries about the game").
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
@@ -184,6 +232,21 @@ Rules:
               task: { type: Type.STRING, description: "Optional exact task name filter" },
             },
             required: ["from", "to"],
+          },
+        },
+        {
+          name: "search_logs",
+          description:
+            "Case-insensitive keyword search inside log/diary notes and summaries. Use for questions like 'when did I mention X' or 'find entries about Y'. Searches all time unless from/to are given.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              keyword: { type: Type.STRING, description: "Word or phrase to search for" },
+              from: { type: Type.STRING, description: "Optional start date, YYYY-MM-DD" },
+              to: { type: Type.STRING, description: "Optional end date, YYYY-MM-DD" },
+              task: { type: Type.STRING, description: "Optional task name filter" },
+            },
+            required: ["keyword"],
           },
         },
         {
