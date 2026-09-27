@@ -41,6 +41,7 @@ import {
   getActiveTaskId,
   isTaskCompletedToday,
   isSystemTask,
+  taskEmoji,
   untickTaskToday,
   deduplicateTodayTickLogs,
   getTaskSchedule,
@@ -348,7 +349,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
     const percent = Math.min(100, Math.round((todayMins / target) * 100));
     return {
       text:
-        `⏱️ <b>${task.name}</b>\n` +
+        `${taskEmoji(task)} <b>${task.name}</b>\n` +
         `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
         `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
         `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
@@ -404,7 +405,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
 
 // One-line task summary used in edit/delete confirmations
 function buildTaskSummary(task: Task): string {
-  const typeIcon = task.type === "timer" ? "⏱️" : task.type === "counter" ? "💧" : "📌";
+  const typeIcon = taskEmoji(task);
   return (
     `${typeIcon} <b>${task.name}</b>\n` +
     `🎯 Goal: <b>${formatGoalDisplay(task.target_value, task.unit)}</b>\n` +
@@ -712,7 +713,7 @@ async function buildTodayScorecard(chatId: string | number): Promise<string> {
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
         const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
-        text += `⏱️ <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${focusBadge}${scheduleTag}\n`;
+        text += `${taskEmoji(t)} <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${focusBadge}${scheduleTag}\n`;
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;
@@ -1190,7 +1191,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "📌";
+        const typeIcon = taskEmoji(newTask);
         const successText =
           `🎉 <b>Task Created Successfully!</b>\n\n` +
           `📌 <b>${newTask.name}</b>\n` +
@@ -1240,7 +1241,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `⏱️ ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
+                text: `${taskEmoji(t)} ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -1425,7 +1426,7 @@ export async function POST(req: NextRequest) {
 
         const listKb: InlineKeyboard = tasks.map((t) => [
           {
-            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "📌"} ${t.name}`,
+            text: `${taskEmoji(t)} ${t.name}`,
             callback_data: `manage_task:${t.id}`,
           },
         ]);
@@ -1582,7 +1583,7 @@ export async function POST(req: NextRequest) {
           : BACK_ONLY_KEYBOARD;
 
         const text =
-          `⏱️ <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
+          `${task ? taskEmoji(task) : "⏱️"} <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
           `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
           (newLog?.id ? FOCUS_QUESTION : "");
 
@@ -1883,8 +1884,7 @@ export async function POST(req: NextRequest) {
       // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
       const isWizardAnswer = activeSession && !text.startsWith("/");
-      const isEmergencyStop = text === "/stop";
-      if (!isWizardAnswer && !isEmergencyStop) {
+      if (!isWizardAnswer) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
           if (messageId) {
@@ -2064,7 +2064,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `⏱️ ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
+                text: `${taskEmoji(t)} ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -2094,7 +2094,7 @@ export async function POST(req: NextRequest) {
 
         const taskButtons: InlineKeyboard = tasks.map((t) => [
           {
-            text: `${t.type === "timer" ? "⏱️" : t.type === "counter" ? "💧" : "📌"} ${t.name}`,
+            text: `${taskEmoji(t)} ${t.name}`,
             callback_data: `manage_task:${t.id}`,
           },
         ]);
@@ -2131,39 +2131,6 @@ export async function POST(req: NextRequest) {
         const taskNames = (await getActiveTasks()).map((t) => t.name);
         const answer = await askAboutData(question, taskNames);
         await sendUiMessage(chatId, answer);
-        return NextResponse.json({ ok: true });
-      }
-
-      // --- Command: /stop (emergency escape: works even during focus mode) ---
-      if (text === "/stop") {
-        const pause = await getPauseState(chatId);
-        const result = await stopActiveTimer(
-          chatId,
-          pause.pausedAt ?? undefined,
-          pause.pausedSeconds
-        );
-        await clearPauseState(chatId);
-
-        const nudge = await getNudgeState(chatId);
-        if (nudge.messageId) {
-          await deleteTelegramMessage(chatId, nudge.messageId);
-        }
-        await clearNudgeState(chatId);
-        if (!result) {
-          await sendUiMessage(chatId, "⏱️ <i>No timer currently running.</i>");
-        } else {
-          const task = await findTaskByName(result.taskName);
-          const totalToday = await getTodayTaskTotal(result.taskName);
-          const target = task?.target_value || 60;
-          const percent = Math.round((totalToday / target) * 100);
-          await sendUiMessage(
-            chatId,
-            `🎉 <b>${result.taskName}</b> stopped!\n` +
-              `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
-              `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)` +
-              formatSplitSummary(result.split)
-          );
-        }
         return NextResponse.json({ ok: true });
       }
 
@@ -2805,7 +2772,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ ok: true });
           }
 
-          const typeIcon = newTask.type === "timer" ? "⏱️" : newTask.type === "counter" ? "💧" : "📌";
+          const typeIcon = taskEmoji(newTask);
           const successText =
             `🎉 <b>Task Created Successfully!</b>\n\n` +
             `📌 <b>${newTask.name}</b>\n` +

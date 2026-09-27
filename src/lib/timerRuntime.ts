@@ -39,13 +39,14 @@ export function buildTimerView(
   );
   const isPaused = pausedAtMs > 0;
   const startedTime = localTimeString(new Date(startedAtIso));
+  const emoji = /sleep/i.test(taskName) ? "😴" : "⏱️";
 
   const text = isPaused
-    ? `⏸️ <b>${taskName}</b> — Paused\n` +
+    ? `${emoji} <b>${taskName}</b> — Paused\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
       `<i>Paused time is excluded from the final log.</i>`
-    : `⏱️ <b>${taskName}</b> — Running\n` +
+    : `${emoji} <b>${taskName}</b> — Running\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
       `<i>Runs until you stop it.</i>`;

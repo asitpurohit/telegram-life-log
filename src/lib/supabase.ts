@@ -160,6 +160,14 @@ export function isSystemTask(task: Task | null | undefined): boolean {
   return !!task && (task.is_system === true || /sleep/i.test(task.name));
 }
 
+// Display emoji for a task; Sleep gets its own so it looks like the special timer it is.
+export function taskEmoji(task: Pick<Task, "name" | "type" | "is_system">): string {
+  if (task.is_system === true || /sleep/i.test(task.name)) return "😴";
+  if (task.type === "timer") return "⏱️";
+  if (task.type === "counter") return "💧";
+  return "📌";
+}
+
 // Re-creates system tasks if they were wiped from the DB. Best-effort.
 export async function ensureSystemTasks(): Promise<void> {
   try {
