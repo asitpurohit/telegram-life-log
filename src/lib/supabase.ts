@@ -538,6 +538,18 @@ export async function getTodayLogs(): Promise<Log[]> {
   return data || [];
 }
 
+export async function getLogsInRange(from: string, to: string): Promise<Log[]> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("*")
+    .gte("log_date", from)
+    .lte("log_date", to)
+    .order("created_at", { ascending: true });
+
+  if (error) return [];
+  return data || [];
+}
+
 export async function isTaskCompletedToday(taskId: string): Promise<boolean> {
   const today = localDateString();
   const { data, error } = await supabase

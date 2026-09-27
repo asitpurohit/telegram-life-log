@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, ToolUnion } from "@google/genai";
-import { supabase, getActiveTasks, getTodos, getFocusTotals } from "./supabase";
+import { supabase, getActiveTasks, getTodos, getFocusTotals, getLogsInRange } from "./supabase";
+import { computeWastedDays, shiftDateString } from "./timeAudit";
 import { localDateString, todoDueLabel } from "./time";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
@@ -184,6 +185,43 @@ async function toolGetTodos(args: ToolArgs) {
   };
 }
 
+async function toolGetWastedTime(args: ToolArgs) {
+  const { from, to } = clampRange(args.from, args.to);
+  const tasks = await getActiveTasks();
+  const logs = await getLogsInRange(shiftDateString(from, -1), shiftDateString(to, 1));
+
+  const dates: string[] = [];
+  for (let d = from; d <= to; d = shiftDateString(d, 1)) {
+    dates.push(d);
+    if (dates.length >= 400) break;
+  }
+
+  const days = computeWastedDays({ dates, logs, tasks });
+  if (days.length === 0) return { from, to, note: "No completed days in this range yet." };
+
+  const completed = days.filter((d) => !d.isToday);
+  const avg = completed.length
+    ? Math.round(completed.reduce((s, d) => s + d.wastedMin, 0) / completed.length)
+    : null;
+
+  return {
+    from,
+    to,
+    note: "Past days are full 24h; today is partial (midnight -> now). Sleep is credited as the overlap of Sleep->Wakeup tick intervals with each day (reminder fallback marked estimatedSleep). Only timer-type tasks count as work time. Values are minutes, clamped at 0.",
+    days: days.map((d) => ({
+      date: d.date,
+      elapsedMin: d.elapsedMin,
+      taskMinutes: d.timerMin,
+      sleepMinutes: d.sleepMin,
+      estimatedSleep: d.estimated,
+      partialDay: d.isToday,
+      wastedMinutes: d.wastedMin,
+    })),
+    totalWastedMinutes: days.reduce((s, d) => s + d.wastedMin, 0),
+    avgWastedMinutesCompletedDays: avg,
+  };
+}
+
 export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): Promise<object> {
   try {
     switch (name) {
@@ -197,6 +235,8 @@ export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): P
         return await toolSearchLogs(args);
       case "get_focus":
         return await toolGetFocus(args);
+      case "get_wasted_time":
+        return await toolGetWastedTime(args);
       case "get_todos":
         return await toolGetTodos(args);
       default:
@@ -225,6 +265,7 @@ Rules:
 - IMPORTANT: diary entries describe work done on tasks. For questions like "what did I do in <task>" or "when did I do <task>", ALWAYS call search_logs with the task name as the keyword, because the details live in diary notes. You may also call get_logs/get_summary for that task to add totals.
 - Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
+- For wasted/unaccounted time questions (e.g. "how much time did I waste yesterday/this week"), ALWAYS call get_wasted_time with the exact date range — never compute it yourself from other tools. Explain using its note: past days are full 24h, today is partial.
 - For time-of-day or duration questions (e.g. "how long did I sleep"), use get_logs and compare the created_at timestamps of the relevant logs, even across two different dates (e.g. Sleep at night vs Wake Up next morning).
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
@@ -291,6 +332,19 @@ Rules:
               from: { type: Type.STRING, description: "Start date, YYYY-MM-DD" },
               to: { type: Type.STRING, description: "End date, YYYY-MM-DD" },
               task: { type: Type.STRING, description: "Optional task name filter" },
+            },
+            required: ["from", "to"],
+          },
+        },
+        {
+          name: "get_wasted_time",
+          description:
+            "Compute wasted (unaccounted) time per day over a date range: elapsed (24h for past days, midnight->now for today) minus timer-task minutes minus sleep credited to each day (from Sleep->Wakeup tick intervals; reminder fallback marked estimatedSleep). Use ONLY for wasted/unaccounted time questions.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              from: { type: Type.STRING, description: "Start date, YYYY-MM-DD" },
+              to: { type: Type.STRING, description: "End date, YYYY-MM-DD" },
             },
             required: ["from", "to"],
           },

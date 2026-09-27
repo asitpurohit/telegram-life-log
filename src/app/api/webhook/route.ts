@@ -29,6 +29,7 @@ import {
   logActivity,
   getTodayTaskTotal,
   getTodayLogs,
+  getLogsInRange,
   getWizardSession,
   saveWizardSession,
   clearWizardSession,
@@ -57,7 +58,7 @@ import {
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
-import { computeTodayAudit, formatMinutes, reminderTimeToMinutes } from "@/lib/timeAudit";
+import { computeWastedDays, formatMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
@@ -684,8 +685,6 @@ async function buildTodayScorecard(): Promise<string> {
   const tasks = await getActiveTasks();
   let text = `📊 <b>Today's Scorecard</b> — ${todayStr}\n\n`;
 
-  let timerMinutes = 0;
-
   if (tasks.length === 0) {
     text += `<i>No tasks created yet. Type /addtask to create one!</i>\n`;
   } else {
@@ -699,7 +698,6 @@ async function buildTodayScorecard(): Promise<string> {
         text += `${isDone ? "✅" : isScheduledToday ? "📌" : "💤"} <b>${t.name}</b> ${isDone ? "<i>(Done)</i>" : isScheduledToday ? "<i>(Pending)</i>" : scheduleTag}\n`;
       } else if (t.type === "timer") {
         const mins = await getTodayTaskTotal(t.name);
-        timerMinutes += mins;
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
         const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
@@ -714,35 +712,25 @@ async function buildTodayScorecard(): Promise<string> {
     }
   }
 
-  const logs = await getTodayLogs();
+  const today = localDateString();
+  const logs = await getLogsInRange(shiftDateString(today, -1), today);
 
-  // Wasted time = elapsed since midnight - today's timer minutes - sleep today
-  // (sleep today = wake time - midnight; tick if logged, else the reminder time)
+  // Wasted = elapsed (midnight -> now) - timer-task minutes - sleep credited to today.
+  // Sleep = Sleep->Wakeup tick interval overlaps; reminder fallbacks when ticks are missing.
   if (tasks.length > 0) {
-    const wakeTask = tasks.find((t) => t.type === "tick" && /wake/i.test(t.name));
-    const wakeLog = wakeTask
-      ? logs.find((l) => l.task_name === wakeTask.name && l.created_at)
-      : undefined;
+    const [day] = computeWastedDays({ dates: [today], logs, tasks });
+    if (day) {
+      const sleepLabel = !day.tracked
+        ? "😴 not tracked"
+        : day.estimated
+          ? `😴 ~${formatMinutes(day.sleepMin)} (est.)`
+          : `😴 ${formatMinutes(day.sleepMin)}`;
 
-    const audit = computeTodayAudit({
-      nowMs: Date.now(),
-      midnightMs: zonedDateTimeToUtc(localDateString(), "00:00:00").getTime(),
-      timerMin: timerMinutes,
-      wakeTickAtMs: wakeLog?.created_at ? new Date(wakeLog.created_at).getTime() : null,
-      wakeReminderMin: reminderTimeToMinutes(wakeTask?.reminder_time),
-      wakeScheduledToday: wakeTask ? isTaskScheduledForToday(wakeTask.target_days) : false,
-    });
-
-    const sleepLabel = audit.wakeLogged
-      ? `😴 ${formatMinutes(audit.sleepMin)}`
-      : audit.sleepIsEstimate
-        ? `😴 ~${formatMinutes(audit.sleepMin)} (reminder)`
-        : `😴 0m (wake not ticked)`;
-
-    text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(audit.wastedMin)} of ${formatMinutes(audit.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(timerMinutes)} tasks)</i>\n`;
+      text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(day.wastedMin)} of ${formatMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(day.timerMin)} tasks)</i>\n`;
+    }
   }
 
-  const diaryLogs = logs.filter((l) => l.task_name === "Diary");
+  const diaryLogs = logs.filter((l) => l.task_name === "Diary" && l.log_date === today);
   if (diaryLogs.length > 0) {
     text += `\n📖 <b>Today's Diary:</b>\n`;
     for (const d of diaryLogs) {
