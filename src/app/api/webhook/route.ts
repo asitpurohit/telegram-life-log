@@ -728,7 +728,7 @@ async function buildTodayScorecard(chatId: string | number): Promise<string> {
   const logs = await getLogsInRange(shiftDateString(today, -1), today);
 
   // Wasted = elapsed (midnight -> now) - tracked timer sessions (Sleep included).
-  // A running session counts live; missing Sleep nights are estimated 22:00-05:00.
+  // A running session counts live; a missed night counts as wasted (no estimates).
   if (tasks.length > 0) {
     const active = await getActiveTimer(chatId);
     const pause = await getPauseState(chatId);
@@ -743,11 +743,7 @@ async function buildTodayScorecard(chatId: string | number): Promise<string> {
 
     const [day] = computeWastedDays({ dates: [today], logs, tasks, running });
     if (day) {
-      const sleepLabel = !day.tracked
-        ? "😴 not tracked"
-        : day.estimated
-          ? `😴 ~${formatMinutes(day.sleepMin)} (est.)`
-          : `😴 ${formatMinutes(day.sleepMin)}`;
+      const sleepLabel = day.tracked ? `😴 ${formatMinutes(day.sleepMin)}` : "😴 not tracked";
 
       text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(day.wastedMin)} of ${formatMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(day.taskMin)} tasks)</i>\n`;
     }

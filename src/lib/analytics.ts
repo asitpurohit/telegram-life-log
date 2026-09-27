@@ -209,13 +209,12 @@ async function toolGetWastedTime(args: ToolArgs) {
   return {
     from,
     to,
-    note: "Past days are full 24h; today is partial (midnight -> now). Tracked time = every timer session overlapping the day (Sleep included; crossing nights are already split per day) + the live share of any running session. If no Sleep session covers the 22:00-05:00 night, an estimate is added and marked estimatedSleep. Values are minutes, clamped at 0.",
+    note: "Past days are full 24h; today is partial (midnight -> now). Tracked time = every timer session overlapping the day (Sleep included; crossing nights are already split per day) + the live share of any running session. If the Sleep timer was not used, that time counts as wasted (no estimates). Values are minutes, clamped at 0.",
     days: days.map((d) => ({
       date: d.date,
       elapsedMin: d.elapsedMin,
       taskMinutes: d.taskMin,
       sleepMinutes: d.sleepMin,
-      estimatedSleep: d.estimated,
       partialDay: d.isToday,
       wastedMinutes: d.wastedMin,
     })),
@@ -341,7 +340,7 @@ Rules:
         {
           name: "get_wasted_time",
           description:
-            "Compute wasted (unaccounted) time per day over a date range: elapsed (24h for past days, midnight->now for today) minus tracked timer sessions (Sleep included; crossing nights are already split per day; a running session counts live). If no Sleep session covers the 22:00-05:00 night, an estimate is added and marked estimatedSleep. Use ONLY for wasted/unaccounted time questions.",
+            "Compute wasted (unaccounted) time per day over a date range: elapsed (24h for past days, midnight->now for today) minus tracked timer sessions (Sleep included; crossing nights are already split per day; a running session counts live). If the Sleep timer wasn't used, that time counts as wasted. Use ONLY for wasted/unaccounted time questions.",
           parameters: {
             type: Type.OBJECT,
             properties: {

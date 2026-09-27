@@ -14,50 +14,20 @@ export interface RunningSession {
 export interface WastedDay {
   date: string; // YYYY-MM-DD
   elapsedMin: number; // 1440 for past days, now - midnight for today
-  sleepMin: number; // Sleep-task minutes credited (actual + estimated fallback)
+  sleepMin: number; // Sleep-task minutes (real sessions + running share only)
   taskMin: number; // every other timer task's minutes
   wastedMin: number; // elapsed - tracked, clamped at 0
-  estimated: boolean; // true when a reminder-window estimate contributed
   tracked: boolean; // true when the Sleep system task exists
   isToday: boolean;
 }
 
 const DAY_MIN = 24 * 60;
-const EST_MORNING_END = 5 * 60; // estimate window 00:00 -> 05:00
-const EST_EVENING_START = 22 * 60; // estimate window 22:00 -> 24:00
-
-function overlapMs(startA: number, endA: number, startB: number, endB: number): number {
-  return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
-}
-
-// Completed timer sessions carry started_at; each session's wall window is
-// [started_at, created_at]. Split rows of one crossing session share the same
-// window, so sessions are deduped by (task_name, started_at, created_at).
-function buildSessionWindows(
-  logs: Log[]
-): Array<{ taskName: string; startMs: number; endMs: number }> {
-  const seen = new Set<string>();
-  const windows: Array<{ taskName: string; startMs: number; endMs: number }> = [];
-
-  for (const l of logs) {
-    if (!l.started_at || !l.created_at) continue;
-    const key = `${l.task_name}|${l.started_at}|${l.created_at}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    windows.push({
-      taskName: l.task_name,
-      startMs: new Date(l.started_at).getTime(),
-      endMs: new Date(l.created_at).getTime(),
-    });
-  }
-  return windows;
-}
 
 // Wasted time = elapsed - tracked time, where tracked time is every timer
-// session that overlaps the day (Sleep included; split rows already carry
-// their per-day minutes) plus the live share of a running session. If no
-// Sleep session covers the 22:00-05:00 night, an estimate is added and
-// flagged so the caller can show "~ (est.)".
+// session that overlaps the day (Sleep included; split rows from a crossing
+// night already carry their per-day minutes) plus the live share of a running
+// session. Only real sessions count: if the Sleep timer was not used, that
+// time is simply wasted - never estimated.
 export function computeWastedDays(opts: {
   dates: string[];
   logs: Log[];
@@ -73,9 +43,6 @@ export function computeWastedDays(opts: {
   const timerNames = new Set(opts.tasks.filter((t) => t.type === "timer").map((t) => t.name));
   if (opts.running) timerNames.add(opts.running.taskName);
 
-  const windows = buildSessionWindows(opts.logs);
-  const sleepWindows = sleepTask ? windows.filter((w) => w.taskName === sleepTask.name) : [];
-
   const days: WastedDay[] = [];
 
   for (const date of opts.dates) {
@@ -85,7 +52,6 @@ export function computeWastedDays(opts: {
 
     const dayStartMs = zonedDateTimeToUtc(date, "00:00:00").getTime();
     const elapsedMin = isToday ? Math.max(0, Math.floor((nowMs - dayStartMs) / 60000)) : DAY_MIN;
-    const dayEndMs = dayStartMs + elapsedMin * 60000;
 
     // Completed timer rows + manual timer logs are already attributed per day.
     let otherTimerMin = 0;
@@ -116,53 +82,11 @@ export function computeWastedDays(opts: {
       }
     }
 
-    // Estimated sleep fallback: credit the 22:00->05:00 night when no Sleep
-    // session covers it (forgotten to start the timer).
-    let estMin = 0;
-    let estimated = false;
-    if (sleepTask && elapsedMin > 0) {
-      const runEnd = opts.running ? opts.running.pausedAtMs ?? nowMs : 0;
-      const runningIsSleep = !!opts.running && opts.running.taskName === sleepTask.name;
-
-      const morningEndMs = dayStartMs + Math.min(EST_MORNING_END, elapsedMin) * 60000;
-      const morningCovered =
-        sleepWindows.some((w) => overlapMs(w.startMs, w.endMs, dayStartMs, morningEndMs) > 0) ||
-        (runningIsSleep && overlapMs(opts.running!.startedAtMs, runEnd, dayStartMs, morningEndMs) > 0);
-      if (!morningCovered) {
-        estMin += EST_MORNING_END;
-        estimated = true;
-      }
-
-      const eveningStartMs = dayStartMs + EST_EVENING_START * 60000;
-      const eveningCovered =
-        sleepWindows.some((w) => overlapMs(w.startMs, w.endMs, eveningStartMs, dayEndMs) > 0) ||
-        (runningIsSleep && overlapMs(opts.running!.startedAtMs, runEnd, eveningStartMs, dayEndMs) > 0);
-
-      // If the next night's sleep only started after midnight (00:00-11:59),
-      // this evening was genuinely awake: don't credit the estimate.
-      const earlyNextSleep =
-        sleepWindows.some(
-          (w) => w.startMs >= dayEndMs && w.startMs < dayEndMs + 12 * 60 * 60 * 1000
-        ) ||
-        (runningIsSleep &&
-          opts.running!.startedAtMs >= dayEndMs &&
-          opts.running!.startedAtMs < dayEndMs + 12 * 60 * 60 * 1000);
-
-      if (!eveningCovered && !earlyNextSleep) {
-        estMin += Math.max(0, Math.floor((dayEndMs - eveningStartMs) / 60000));
-        estimated = true;
-      }
-
-      estMin = Math.min(estMin, Math.max(0, elapsedMin));
-      if (estMin <= 0) estimated = false;
-    }
-
-    const sleepMin = Math.max(0, sleepActualMin + runningSleepMin + estMin);
+    const sleepMin = Math.max(0, sleepActualMin + runningSleepMin);
     const taskMin = Math.max(0, otherTimerMin);
-    const trackedTotal = sleepActualMin + runningSleepMin + otherTimerMin + estMin;
-    const wastedMin = Math.max(0, elapsedMin - trackedTotal);
+    const wastedMin = Math.max(0, elapsedMin - sleepMin - taskMin);
 
-    days.push({ date, elapsedMin, sleepMin, taskMin, wastedMin, estimated, tracked, isToday });
+    days.push({ date, elapsedMin, sleepMin, taskMin, wastedMin, tracked, isToday });
   }
 
   return days;
