@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 85% -10%, #1d4ed8 0%, #0b1220 55%, #070b14 100%);
+    color: #e6edf7;
+    padding: 64px 72px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 20px; font-weight: 600; color: #bfd3ff;
+    background: rgba(59,130,246,.16);
+    border: 1px solid rgba(96,165,250,.35);
+    padding: 8px 18px; border-radius: 999px; width: fit-content;
+  }
+  h1 {
+    font-size: 68px; line-height: 1.05; font-weight: 800; letter-spacing: -.5px;
+    background: linear-gradient(92deg, #ffffff 20%, #93c5fd 70%, #60a5fa 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    max-width: 900px;
+  }
+  p.sub { margin-top: 18px; font-size: 27px; color: #9fb3d1; font-weight: 500; }
+  .chips { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; max-width: 980px; }
+  .chip {
+    font-size: 22px; font-weight: 600; color: #dbeafe;
+    background: rgba(148,163,184,.12);
+    border: 1px solid rgba(148,163,184,.28);
+    padding: 10px 20px; border-radius: 14px;
+  }
+  .footer { display: flex; align-items: center; justify-content: space-between; }
+  .url { font-size: 24px; font-weight: 700; color: #7dd3fc; letter-spacing: .2px; }
+  .tag { font-size: 20px; color: #8fa3bf; font-weight: 500; }
+</style>
+</head>
+<body>
+  <div>
+    <div class="badge">🤖 Telegram bot · Open source</div>
+    <h1 style="margin-top:28px">Telegram Habit Tracker Bot</h1>
+    <p class="sub">Track habits, sleep, work time &amp; wasted time — right inside Telegram.</p>
+    <div class="chips">
+      <div class="chip">⏱️ Live stopwatch</div>
+      <div class="chip">📌 Daily habits</div>
+      <div class="chip">😴 Sleep tracker</div>
+      <div class="chip">📖 AI diary</div>
+      <div class="chip">🤖 Ask AI about your data</div>
+    </div>
+  </div>
+  <div class="footer">
+    <div class="url">github.com/asitpurohit/telegram-life-log</div>
+    <div class="tag">Set up with AI — no coding needed</div>
+  </div>
+</body>
+</html>
