@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "poll": "tsx --env-file=.env.local scripts/start-polling.ts",
+    "verify": "tsx --env-file=.env.local scripts/verify-supabase.ts",
     "test:bot": "tsx scripts/test-local.ts"
   },
   "dependencies": {
