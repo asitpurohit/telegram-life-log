@@ -1,5 +1,9 @@
 # Telegram Habit Tracker Bot
 
+<p align="center">
+  <img src="assets/banner.png" alt="A Personal Telegram Habit Tracker & Life Log — track habits, sleep, work time and wasted time with AI, right inside Telegram" width="100%" />
+</p>
+
 A personal **habit tracker + life log** that lives entirely inside Telegram, powered by
 **Next.js + Supabase + Google Gemini**.
 
