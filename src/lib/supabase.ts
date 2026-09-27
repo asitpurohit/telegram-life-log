@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { Task, Log, ActiveTimer, WizardSession, Todo } from "./types";
-import { localDateString, localTimeString, localWeekday } from "./time";
+import { localDateString, localTimeString, localWeekday, splitSessionMinutes } from "./time";
+import { formatMinutes } from "./timeAudit";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co";
 const supabaseKey = 
@@ -154,6 +155,31 @@ export function getTaskSchedule(task: Task): string {
   return task.target_days || "daily";
 }
 
+// System-provisioned tasks (e.g. Sleep) cannot be deleted or renamed.
+export function isSystemTask(task: Task | null | undefined): boolean {
+  return !!task && (task.is_system === true || /sleep/i.test(task.name));
+}
+
+// Re-creates system tasks if they were wiped from the DB. Best-effort.
+export async function ensureSystemTasks(): Promise<void> {
+  try {
+    const { data } = await supabase.from("tasks").select("id").eq("name", "Sleep").maybeSingle();
+    if (data) return;
+    await supabase.from("tasks").insert({
+      name: "Sleep",
+      type: "timer",
+      is_system: true,
+      reminder_time: "22:00:00",
+      target_value: 420,
+      unit: "minutes",
+      target_days: "daily",
+    });
+    console.log("ensureSystemTasks: created system task Sleep");
+  } catch (err) {
+    console.error("ensureSystemTasks error:", err);
+  }
+}
+
 export function formatScheduleDisplay(schedule?: string | null): string {
   if (!schedule || schedule === "daily") return "Daily (Every Day)";
   if (schedule === "weekdays") return "Weekdays (Mon - Fri)";
@@ -233,6 +259,28 @@ export async function getAllActiveTimers(): Promise<ActiveTimer[]> {
   const { data, error } = await supabase.from("active_timers").select("*");
   if (error) return [];
   return data || [];
+}
+
+// The app is single-user: active_timers holds at most one row. /ask needs the
+// running session without knowing the chat id, so this reads "any" row.
+export interface RunningSessionInfo {
+  taskName: string;
+  startedAtMs: number;
+  pausedAtMs: number | null;
+  pausedSeconds: number;
+}
+
+export async function getAnyActiveTimer(): Promise<RunningSessionInfo | null> {
+  const { data, error } = await supabase.from("active_timers").select("*").limit(1).maybeSingle();
+  if (error || !data) return null;
+
+  const pause = await getPauseState(data.chat_id);
+  return {
+    taskName: data.task_name,
+    startedAtMs: new Date(data.started_at).getTime(),
+    pausedAtMs: pause.pausedAt,
+    pausedSeconds: pause.pausedSeconds,
+  };
 }
 
 // Pause state lives in the DB (KV row) so it survives restarts and works
@@ -326,6 +374,11 @@ export async function clearNudgeState(chatId: string | number): Promise<void> {
   if (error) console.error("Error clearing nudge state:", error);
 }
 
+export interface SessionSplitPart {
+  date: string;
+  minutes: number;
+}
+
 export async function stopActiveTimer(
   chatId: string | number,
   endTimeMs?: number,
@@ -336,6 +389,7 @@ export async function stopActiveTimer(
   durationMinutes: number;
   taskId: string;
   logId: string | null;
+  split: SessionSplitPart[];
 } | null> {
   const active = await getActiveTimer(chatId);
   if (!active) return null;
@@ -346,13 +400,31 @@ export async function stopActiveTimer(
   const durationSeconds = Math.max(1, workedSeconds);
   const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
 
-  // Log completed session to logs table (the ONLY database write for a timer)
-  const sessionLog = await logActivity({
+  // Sessions that cross IST midnight are split into one row per day so every
+  // day's totals (habits, /today, /ask) get their correct share.
+  const parts = splitSessionMinutes(startedAt.getTime(), endedAt.getTime(), durationMinutes);
+  const timeRange = `Timer session from ${localTimeString(startedAt, true)} to ${localTimeString(endedAt, true)}`;
+  const notes =
+    parts.length > 1
+      ? `${timeRange} (split ${parts.map((p) => formatMinutes(p.minutes)).join(" + ")})`
+      : timeRange;
+
+  const rows = parts.map((part) => ({
     task_id: active.task_id,
     task_name: active.task_name,
-    value: durationMinutes,
-    notes: `Timer session from ${localTimeString(startedAt, true)} to ${localTimeString(endedAt, true)}`,
-  });
+    log_date: part.date,
+    value: part.minutes,
+    notes,
+    started_at: active.started_at,
+  }));
+
+  const { data, error } = await supabase.from("logs").insert(rows).select();
+  if (error) console.error("Error logging timer session:", error);
+
+  const lastPart = parts[parts.length - 1];
+  const lastRow =
+    (data || []).find((r: any) => r.log_date === lastPart.date && r.value === lastPart.minutes) ||
+    (data && data.length > 0 ? data[data.length - 1] : null);
 
   // Remove from active timers
   await supabase.from("active_timers").delete().eq("chat_id", String(chatId));
@@ -362,7 +434,8 @@ export async function stopActiveTimer(
     durationSeconds,
     durationMinutes,
     taskId: active.task_id,
-    logId: sessionLog?.id || null,
+    logId: lastRow?.id || null,
+    split: parts,
   };
 }
 
@@ -385,6 +458,7 @@ export async function logActivity(log: Log): Promise<Log | null> {
   if (log.decisions !== undefined) insertPayload.decisions = log.decisions;
   if (log.mood !== undefined) insertPayload.mood = log.mood;
   if (log.focus !== undefined) insertPayload.focus = log.focus;
+  if (log.started_at !== undefined) insertPayload.started_at = log.started_at;
 
   const { data, error } = await supabase
     .from("logs")

@@ -94,7 +94,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }
 
-    // 2) "Still running" nudge every 5 minutes (never while paused)
+    // 2) "Still running" nudge every 5 minutes (never while paused).
+    //    The system Sleep timer runs all night: no nudges for it.
+    if (/sleep/i.test(timer.task_name)) continue;
     if (pause.pausedAt) continue;
 
     const now = Date.now();

@@ -8,6 +8,7 @@ import { POST } from "../src/app/api/webhook/route";
 import { refreshRunningTimerMessages } from "../src/lib/timerRuntime";
 import { sendDueReminders } from "../src/lib/reminders";
 import { setBotCommands } from "../src/lib/telegram";
+import { ensureSystemTasks } from "../src/lib/supabase";
 import { NextRequest } from "next/server";
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -25,6 +26,9 @@ async function startPolling() {
   // First, delete any existing webhook so polling can receive updates
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook`);
   console.log("✅ Webhook cleared for live local polling.");
+
+  // Re-create system tasks (e.g. Sleep) if they were wiped
+  await ensureSystemTasks();
 
   // Keep running stopwatch messages ticking while this process stays alive
   setInterval(() => {

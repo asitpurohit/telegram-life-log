@@ -12,12 +12,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     target_value INTEGER,
     unit TEXT,
     target_days TEXT DEFAULT 'daily',
+    is_system BOOLEAN DEFAULT false,
     is_archived BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Ensure target_days column exists if tasks table was created earlier
+-- Ensure newer columns exist if tasks table was created earlier
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS target_days TEXT DEFAULT 'daily';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT false;
 
 -- 2. Migrate any temporary fallback unit data (e.g. "minutes|weekdays") to native columns
 UPDATE tasks 
@@ -40,6 +42,7 @@ CREATE TABLE IF NOT EXISTS logs (
     people TEXT[],
     decisions TEXT[],
     focus TEXT,
+    started_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -50,7 +53,8 @@ ADD COLUMN IF NOT EXISTS summary TEXT,
 ADD COLUMN IF NOT EXISTS projects TEXT[],
 ADD COLUMN IF NOT EXISTS people TEXT[],
 ADD COLUMN IF NOT EXISTS decisions TEXT[],
-ADD COLUMN IF NOT EXISTS focus TEXT;
+ADD COLUMN IF NOT EXISTS focus TEXT,
+ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 
 -- Clean up any temporary session rows from logs
 DELETE FROM logs WHERE task_name = '__wizard_session__';

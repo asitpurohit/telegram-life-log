@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, ToolUnion } from "@google/genai";
-import { supabase, getActiveTasks, getTodos, getFocusTotals, getLogsInRange } from "./supabase";
+import { supabase, getActiveTasks, getTodos, getFocusTotals, getLogsInRange, getAnyActiveTimer } from "./supabase";
 import { computeWastedDays, shiftDateString } from "./timeAudit";
 import { localDateString, todoDueLabel } from "./time";
 
@@ -41,7 +41,7 @@ async function toolGetLogs(args: ToolArgs) {
   const { from, to } = clampRange(args.from, args.to);
   let query = supabase
     .from("logs")
-    .select("created_at, log_date, task_name, value, notes, mood, focus, summary")
+    .select("created_at, started_at, log_date, task_name, value, notes, mood, focus, summary")
     .gte("log_date", from)
     .lte("log_date", to)
     .order("log_date", { ascending: true })
@@ -58,6 +58,7 @@ async function toolGetLogs(args: ToolArgs) {
     count: data?.length || 0,
     logs: (data || []).map((l) => ({
       created_at: l.created_at || undefined,
+      started_at: l.started_at || undefined,
       date: l.log_date,
       task: l.task_name,
       value: l.value,
@@ -189,6 +190,7 @@ async function toolGetWastedTime(args: ToolArgs) {
   const { from, to } = clampRange(args.from, args.to);
   const tasks = await getActiveTasks();
   const logs = await getLogsInRange(shiftDateString(from, -1), shiftDateString(to, 1));
+  const running = await getAnyActiveTimer();
 
   const dates: string[] = [];
   for (let d = from; d <= to; d = shiftDateString(d, 1)) {
@@ -196,7 +198,7 @@ async function toolGetWastedTime(args: ToolArgs) {
     if (dates.length >= 400) break;
   }
 
-  const days = computeWastedDays({ dates, logs, tasks });
+  const days = computeWastedDays({ dates, logs, tasks, running });
   if (days.length === 0) return { from, to, note: "No completed days in this range yet." };
 
   const completed = days.filter((d) => !d.isToday);
@@ -207,11 +209,11 @@ async function toolGetWastedTime(args: ToolArgs) {
   return {
     from,
     to,
-    note: "Past days are full 24h; today is partial (midnight -> now). Sleep is credited as the overlap of Sleep->Wakeup tick intervals with each day (reminder fallback marked estimatedSleep). Only timer-type tasks count as work time. Values are minutes, clamped at 0.",
+    note: "Past days are full 24h; today is partial (midnight -> now). Tracked time = every timer session overlapping the day (Sleep included; crossing nights are already split per day) + the live share of any running session. If no Sleep session covers the 22:00-05:00 night, an estimate is added and marked estimatedSleep. Values are minutes, clamped at 0.",
     days: days.map((d) => ({
       date: d.date,
       elapsedMin: d.elapsedMin,
-      taskMinutes: d.timerMin,
+      taskMinutes: d.taskMin,
       sleepMinutes: d.sleepMin,
       estimatedSleep: d.estimated,
       partialDay: d.isToday,
@@ -266,7 +268,7 @@ Rules:
 - Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
 - For wasted/unaccounted time questions (e.g. "how much time did I waste yesterday/this week"), ALWAYS call get_wasted_time with the exact date range — never compute it yourself from other tools. Explain using its note: past days are full 24h, today is partial.
-- For time-of-day or duration questions (e.g. "how long did I sleep"), use get_logs and compare the created_at timestamps of the relevant logs, even across two different dates (e.g. Sleep at night vs Wake Up next morning).
+- For sleep or duration questions (e.g. "how long did I sleep"), use get_logs for the Sleep task: each session row stores started_at and created_at, and nights crossing midnight are split into one row per day.
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
 - If the question is not about the user's data, answer briefly.`;
@@ -282,7 +284,7 @@ Rules:
         {
           name: "get_logs",
           description:
-            "Get detailed activity logs (sessions, counts, diary notes, mood) in a date range, optionally filtered by task. Each log includes created_at: the exact timestamp when it was recorded.",
+            "Get detailed activity logs (sessions, counts, diary notes, mood) in a date range, optionally filtered by task. Each log includes created_at (the exact timestamp when it was recorded); timer-session logs also include started_at (when the session began).",
           parameters: {
             type: Type.OBJECT,
             properties: {
@@ -339,7 +341,7 @@ Rules:
         {
           name: "get_wasted_time",
           description:
-            "Compute wasted (unaccounted) time per day over a date range: elapsed (24h for past days, midnight->now for today) minus timer-task minutes minus sleep credited to each day (from Sleep->Wakeup tick intervals; reminder fallback marked estimatedSleep). Use ONLY for wasted/unaccounted time questions.",
+            "Compute wasted (unaccounted) time per day over a date range: elapsed (24h for past days, midnight->now for today) minus tracked timer sessions (Sleep included; crossing nights are already split per day; a running session counts live). If no Sleep session covers the 22:00-05:00 night, an estimate is added and marked estimatedSleep. Use ONLY for wasted/unaccounted time questions.",
           parameters: {
             type: Type.OBJECT,
             properties: {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refreshRunningTimerMessages } from "@/lib/timerRuntime";
 import { sendDueReminders } from "@/lib/reminders";
-import { recordCronHeartbeat } from "@/lib/supabase";
+import { recordCronHeartbeat, ensureSystemTasks } from "@/lib/supabase";
 import { isCronAuthorized } from "@/lib/cronAuth";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
 
   try {
     await recordCronHeartbeat("tick");
+    await ensureSystemTasks();
     await refreshRunningTimerMessages();
     const reminders = await sendDueReminders();
     return NextResponse.json({ status: "ok", reminders });

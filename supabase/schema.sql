@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     reminder_time TIME,                              -- e.g. '08:00:00' or '05:00:00'
     target_value INTEGER,                            -- e.g. 60 (mins) or 5000 (ml)
     unit TEXT,                                       -- 'minutes', 'ml', 'status'
-    target_days TEXT DEFAULT 'daily',                -- 'daily', 'weekdays', 'weekends', or custom
+    target_days TEXT DEFAULT 'daily',                 -- 'daily', 'weekdays', 'weekends', or custom
+    is_system BOOLEAN DEFAULT false,                 -- system task (e.g. Sleep): name locked, cannot be deleted
     is_archived BOOLEAN DEFAULT false,                -- Soft-delete (archived tasks hidden from daily use)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS logs (
     people TEXT[],                                   -- Extracted people mentioned
     decisions TEXT[],                                -- Extracted decisions made
     focus TEXT,                                      -- Per-session focus: 'focused' | 'casual' | 'distracted'
+    started_at TIMESTAMPTZ,                          -- Exact timer-session start (NULL for non-session logs)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -40,7 +42,8 @@ ADD COLUMN IF NOT EXISTS summary TEXT,
 ADD COLUMN IF NOT EXISTS projects TEXT[],
 ADD COLUMN IF NOT EXISTS people TEXT[],
 ADD COLUMN IF NOT EXISTS decisions TEXT[],
-ADD COLUMN IF NOT EXISTS focus TEXT;
+ADD COLUMN IF NOT EXISTS focus TEXT,
+ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 
 -- 3. Active Timers Table (Tracks currently running stopwatch sessions)
 CREATE TABLE IF NOT EXISTS active_timers (
@@ -64,11 +67,11 @@ CREATE INDEX IF NOT EXISTS idx_logs_date ON logs(log_date);
 CREATE INDEX IF NOT EXISTS idx_logs_task_name ON logs(task_name);
 
 -- Default starter habits (Optional seed)
-INSERT INTO tasks (name, type, reminder_time, target_value, unit)
+INSERT INTO tasks (name, type, is_system, reminder_time, target_value, unit)
 VALUES 
-    ('Physics Study', 'timer', '08:00:00', 60, 'minutes'),
-    ('Drink Water', 'counter', NULL, 5000, 'ml'),
-    ('Wake Up', 'tick', '05:00:00', 1, 'status')
+    ('Physics Study', 'timer', false, '08:00:00', 60, 'minutes'),
+    ('Drink Water', 'counter', false, NULL, 5000, 'ml'),
+    ('Sleep', 'timer', true, '22:00:00', 420, 'minutes')
 ON CONFLICT (name) DO NOTHING;
 
 -- 5. To-Dos Table (one-time tasks with an exact date & time)

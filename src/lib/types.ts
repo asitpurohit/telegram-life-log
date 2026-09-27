@@ -8,6 +8,7 @@ export interface Task {
   target_value?: number | null; // e.g. 60 (mins), 5000 (ml)
   unit?: string | null; // 'minutes', 'ml', 'status'
   target_days?: string | null; // 'daily', 'weekdays', 'weekends', or custom
+  is_system?: boolean; // system-provisioned task (e.g. Sleep): name locked, cannot be deleted
   is_archived: boolean;
   created_at?: string;
 }
@@ -27,6 +28,7 @@ export interface Log {
   decisions?: string[] | null;
   mood?: string | null;
   focus?: FocusMood | null;
+  started_at?: string | null; // exact timer-session start (null for non-session logs)
   created_at?: string;
 }
 

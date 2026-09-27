@@ -40,6 +40,7 @@ import {
   setActiveTask,
   getActiveTaskId,
   isTaskCompletedToday,
+  isSystemTask,
   untickTaskToday,
   deduplicateTodayTickLogs,
   getTaskSchedule,
@@ -59,7 +60,7 @@ import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@
 import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
 import { computeWastedDays, formatMinutes, shiftDateString } from "@/lib/timeAudit";
-import { localDateLabel, localTimeString, localDateString, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
+import { localDateLabel, localTimeString, localDateString, localDateShort, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -678,8 +679,18 @@ function parseScheduleDays(input: string): string | null {
   return null;
 }
 
+// "🔀 Split: 1h 0m on Sep 26 + 2h 0m today" (empty when the session did not cross midnight)
+function formatSplitSummary(parts: { date: string; minutes: number }[]): string {
+  if (parts.length < 2) return "";
+  const last = parts.length - 1;
+  const pieces = parts.map(
+    (p, i) => `${formatMinutes(p.minutes)} ${i === last ? "today" : `on ${localDateShort(p.date)}`}`
+  );
+  return `\n🔀 Split: ${pieces.join(" + ")}`;
+}
+
 // Build a clean, unbloated Today Scorecard
-async function buildTodayScorecard(): Promise<string> {
+async function buildTodayScorecard(chatId: string | number): Promise<string> {
   const todayStr = localDateLabel();
 
   const tasks = await getActiveTasks();
@@ -715,10 +726,21 @@ async function buildTodayScorecard(): Promise<string> {
   const today = localDateString();
   const logs = await getLogsInRange(shiftDateString(today, -1), today);
 
-  // Wasted = elapsed (midnight -> now) - timer-task minutes - sleep credited to today.
-  // Sleep = Sleep->Wakeup tick interval overlaps; reminder fallbacks when ticks are missing.
+  // Wasted = elapsed (midnight -> now) - tracked timer sessions (Sleep included).
+  // A running session counts live; missing Sleep nights are estimated 22:00-05:00.
   if (tasks.length > 0) {
-    const [day] = computeWastedDays({ dates: [today], logs, tasks });
+    const active = await getActiveTimer(chatId);
+    const pause = await getPauseState(chatId);
+    const running = active
+      ? {
+          taskName: active.task_name,
+          startedAtMs: new Date(active.started_at).getTime(),
+          pausedAtMs: pause.pausedAt,
+          pausedSeconds: pause.pausedSeconds,
+        }
+      : null;
+
+    const [day] = computeWastedDays({ dates: [today], logs, tasks, running });
     if (day) {
       const sleepLabel = !day.tracked
         ? "😴 not tracked"
@@ -726,7 +748,7 @@ async function buildTodayScorecard(): Promise<string> {
           ? `😴 ~${formatMinutes(day.sleepMin)} (est.)`
           : `😴 ${formatMinutes(day.sleepMin)}`;
 
-      text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(day.wastedMin)} of ${formatMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(day.timerMin)} tasks)</i>\n`;
+      text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(day.wastedMin)} of ${formatMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(day.taskMin)} tasks)</i>\n`;
     }
   }
 
@@ -1262,6 +1284,16 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        if (isSystemTask(task)) {
+          await respondUi(
+            chatId,
+            messageId,
+            `🔒 <b>${task.name}</b> is a system task and cannot be deleted.`,
+            [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         const confirmKb: InlineKeyboard = [
           [{ text: "🗑️ Yes, Delete", callback_data: `confirm_delete:${task.id}` }],
           [{ text: "❌ Cancel", callback_data: `delete_cancel:${task.id}` }],
@@ -1298,6 +1330,16 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        if (isSystemTask(task)) {
+          await respondUi(
+            chatId,
+            messageId,
+            `🔒 <b>${task.name}</b> is a system task and cannot be deleted.`,
+            [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         await archiveTask(task.id);
 
         const text =
@@ -1319,7 +1361,9 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const firstRow = [{ text: "📝 Name", callback_data: `edit_field:${task.id}:name` }];
+        const firstRow = isSystemTask(task)
+          ? []
+          : [{ text: "📝 Name", callback_data: `edit_field:${task.id}:name` }];
         if (task.type !== "tick") {
           firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${task.id}:goal` });
         }
@@ -1354,7 +1398,9 @@ export async function POST(req: NextRequest) {
         const manageKb: InlineKeyboard = [
           [
             { text: "📝 Edit", callback_data: `edit_task:${task.id}` },
-            { text: "🗑️ Delete", callback_data: `delete_task:${task.id}` },
+            ...(isSystemTask(task)
+              ? []
+              : [{ text: "🗑️ Delete", callback_data: `delete_task:${task.id}` }]),
           ],
           [{ text: "↩️ Back to Task List", callback_data: "ui_edit_list" }],
         ];
@@ -1394,6 +1440,16 @@ export async function POST(req: NextRequest) {
         const task = await getTaskById(taskId);
         if (!task) {
           await sendTelegramMessage(chatId, "⚠️ Task not found.");
+          return NextResponse.json({ ok: true });
+        }
+
+        if (field === "name" && isSystemTask(task)) {
+          await respondUi(
+            chatId,
+            messageId,
+            `🔒 <b>${task.name}</b> is a system task — its name cannot be changed.`,
+            [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+          );
           return NextResponse.json({ ok: true });
         }
 
@@ -1720,8 +1776,8 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
-        // Sessions under 5 minutes skip the review entirely
-        const showReview = !!result.logId && result.durationSeconds >= 300;
+        // Sessions under 5 minutes skip the review entirely (and Sleep never asks for focus)
+        const showReview = !!result.logId && result.durationSeconds >= 300 && !isSystemTask(task);
         const stopKb: InlineKeyboard = showReview
           ? buildReviewKeyboard(result.logId as string)
           : BACK_ONLY_KEYBOARD;
@@ -1731,6 +1787,7 @@ export async function POST(req: NextRequest) {
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
           `Saved to your log!` +
+          formatSplitSummary(result.split) +
           (showReview ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, stopKb);
@@ -2103,7 +2160,8 @@ export async function POST(req: NextRequest) {
             chatId,
             `🎉 <b>${result.taskName}</b> stopped!\n` +
               `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
-              `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)`
+              `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)` +
+              formatSplitSummary(result.split)
           );
         }
         return NextResponse.json({ ok: true });
@@ -2126,7 +2184,7 @@ export async function POST(req: NextRequest) {
             await trackTimerMessage(chatId, sentId);
           }
         } else {
-          const scorecard = await buildTodayScorecard();
+          const scorecard = await buildTodayScorecard(chatId);
           await sendTelegramMessage(chatId, scorecard);
         }
         return NextResponse.json({ ok: true });
@@ -2135,7 +2193,7 @@ export async function POST(req: NextRequest) {
       // --- Command: /today ---
       if (text === "/today") {
         await setActiveTask(chatId, null);
-        const scorecard = await buildTodayScorecard();
+        const scorecard = await buildTodayScorecard(chatId);
         await sendTelegramMessage(chatId, scorecard);
         return NextResponse.json({ ok: true });
       }
@@ -2287,6 +2345,15 @@ export async function POST(req: NextRequest) {
           if (!task) {
             await clearWizardSession(chatId);
             await sendTelegramMessage(chatId, "⚠️ Task not found or deleted. Edit cancelled.");
+            return NextResponse.json({ ok: true });
+          }
+
+          if (activeSession.step === "awaiting_edit_name" && isSystemTask(task)) {
+            await clearWizardSession(chatId);
+            await sendTelegramMessage(
+              chatId,
+              `🔒 <b>${task.name}</b> is a system task — its name cannot be changed.`
+            );
             return NextResponse.json({ ok: true });
           }
 
