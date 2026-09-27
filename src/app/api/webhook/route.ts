@@ -2267,13 +2267,32 @@ export async function POST(req: NextRequest) {
           const taskName = activeSession.task_data.name || "Study/Work";
           const target = activeSession.task_data.target_value || 60;
 
-          // Manual timer entries are capped at the task's daily goal.
-          if (num > target) {
+          // Manual entries can never exceed the day's remaining unaccounted time.
+          const activeTimer = await getActiveTimer(chatId);
+          const pauseState = await getPauseState(chatId);
+          const running = activeTimer
+            ? {
+                taskName: activeTimer.task_name,
+                startedAtMs: new Date(activeTimer.started_at).getTime(),
+                pausedAtMs: pauseState.pausedAt,
+                pausedSeconds: pauseState.pausedSeconds,
+              }
+            : null;
+          const [vacantDay] = computeWastedDays({
+            dates: [localDateString()],
+            logs: await getTodayLogs(),
+            tasks: await getActiveTasks(),
+            running,
+          });
+          const vacant = Math.max(0, vacantDay?.wastedMin ?? 0);
+
+          if (num > vacant) {
             await sendWizardPrompt(
               chatId,
               "awaiting_timer_custom",
               activeSession.task_data,
-              `⚠️ Manual entry max is your goal — <b>${formatGoalDisplay(target, "minutes")}</b> (${target} mins).\n\n` +
+              `⚠️ Only <b>${formatMinutes(vacant)}</b> of unaccounted time left today ` +
+                `(you tried <b>${formatMinutes(num)}</b>).\n\n` +
                 `Enter a smaller number of minutes:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -2850,16 +2869,33 @@ export async function POST(req: NextRequest) {
 
             const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
 
-            // Manual timer entries are capped at the task's daily goal.
+            // Manual timer entries can never exceed the day's remaining
+            // unaccounted time, so the day's total can never pass elapsed.
             if (applied > 0 && activeTask.type === "timer") {
-              const cap = activeTask.target_value || 60;
-              if (applied > cap) {
+              const activeTimer = await getActiveTimer(chatId);
+              const pauseState = await getPauseState(chatId);
+              const running = activeTimer
+                ? {
+                    taskName: activeTimer.task_name,
+                    startedAtMs: new Date(activeTimer.started_at).getTime(),
+                    pausedAtMs: pauseState.pausedAt,
+                    pausedSeconds: pauseState.pausedSeconds,
+                  }
+                : null;
+              const [vacantDay] = computeWastedDays({
+                dates: [localDateString()],
+                logs: await getTodayLogs(),
+                tasks: await getActiveTasks(),
+                running,
+              });
+              const vacant = Math.max(0, vacantDay?.wastedMin ?? 0);
+
+              if (applied > vacant) {
                 const detail = await buildTaskDetail(activeTask);
                 await sendUiMessage(
                   chatId,
-                  `⚠️ <b>${activeTask.name}</b>: manual entry max is your goal — ` +
-                    `<b>${formatGoalDisplay(cap, "minutes")}</b> (${cap} mins).\n` +
-                    `Use the ▶️ stopwatch for longer sessions.\n\n${detail.text}`,
+                  `⚠️ Only <b>${formatMinutes(vacant)}</b> of unaccounted time left today ` +
+                    `(you tried <b>${formatMinutes(applied)}</b>).\n\n${detail.text}`,
                   detail.keyboard
                 );
                 return NextResponse.json({ ok: true });
