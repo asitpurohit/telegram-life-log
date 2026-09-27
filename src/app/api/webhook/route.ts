@@ -2267,6 +2267,19 @@ export async function POST(req: NextRequest) {
           const taskName = activeSession.task_data.name || "Study/Work";
           const target = activeSession.task_data.target_value || 60;
 
+          // Manual timer entries are capped at the task's daily goal.
+          if (num > target) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_timer_custom",
+              activeSession.task_data,
+              `⚠️ Manual entry max is your goal — <b>${formatGoalDisplay(target, "minutes")}</b> (${target} mins).\n\n` +
+                `Enter a smaller number of minutes:`,
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
           const customLog = await logActivity({
             task_id: taskId || null,
             task_name: taskName,
@@ -2836,6 +2849,22 @@ export async function POST(req: NextRequest) {
             }
 
             const unitLabel = activeTask.type === "timer" ? "mins" : activeTask.unit || "units";
+
+            // Manual timer entries are capped at the task's daily goal.
+            if (applied > 0 && activeTask.type === "timer") {
+              const cap = activeTask.target_value || 60;
+              if (applied > cap) {
+                const detail = await buildTaskDetail(activeTask);
+                await sendUiMessage(
+                  chatId,
+                  `⚠️ <b>${activeTask.name}</b>: manual entry max is your goal — ` +
+                    `<b>${formatGoalDisplay(cap, "minutes")}</b> (${cap} mins).\n` +
+                    `Use the ▶️ stopwatch for longer sessions.\n\n${detail.text}`,
+                  detail.keyboard
+                );
+                return NextResponse.json({ ok: true });
+              }
+            }
 
             const newLog = await logActivity({
               task_id: activeTask.id,
