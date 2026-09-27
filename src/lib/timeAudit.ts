@@ -99,3 +99,14 @@ export function formatMinutes(totalMinutes: number): string {
   const m = min % 60;
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
+
+// Standard Telegram display for timer durations:
+//   45 -> "45 mins" | 60 -> "1 hour" | 62 -> "1 hour 2 min" | 420 -> "7 hours"
+export function formatTimerMinutes(totalMinutes: number): string {
+  const min = Math.max(0, Math.round(totalMinutes));
+  if (min < 60) return `${min} mins`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const hours = `${h} hour${h > 1 ? "s" : ""}`;
+  return m === 0 ? hours : `${hours} ${m} min`;
+}

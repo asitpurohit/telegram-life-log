@@ -60,7 +60,7 @@ import {
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
-import { computeWastedDays, formatMinutes, shiftDateString } from "@/lib/timeAudit";
+import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
@@ -329,11 +329,7 @@ function formatGoalDisplay(targetValue?: number | null, unit?: string | null): s
   const cleanUnit = unit?.includes("|") ? unit.split("|")[0] : unit;
 
   if (cleanUnit === "minutes") {
-    const hours = Math.floor(targetValue / 60);
-    const mins = targetValue % 60;
-    if (hours > 0 && mins > 0) return `${hours}h ${mins}m (${targetValue} mins)`;
-    if (hours > 0) return `${hours} hour${hours > 1 ? "s" : ""}`;
-    return `${mins} mins`;
+    return formatTimerMinutes(targetValue);
   }
   if (cleanUnit === "status") {
     return "1 completion";
@@ -352,7 +348,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
         `${taskEmoji(task)} <b>${task.name}</b>\n` +
         `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
         `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
-        `📊 Today's Progress: <b>${todayMins} / ${target} mins</b> (${percent}%)\n\n` +
+        `📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n\n` +
         `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
         [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
@@ -685,7 +681,7 @@ function formatSplitSummary(parts: { date: string; minutes: number }[]): string 
   if (parts.length < 2) return "";
   const last = parts.length - 1;
   const pieces = parts.map(
-    (p, i) => `${formatMinutes(p.minutes)} ${i === last ? "today" : `on ${localDateShort(p.date)}`}`
+    (p, i) => `${formatTimerMinutes(p.minutes)} ${i === last ? "today" : `on ${localDateShort(p.date)}`}`
   );
   return `\n🔀 Split: ${pieces.join(" + ")}`;
 }
@@ -713,7 +709,7 @@ async function buildTodayScorecard(chatId: string | number): Promise<string> {
         const target = t.target_value || 60;
         const pct = Math.min(100, Math.round((mins / target) * 100));
         const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
-        text += `${taskEmoji(t)} <b>${t.name}:</b> ${mins} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${focusBadge}${scheduleTag}\n`;
+        text += `${taskEmoji(t)} <b>${t.name}:</b> ${formatTimerMinutes(mins)} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${focusBadge}${scheduleTag}\n`;
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;
@@ -743,9 +739,9 @@ async function buildTodayScorecard(chatId: string | number): Promise<string> {
 
     const [day] = computeWastedDays({ dates: [today], logs, tasks, running });
     if (day) {
-      const sleepLabel = day.tracked ? `😴 ${formatMinutes(day.sleepMin)}` : "😴 not tracked";
+      const sleepLabel = day.tracked ? `😴 ${formatTimerMinutes(day.sleepMin)}` : "😴 not tracked";
 
-      text += `\n🕳️ <b>Wasted:</b> ${formatMinutes(day.wastedMin)} of ${formatMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatMinutes(day.taskMin)} tasks)</i>\n`;
+      text += `\n🕳️ <b>Wasted:</b> ${formatTimerMinutes(day.wastedMin)} of ${formatTimerMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatTimerMinutes(day.taskMin)} tasks)</i>\n`;
     }
   }
 
@@ -1237,7 +1233,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `${taskEmoji(t)} ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
+                text: `${taskEmoji(t)} ${t.name} (${formatTimerMinutes(todayMins)} / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -1579,7 +1575,7 @@ export async function POST(req: NextRequest) {
           : BACK_ONLY_KEYBOARD;
 
         const text =
-          `${task ? taskEmoji(task) : "⏱️"} <b>+${mins} mins logged for ${taskName}!</b>\n\n` +
+          `${task ? taskEmoji(task) : "⏱️"} <b>+${formatTimerMinutes(mins)} logged for ${taskName}!</b>\n\n` +
           `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
           (newLog?.id ? FOCUS_QUESTION : "");
 
@@ -1782,7 +1778,7 @@ export async function POST(req: NextRequest) {
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
-          `📊 Today's Total: <b>${totalToday} / ${target} minutes</b> (${percent}% of daily goal)\n\n` +
+          `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
           `Saved to your log!` +
           formatSplitSummary(result.split) +
           (showReview ? FOCUS_QUESTION : "");
@@ -2060,7 +2056,7 @@ export async function POST(req: NextRequest) {
             const todayMins = await getTodayTaskTotal(t.name);
             taskButtons.push([
               {
-                text: `${taskEmoji(t)} ${t.name} (${todayMins}m / ${formatGoalDisplay(t.target_value, "minutes")})`,
+                text: `${taskEmoji(t)} ${t.name} (${formatTimerMinutes(todayMins)} / ${formatGoalDisplay(t.target_value, "minutes")})`,
                 callback_data: `select_task:${t.id}`,
               },
             ]);
@@ -2291,8 +2287,8 @@ export async function POST(req: NextRequest) {
               chatId,
               "awaiting_timer_custom",
               activeSession.task_data,
-              `⚠️ Only <b>${formatMinutes(vacant)}</b> of unaccounted time left today ` +
-                `(you tried <b>${formatMinutes(num)}</b>).\n\n` +
+              `⚠️ Only <b>${formatTimerMinutes(vacant)}</b> of unaccounted time left today ` +
+                `(you tried <b>${formatTimerMinutes(num)}</b>).\n\n` +
                 `Enter a smaller number of minutes:`,
               [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
             );
@@ -2317,7 +2313,7 @@ export async function POST(req: NextRequest) {
             : BACK_ONLY_KEYBOARD;
           await sendUiMessage(
             chatId,
-            `⏱️ <b>+${num} mins logged for ${taskName}!</b>\n\n` +
+            `⏱️ <b>+${formatTimerMinutes(num)} logged for ${taskName}!</b>\n\n` +
               `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
               (customLog?.id ? FOCUS_QUESTION : ""),
             customKb
@@ -2894,8 +2890,8 @@ export async function POST(req: NextRequest) {
                 const detail = await buildTaskDetail(activeTask);
                 await sendUiMessage(
                   chatId,
-                  `⚠️ Only <b>${formatMinutes(vacant)}</b> of unaccounted time left today ` +
-                    `(you tried <b>${formatMinutes(applied)}</b>).\n\n${detail.text}`,
+                  `⚠️ Only <b>${formatTimerMinutes(vacant)}</b> of unaccounted time left today ` +
+                    `(you tried <b>${formatTimerMinutes(applied)}</b>).\n\n${detail.text}`,
                   detail.keyboard
                 );
                 return NextResponse.json({ ok: true });
@@ -2924,7 +2920,10 @@ export async function POST(req: NextRequest) {
                 text += `\n<i>Only ${available} available — you tried ${clampedFrom}.</i>`;
               }
             } else {
-              text = `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
+              text =
+                activeTask.type === "timer"
+                  ? `✅ <b>+${formatTimerMinutes(applied)}</b> logged for <b>${activeTask.name}</b>.`
+                  : `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
               if (newLog?.id) {
                 text += FOCUS_QUESTION;
                 keyboard = buildReviewKeyboard(newLog.id);

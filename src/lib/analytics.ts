@@ -266,6 +266,7 @@ Rules:
 - IMPORTANT: diary entries describe work done on tasks. For questions like "what did I do in <task>" or "when did I do <task>", ALWAYS call search_logs with the task name as the keyword, because the details live in diary notes. You may also call get_logs/get_summary for that task to add totals.
 - Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
+- When quoting timer durations or time amounts (wasted/sleep/task time), format them as "X hours Y min" (whole hours as "X hours"; under an hour as "Y mins") — e.g. "15 hours", "1 hour 21 min", "45 mins".
 - For wasted/unaccounted time questions (e.g. "how much time did I waste yesterday/this week"), ALWAYS call get_wasted_time with the exact date range — never compute it yourself from other tools. Explain using its note: past days are full 24h, today is partial.
 - For sleep or duration questions (e.g. "how long did I sleep"), use get_logs for the Sleep task: each session row stores started_at and created_at, and nights crossing midnight are split into one row per day.
 - Compute percentages against each task's goal where relevant.
