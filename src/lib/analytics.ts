@@ -40,7 +40,7 @@ async function toolGetLogs(args: ToolArgs) {
   const { from, to } = clampRange(args.from, args.to);
   let query = supabase
     .from("logs")
-    .select("log_date, task_name, value, notes, mood, focus, summary")
+    .select("created_at, log_date, task_name, value, notes, mood, focus, summary")
     .gte("log_date", from)
     .lte("log_date", to)
     .order("log_date", { ascending: true })
@@ -56,6 +56,7 @@ async function toolGetLogs(args: ToolArgs) {
     to,
     count: data?.length || 0,
     logs: (data || []).map((l) => ({
+      created_at: l.created_at || undefined,
       date: l.log_date,
       task: l.task_name,
       value: l.value,
@@ -224,6 +225,7 @@ Rules:
 - IMPORTANT: diary entries describe work done on tasks. For questions like "what did I do in <task>" or "when did I do <task>", ALWAYS call search_logs with the task name as the keyword, because the details live in diary notes. You may also call get_logs/get_summary for that task to add totals.
 - Only say there is no data when both the task tools AND search_logs return nothing.
 - Timer goals are in minutes; counters are in their unit; tick tasks count as 1 completion.
+- For time-of-day or duration questions (e.g. "how long did I sleep"), use get_logs and compare the created_at timestamps of the relevant logs, even across two different dates (e.g. Sleep at night vs Wake Up next morning).
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
 - If the question is not about the user's data, answer briefly.`;
@@ -239,7 +241,7 @@ Rules:
         {
           name: "get_logs",
           description:
-            "Get detailed activity logs (sessions, counts, diary notes, mood) in a date range, optionally filtered by task.",
+            "Get detailed activity logs (sessions, counts, diary notes, mood) in a date range, optionally filtered by task. Each log includes created_at: the exact timestamp when it was recorded.",
           parameters: {
             type: Type.OBJECT,
             properties: {
