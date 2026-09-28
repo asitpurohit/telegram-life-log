@@ -1622,14 +1622,15 @@ export async function POST(req: NextRequest) {
         const newTotal = await getTodayTaskTotal(taskName);
         const percent = Math.round((newTotal / target) * 100);
 
-        const replyKb: InlineKeyboard = newLog?.id
-          ? buildReviewKeyboard(newLog.id)
+        const showFocus = !!newLog?.id && !isSystemTask(task);
+        const replyKb: InlineKeyboard = showFocus
+          ? buildReviewKeyboard(newLog!.id as string)
           : BACK_ONLY_KEYBOARD;
 
         const text =
           `${task ? taskEmoji(task) : "⏱️"} <b>+${formatTimerMinutes(mins)} logged for ${taskName}!</b>\n\n` +
           `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
-          (newLog?.id ? FOCUS_QUESTION : "");
+          (showFocus ? FOCUS_QUESTION : "");
 
         await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
@@ -2373,14 +2374,17 @@ export async function POST(req: NextRequest) {
           const newTotal = await getTodayTaskTotal(taskName);
           const percent = Math.round((newTotal / target) * 100);
 
-          const customKb: InlineKeyboard = customLog?.id
-            ? buildReviewKeyboard(customLog.id)
+          const customTask = taskId ? await getTaskById(taskId) : null;
+          const showCustomFocus = !!customLog?.id && !isSystemTask(customTask);
+
+          const customKb: InlineKeyboard = showCustomFocus
+            ? buildReviewKeyboard(customLog!.id as string)
             : BACK_ONLY_KEYBOARD;
           await sendUiMessage(
             chatId,
             `⏱️ <b>+${formatTimerMinutes(num)} logged for ${taskName}!</b>\n\n` +
               `📊 Today's Total: <b>${newTotal} / ${target} mins</b> (${percent}% of daily goal)` +
-              (customLog?.id ? FOCUS_QUESTION : ""),
+              (showCustomFocus ? FOCUS_QUESTION : ""),
             customKb
           );
           if (customPromptId) {
@@ -2989,7 +2993,7 @@ export async function POST(req: NextRequest) {
                 activeTask.type === "timer"
                   ? `✅ <b>+${formatTimerMinutes(applied)}</b> logged for <b>${activeTask.name}</b>.`
                   : `✅ <b>+${applied.toLocaleString()} ${unitLabel}</b> logged for <b>${activeTask.name}</b>.`;
-              if (newLog?.id) {
+              if (newLog?.id && !isSystemTask(activeTask)) {
                 text += FOCUS_QUESTION;
                 keyboard = buildReviewKeyboard(newLog.id);
               } else {
