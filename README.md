@@ -26,7 +26,7 @@ including how much time you *wasted* each day.
 | 💧 **Counter** | any countable unit (ml, km, rounds…) | +1 / +5 / +10 buttons or typed amount |
 | 📌 **Tick** | daily yes/no completion | ✅ Mark Done (once per day) |
 
-- ⏰ **Reminders** with ready-to-tap buttons (daily / weekdays / weekends / custom days)
+- ⏰ **Reminders** (daily / weekdays / weekends / custom days): timer reminders open the task screen first — so the running stopwatch is always your newest message; tick & counter reminders act right where you tapped
 - ⏸ **Pause** support — paused time is excluded from the session total
 - 🌗 **Midnight split** — a session crossing 12am is saved as one row per day, so daily totals stay correct
 - ✍️ **Typed manual logs** — capped by the day's remaining unaccounted time, so totals can never exceed 24h

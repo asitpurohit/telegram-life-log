@@ -71,8 +71,8 @@ export async function sendDueReminders(
     let keyboard: InlineKeyboard = [];
 
     if (task.type === "timer") {
-      text += `Scheduled study/work session (Target: ${task.target_value || 60} mins).\nReady to start?`;
-      keyboard = [[{ text: `▶️ Start ${task.name}`, callback_data: `start_task:${task.id}` }]];
+      text += `Scheduled study/work session (Target: ${task.target_value || 60} mins).\nTap to open the task:`;
+      keyboard = [[{ text: `📂 Open ${task.name}`, callback_data: `open_task:${task.id}` }]];
     } else if (task.type === "tick") {
       text += `Scheduled routine.\nTap below when done:`;
       keyboard = [[{ text: `✅ Done with ${task.name}`, callback_data: `tick_task:${task.id}` }]];

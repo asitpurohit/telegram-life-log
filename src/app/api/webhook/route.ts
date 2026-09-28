@@ -399,6 +399,47 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
   };
 }
 
+// Opens a task's detail screen. While another timer is running, opening a
+// timer task is blocked with a stop-first warning shown in the tapped message.
+async function openTaskScreen(
+  chatId: string | number,
+  messageId: number | undefined,
+  task: Task,
+  opts: { fresh: boolean }
+): Promise<void> {
+  if (task.type === "timer") {
+    const running = await getActiveTimer(chatId);
+    if (running) {
+      const retryCallback = opts.fresh ? `open_task:${task.id}` : `select_task:${task.id}`;
+      const warnKb: InlineKeyboard = [
+        [{ text: `⏹ Stop ${running.task_name}`, callback_data: `stop_then_open:${task.id}` }],
+        [{ text: `📂 Open ${task.name}`, callback_data: retryCallback }],
+      ];
+      await respondUi(
+        chatId,
+        messageId,
+        `⚠️ <b>${running.task_name}</b> is already running.\n\n` +
+          `Stop it first to open <b>${task.name}</b>:`,
+        warnKb
+      );
+      return;
+    }
+  }
+
+  await setActiveTask(chatId, task.id);
+  const detail = await buildTaskDetail(task);
+
+  if (opts.fresh) {
+    // Reminder "Open Task": fresh message at the bottom, retire the reminder button
+    await sendUiMessage(chatId, detail.text, detail.keyboard);
+    if (messageId) {
+      await removeInlineKeyboard(chatId, messageId);
+    }
+  } else {
+    await respondUi(chatId, messageId, detail.text, detail.keyboard);
+  }
+}
+
 // One-line task summary used in edit/delete confirmations
 function buildTaskSummary(task: Task): string {
   const typeIcon = taskEmoji(task);
@@ -1253,6 +1294,19 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Button: Open Task from a reminder (fresh message at the bottom) ---
+      if (callbackData.startsWith("open_task:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found or already archived.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        await openTaskScreen(chatId, messageId, task, { fresh: true });
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Button: Selected a Task (Clean, Dedicated Actions) ---
       if (callbackData.startsWith("select_task:")) {
         const taskId = callbackData.split(":")[1];
@@ -1262,9 +1316,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        await setActiveTask(chatId, task.id);
-        const detail = await buildTaskDetail(task);
-        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        await openTaskScreen(chatId, messageId, task, { fresh: false });
         return NextResponse.json({ ok: true });
       }
 
@@ -1742,7 +1794,11 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Timer: Stop & Log (paused time excluded; only write of the session) ---
-      if (callbackData.startsWith("timer_stop:") || callbackData === "stop_active_timer") {
+      if (
+        callbackData.startsWith("timer_stop:") ||
+        callbackData === "stop_active_timer" ||
+        callbackData.startsWith("stop_then_open:")
+      ) {
         const pause = await getPauseState(chatId);
         const fallbackPausedAt = callbackData.startsWith("timer_stop:")
           ? parseInt(callbackData.split(":")[1], 10) || 0
@@ -1771,9 +1827,18 @@ export async function POST(req: NextRequest) {
 
         // Sessions under 5 minutes skip the review entirely (and Sleep never asks for focus)
         const showReview = !!result.logId && result.durationSeconds >= 300 && !isSystemTask(task);
-        const stopKb: InlineKeyboard = showReview
+        let stopKb: InlineKeyboard = showReview
           ? buildReviewKeyboard(result.logId as string)
           : BACK_ONLY_KEYBOARD;
+
+        // When the stop was tapped from an "open task" warning, offer the task again
+        if (callbackData.startsWith("stop_then_open:")) {
+          const openTaskId = callbackData.split(":")[1];
+          const openTask = await getTaskById(openTaskId);
+          if (openTask) {
+            stopKb = [...stopKb, [{ text: `📂 Open ${openTask.name}`, callback_data: `open_task:${openTask.id}` }]];
+          }
+        }
 
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
