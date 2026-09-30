@@ -56,6 +56,15 @@ import {
   getTodoById,
   setTodoDone,
   deleteTodo,
+  getDoubts,
+  getDoubtTopics,
+  getTasksWithDoubts,
+  getDoubtById,
+  toggleDoubtStatus,
+  deleteDoubt,
+  findMatchingTopic,
+  extractDoubtTopic,
+  extractDoubtQuestion,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -352,6 +361,7 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
         `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
         [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
+        ...(!task.is_system ? [[{ text: "❓ View Doubts", callback_data: `doubt_topics:${task.id}` }]] : []),
         [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
       ],
     };
@@ -659,6 +669,162 @@ function todoTimeKb(): InlineKeyboard {
     ],
     [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
   ];
+}
+
+// =========================================================================
+// DOUBT UI HELPERS
+// =========================================================================
+
+function buildDoubtMenuText(): string {
+  return (
+    `❓ <b>Doubt Log & Study Tracker</b>\n\n` +
+    `Record and review your study questions, conceptual doubts, and coding blockers.\n\n` +
+    `What would you like to do?`
+  );
+}
+
+function buildDoubtMenuKeyboard(): InlineKeyboard {
+  return [
+    [{ text: "➕ Log New Doubt", callback_data: "doubt_menu:log" }],
+    [{ text: "👁️ View Doubts", callback_data: "doubt_menu:view" }],
+  ];
+}
+
+function buildDoubtSubjectPickKeyboard(tasks: Task[]): InlineKeyboard {
+  const timerTasks = tasks.filter((t) => t.type === "timer" && !t.is_system);
+  const rows: InlineKeyboard = timerTasks.map((t) => [
+    { text: `${taskEmoji(t)} ${t.name}`, callback_data: `doubt_pick:${t.id}` },
+  ]);
+  rows.push([{ text: "❌ Cancel", callback_data: "wizard_cancel" }]);
+  return rows;
+}
+
+function buildDoubtTopicKeyboard(
+  task: Task,
+  topics: { topic: string; count: number }[]
+): { text: string; keyboard: InlineKeyboard } {
+  if (topics.length === 0) {
+    return {
+      text:
+        `📚 <b>${task.name} — Log a Doubt</b>\n\n` +
+        `What is the <b>topic</b> or chapter?\n` +
+        `<i>(e.g., Electrostatics, Next.js, Optics)</i>`,
+      keyboard: [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+    };
+  }
+
+  const topicButtons: InlineKeyboard = [];
+  for (let i = 0; i < topics.length; i += 2) {
+    const row = [
+      {
+        text: `📑 ${topics[i].topic} (${topics[i].count})`,
+        callback_data: `doubt_tpick:${task.id}:${encodeURIComponent(topics[i].topic)}`,
+      },
+    ];
+    if (i + 1 < topics.length) {
+      row.push({
+        text: `📑 ${topics[i + 1].topic} (${topics[i + 1].count})`,
+        callback_data: `doubt_tpick:${task.id}:${encodeURIComponent(topics[i + 1].topic)}`,
+      });
+    }
+    topicButtons.push(row);
+  }
+
+  topicButtons.push([{ text: "➕ New Topic", callback_data: `doubt_tnew:${task.id}` }]);
+  topicButtons.push([{ text: "❌ Cancel", callback_data: "wizard_cancel" }]);
+
+  return {
+    text:
+      `📚 <b>${task.name} — Select Topic</b>\n\n` +
+      `Pick an existing topic below, or tap <b>➕ New Topic</b>:`,
+    keyboard: topicButtons,
+  };
+}
+
+function buildDoubtListView(
+  task: Task,
+  topic: string,
+  page: number,
+  doubts: any[],
+  total: number
+): { text: string; keyboard: InlineKeyboard } {
+  const pageSize = 5;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  const topicLabel = topic === "all" ? "All Topics" : topic;
+  let text = `📚 <b>${task.name}</b> > <b>${topicLabel}</b>\n`;
+  if (total === 0) {
+    text += `\n<i>No doubts logged for this topic yet!</i>`;
+    return {
+      text,
+      keyboard: [
+        [{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }],
+        [{ text: "🔙 Back to Topics", callback_data: `doubt_topics:${task.id}` }],
+      ],
+    };
+  }
+
+  const startIdx = (safePage - 1) * pageSize + 1;
+  const endIdx = Math.min(total, safePage * pageSize);
+  text += `Showing <b>${startIdx}–${endIdx}</b> of <b>${total}</b> doubts (Page ${safePage}/${totalPages}):\n\n`;
+
+  const kb: InlineKeyboard = [];
+
+  doubts.forEach((d, idx) => {
+    const num = startIdx + idx;
+    const isResolved = d.summary?.includes("Resolved");
+    const icon = isResolved ? "✅" : "❓";
+    const dateStr = d.log_date || "";
+    const top = extractDoubtTopic(d);
+    const q = extractDoubtQuestion(d);
+
+    text += `${num}. ${icon} <i>[${dateStr}${topic === "all" ? ` · ${top}` : ""}]</i>\n`;
+    text += `   ${q}\n\n`;
+
+    const doubtId = d.id || "";
+    const actionRow = [];
+    if (isResolved) {
+      actionRow.push({
+        text: `⭕ Reopen #${num}`,
+        callback_data: `doubt_reop:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+      });
+    } else {
+      actionRow.push({
+        text: `✅ Resolve #${num}`,
+        callback_data: `doubt_res:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+      });
+    }
+    actionRow.push({
+      text: `🗑️ Del #${num}`,
+      callback_data: `doubt_del_ask:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+    });
+    kb.push(actionRow);
+  });
+
+  const navRow = [];
+  if (safePage > 1) {
+    navRow.push({
+      text: "⬅️ Prev 5",
+      callback_data: `doubt_list:${task.id}:${encodeURIComponent(topic)}:${safePage - 1}`,
+    });
+  }
+  if (safePage < totalPages) {
+    navRow.push({
+      text: "➡️ Next 5 (More)",
+      callback_data: `doubt_list:${task.id}:${encodeURIComponent(topic)}:${safePage + 1}`,
+    });
+  }
+  if (navRow.length > 0) {
+    kb.push(navRow);
+  }
+
+  kb.push([
+    { text: "🔙 Back to Topics", callback_data: `doubt_topics:${task.id}` },
+    { text: "📋 Main Menu", callback_data: "doubt_menu:view" },
+  ]);
+
+  return { text, keyboard: kb };
 }
 
 // Parse schedule days: supports "daily", or comma/dot-separated days e.g. "Mon, Wed, Fri"
@@ -1069,6 +1235,307 @@ export async function POST(req: NextRequest) {
           `🗑️ Deleted${todo ? `: <b>${todo.title}</b>` : ""}.\n\n${buildTodoListText(todos)}`,
           buildTodoListKeyboard(todos)
         );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Menu (Log Doubt) ---
+      if (callbackData === "doubt_menu:log") {
+        await clearWizardSessionAndRetirePrompt(chatId);
+        const tasks = await getActiveTasks();
+        const timerTasks = tasks.filter((t) => t.type === "timer" && !t.is_system);
+        if (timerTasks.length === 0) {
+          await respondUi(
+            chatId,
+            messageId,
+            `⚠️ <b>No active study/work routines found.</b>\n\n` +
+              `Please use <b>/addtask</b> to create a timer routine (e.g. "Physics Study", "Vibe Coding") first!`,
+            [[{ text: "➕ Add Routine", callback_data: "wizard_type:timer" }], [{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+        await respondUi(
+          chatId,
+          messageId,
+          `📚 <b>Log a Doubt</b>\n\nSelect the subject or routine:`,
+          buildDoubtSubjectPickKeyboard(tasks)
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Menu (View Doubts) ---
+      if (callbackData === "doubt_menu:view") {
+        await clearWizardSessionAndRetirePrompt(chatId);
+        const tasksWithDoubts = await getTasksWithDoubts();
+        if (tasksWithDoubts.length === 0) {
+          await respondUi(
+            chatId,
+            messageId,
+            `⚠️ <b>No timer routines found.</b>\n\nCreate a timer routine via <b>/addtask</b> first.`,
+            [[{ text: "➕ Add Routine", callback_data: "wizard_type:timer" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const totalDoubtsAcrossAll = tasksWithDoubts.reduce((s, t) => s + t.count, 0);
+        if (totalDoubtsAcrossAll === 0) {
+          await respondUi(
+            chatId,
+            messageId,
+            `ℹ️ <b>No doubts logged yet!</b>\n\nTap below to record your first doubt:`,
+            [
+              [{ text: "➕ Log New Doubt", callback_data: "doubt_menu:log" }],
+              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+            ]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const kb: InlineKeyboard = tasksWithDoubts
+          .filter((item) => item.count > 0)
+          .map((item) => [
+            {
+              text: `${taskEmoji(item.task)} ${item.task.name} (${item.count})`,
+              callback_data: `doubt_topics:${item.task.id}`,
+            },
+          ]);
+
+        kb.push([{ text: "➕ Log New Doubt", callback_data: "doubt_menu:log" }]);
+        kb.push([{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]);
+
+        await respondUi(
+          chatId,
+          messageId,
+          `📚 <b>Your Doubts by Subject</b>\nSelect a subject to view topics and questions:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Pick Subject to Log ---
+      if (callbackData.startsWith("doubt_pick:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found or already archived.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const topics = await getDoubtTopics(task.id);
+        if (topics.length > 0) {
+          const view = buildDoubtTopicKeyboard(task, topics);
+          await respondUi(chatId, messageId, view.text, view.keyboard);
+          return NextResponse.json({ ok: true });
+        }
+
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_doubt_topic",
+          { doubtTaskId: task.id, doubtTaskName: task.name },
+          `📚 <b>${task.name} — Log a Doubt</b>\n\n` +
+            `What is the <b>topic</b> or chapter?\n` +
+            `<i>(e.g., Electrostatics, Next.js, Optics)</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Prompt for New Topic Text ---
+      if (callbackData.startsWith("doubt_tnew:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_doubt_topic",
+          { doubtTaskId: task.id, doubtTaskName: task.name },
+          `📚 <b>${task.name} — New Topic</b>\n\n` +
+            `Please type the topic or chapter name:\n` +
+            `<i>(e.g., Electrostatics, Next.js, Optics)</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Pick Existing Topic or Confirm Suggested Topic -> Ask Doubt ---
+      if (callbackData.startsWith("doubt_tpick:") || callbackData.startsWith("doubt_tconfirm:")) {
+        const parts = callbackData.split(":");
+        const taskId = parts[1];
+        const topic = decodeURIComponent(parts.slice(2).join(":"));
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_doubt_text",
+          { doubtTaskId: task.id, doubtTaskName: task.name, doubtTopic: topic },
+          `❓ <b>${task.name} — ${topic}</b>\n\n` +
+            `What is your <b>doubt</b>? Explain what you are stuck on:\n` +
+            `<i>(Type your question or notes)</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: View Topics for Subject ---
+      if (callbackData.startsWith("doubt_topics:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const topics = await getDoubtTopics(task.id);
+        const total = topics.reduce((s, t) => s + t.count, 0);
+
+        if (topics.length === 0) {
+          await respondUi(
+            chatId,
+            messageId,
+            `ℹ️ No doubts logged yet for <b>${task.name}</b>.`,
+            [
+              [{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }],
+              [{ text: "🔙 Back to Subjects", callback_data: "doubt_menu:view" }],
+            ]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const kb: InlineKeyboard = [];
+        for (let i = 0; i < topics.length; i += 2) {
+          const row = [
+            {
+              text: `📑 ${topics[i].topic} (${topics[i].count})`,
+              callback_data: `doubt_list:${task.id}:${encodeURIComponent(topics[i].topic)}:1`,
+            },
+          ];
+          if (i + 1 < topics.length) {
+            row.push({
+              text: `📑 ${topics[i + 1].topic} (${topics[i + 1].count})`,
+              callback_data: `doubt_list:${task.id}:${encodeURIComponent(topics[i + 1].topic)}:1`,
+            });
+          }
+          kb.push(row);
+        }
+
+        kb.push([
+          {
+            text: `📑 All Topics (${total})`,
+            callback_data: `doubt_list:${task.id}:all:1`,
+          },
+        ]);
+        kb.push([{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }]);
+        kb.push([{ text: "🔙 Back to Subjects", callback_data: "doubt_menu:view" }]);
+
+        await respondUi(
+          chatId,
+          messageId,
+          `📚 <b>${task.name} — Select Topic</b>\nChoose a topic to view its questions:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: View Doubt List (Paginated) ---
+      if (callbackData.startsWith("doubt_list:")) {
+        const [, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const topic = decodeURIComponent(encodedTopic);
+        const page = parseInt(pageStr, 10) || 1;
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
+        const view = buildDoubtListView(task, topic, page, doubts, total);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Mark Resolved ---
+      if (callbackData.startsWith("doubt_res:")) {
+        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        await toggleDoubtStatus(doubtId, true);
+
+        const topic = decodeURIComponent(encodedTopic);
+        const page = parseInt(pageStr, 10) || 1;
+        const task = await getTaskById(taskId);
+        if (task) {
+          const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
+          const view = buildDoubtListView(task, topic, page, doubts, total);
+          await respondUi(chatId, messageId, view.text, view.keyboard);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Reopen Resolved Doubt ---
+      if (callbackData.startsWith("doubt_reop:")) {
+        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        await toggleDoubtStatus(doubtId, false);
+
+        const topic = decodeURIComponent(encodedTopic);
+        const page = parseInt(pageStr, 10) || 1;
+        const task = await getTaskById(taskId);
+        if (task) {
+          const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
+          const view = buildDoubtListView(task, topic, page, doubts, total);
+          await respondUi(chatId, messageId, view.text, view.keyboard);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Ask Delete Confirmation ---
+      if (callbackData.startsWith("doubt_del_ask:")) {
+        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const doubt = await getDoubtById(doubtId);
+        const q = doubt ? extractDoubtQuestion(doubt) : "this doubt";
+
+        await respondUi(
+          chatId,
+          messageId,
+          `🗑️ <b>Delete this doubt permanently?</b>\n\n<i>"${q.slice(0, 150)}"</i>`,
+          [
+            [
+              {
+                text: "🗑️ Yes, Delete",
+                callback_data: `doubt_del_conf:${doubtId}:${taskId}:${encodedTopic}:${pageStr}`,
+              },
+            ],
+            [
+              {
+                text: "❌ Cancel",
+                callback_data: `doubt_list:${taskId}:${encodedTopic}:${pageStr}`,
+              },
+            ],
+          ]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Confirm Delete ---
+      if (callbackData.startsWith("doubt_del_conf:")) {
+        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        await deleteDoubt(doubtId);
+
+        const topic = decodeURIComponent(encodedTopic);
+        const page = parseInt(pageStr, 10) || 1;
+        const task = await getTaskById(taskId);
+        if (task) {
+          const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
+          const view = buildDoubtListView(task, topic, page, doubts, total);
+          await respondUi(chatId, messageId, view.text, view.keyboard);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -1969,6 +2436,7 @@ export async function POST(req: NextRequest) {
           `<b>Available Commands:</b>\n` +
           `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
           `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
+          `• <b>/doubt</b> — ❓ Log or view study & coding doubts\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
           `• <b>/ask</b> — 🤖 Ask AI about your data & progress\n` +
@@ -2166,6 +2634,19 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const todos = await getTodos();
         await sendUiMessage(chatId, buildTodoListText(todos), buildTodoListKeyboard(todos));
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /doubt (Interactive Doubt Tracker) ---
+      if (
+        text === "/doubt" ||
+        text === "/doubts" ||
+        text.startsWith("/doubt ") ||
+        text.startsWith("/doubts ")
+      ) {
+        await clearWizardSessionAndRetirePrompt(chatId);
+        await setActiveTask(chatId, null);
+        await sendUiMessage(chatId, buildDoubtMenuText(), buildDoubtMenuKeyboard());
         return NextResponse.json({ ok: true });
       }
 
@@ -2591,6 +3072,119 @@ export async function POST(req: NextRequest) {
 
           const view = buildTodoView(todo);
           await sendUiMessage(chatId, `✅ <b>To-Do saved!</b>\n\n${view.text}`, view.keyboard);
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Doubt Topic Input with Typo Check ---
+        if (activeSession.step === "awaiting_doubt_topic") {
+          const inputTopic = text.trim();
+          if (inputTopic.length < 2 || isQuickGibberishCheck(inputTopic)) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_doubt_topic",
+              activeSession.task_data,
+              `⚠️ Please provide a clear topic or chapter name (at least 2 letters):\n\n<i>(e.g., Electrostatics, Next.js, Optics)</i>`,
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskId = activeSession.task_data.doubtTaskId!;
+          const taskName = activeSession.task_data.doubtTaskName || "Subject";
+          const existing = await getDoubtTopics(taskId);
+          const existingNames = existing.map((e) => e.topic);
+
+          const match = findMatchingTopic(existingNames, inputTopic);
+          if (match && match.toLowerCase() !== inputTopic.toLowerCase()) {
+            const confirmKb: InlineKeyboard = [
+              [
+                {
+                  text: `✅ Yes, use "${match}"`,
+                  callback_data: `doubt_tconfirm:${taskId}:${encodeURIComponent(match)}`,
+                },
+              ],
+              [
+                {
+                  text: `➕ No, use new "${inputTopic}"`,
+                  callback_data: `doubt_tconfirm:${taskId}:${encodeURIComponent(inputTopic)}`,
+                },
+              ],
+              [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+            ];
+
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_doubt_topic_confirm",
+              { ...activeSession.task_data, doubtTopic: inputTopic, suggestedTopic: match },
+              `💡 Did you mean existing topic <b>"${match}"</b>?\n\n` +
+                `You typed <i>"${inputTopic}"</i>. Would you like to use the existing topic or create a new one?`,
+              confirmKb
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const chosenTopic = match || inputTopic;
+          const taskData = { ...activeSession.task_data, doubtTopic: chosenTopic };
+
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_doubt_text",
+            taskData,
+            `❓ <b>${taskName} — ${chosenTopic}</b>\n\n` +
+              `What is your <b>doubt</b>? Explain what you are stuck on:\n` +
+              `<i>(Type your question or notes)</i>`,
+            [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Doubt Question Input ---
+        if (activeSession.step === "awaiting_doubt_text") {
+          const doubtText = text.trim();
+          if (doubtText.length < 3 || isQuickGibberishCheck(doubtText)) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_doubt_text",
+              activeSession.task_data,
+              `⚠️ Please describe your doubt clearly:\n\n<i>(e.g., "Why does the electric field inside a hollow conductor become zero?")</i>`,
+              [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskId = activeSession.task_data.doubtTaskId;
+          const taskName = activeSession.task_data.doubtTaskName || "Subject";
+          const topic = activeSession.task_data.doubtTopic || "General";
+          const promptId = activeSession.task_data.promptMessageId;
+
+          await clearWizardSession(chatId);
+
+          await logActivity({
+            task_id: taskId,
+            task_name: taskName,
+            value: 0,
+            summary: `❓ Doubt: ${topic}`,
+            notes: `❓ [Doubt] Topic: ${topic}\n${doubtText}`,
+            projects: [topic],
+          });
+
+          const successText =
+            `✅ <b>Doubt Logged!</b>\n\n` +
+            `📚 <b>Subject:</b> ${taskName}\n` +
+            `🔖 <b>Topic:</b> ${topic}\n` +
+            `❓ <b>Question:</b> ${doubtText}\n\n` +
+            `<i>Saved! You can review your doubts anytime via /doubts or /ask.</i>`;
+
+          const successKb: InlineKeyboard = [
+            [{ text: "👁️ View Doubts", callback_data: `doubt_topics:${taskId}` }],
+            [{ text: "➕ Log Another Doubt", callback_data: `doubt_pick:${taskId}` }],
+            [{ text: "📋 Main Menu", callback_data: "menu_tasks" }],
+          ];
+
+          await sendUiMessage(chatId, successText, successKb);
+          if (promptId) {
+            await removeInlineKeyboard(chatId, promptId);
+          }
           return NextResponse.json({ ok: true });
         }
 

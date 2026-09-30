@@ -1,5 +1,15 @@
 import { GoogleGenAI, Type, ToolUnion } from "@google/genai";
-import { supabase, getActiveTasks, getTodos, getFocusTotals, getLogsInRange, getAnyActiveTimer } from "./supabase";
+import {
+  supabase,
+  getActiveTasks,
+  getTodos,
+  getFocusTotals,
+  getLogsInRange,
+  getAnyActiveTimer,
+  getDoubts,
+  extractDoubtTopic,
+  extractDoubtQuestion,
+} from "./supabase";
 import { computeWastedDays, shiftDateString } from "./timeAudit";
 import { localDateString, todoDueLabel } from "./time";
 
@@ -223,6 +233,30 @@ async function toolGetWastedTime(args: ToolArgs) {
   };
 }
 
+async function toolGetDoubts(args: ToolArgs) {
+  const status = args.status === "open" || args.status === "resolved" ? args.status : "all";
+  const result = await getDoubts({
+    taskName: args.task ? String(args.task) : undefined,
+    topic: args.topic ? String(args.topic) : undefined,
+    status,
+    page: 1,
+    pageSize: 50,
+  });
+
+  return {
+    count: result.total,
+    doubts: result.doubts.map((d) => ({
+      id: d.id,
+      task: d.task_name,
+      date: d.log_date,
+      status: d.summary?.includes("Resolved") ? "resolved" : "open",
+      topic: extractDoubtTopic(d),
+      question: extractDoubtQuestion(d),
+      created_at: d.created_at,
+    })),
+  };
+}
+
 export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): Promise<object> {
   try {
     switch (name) {
@@ -240,6 +274,8 @@ export async function executeAnalyticsTool(name: string, args: ToolArgs = {}): P
         return await toolGetWastedTime(args);
       case "get_todos":
         return await toolGetTodos(args);
+      case "get_doubts":
+        return await toolGetDoubts(args);
       default:
         return { error: `Unknown tool: ${name}` };
     }
@@ -269,6 +305,7 @@ Rules:
 - When quoting timer durations or time amounts (wasted/sleep/task time), format them as "X hours Y min" (whole hours as "X hours"; under an hour as "Y mins") — e.g. "15 hours", "1 hour 21 min", "45 mins".
 - For wasted/unaccounted time questions (e.g. "how much time did I waste yesterday/this week"), ALWAYS call get_wasted_time with the exact date range — never compute it yourself from other tools. Explain using its note: past days are full 24h, today is partial.
 - For sleep or duration questions (e.g. "how long did I sleep"), use get_logs for the Sleep task: each session row stores started_at and created_at, and nights crossing midnight are split into one row per day.
+- For questions about doubts, study questions, confusions, or unresolved topics (e.g. "what doubts do I have in physics"), ALWAYS call get_doubts. Explain the doubt questions, their topics, and their status (open or resolved).
 - Compute percentages against each task's goal where relevant.
 - Answer concisely and friendly, formatted for Telegram HTML (<b>, <i>, <code>). No markdown tables.
 - If the question is not about the user's data, answer briefly.`;
@@ -358,6 +395,18 @@ Rules:
             type: Type.OBJECT,
             properties: {
               status: { type: Type.STRING, description: "pending | done | all" },
+            },
+          },
+        },
+        {
+          name: "get_doubts",
+          description: "Get logged study and coding doubts with their status (open or resolved), topic, and subject.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              task: { type: Type.STRING, description: "Optional subject/task filter (e.g. Physics Study, Vibe Coding)" },
+              topic: { type: Type.STRING, description: "Optional topic or chapter filter" },
+              status: { type: Type.STRING, description: "open | resolved | all" },
             },
           },
         },

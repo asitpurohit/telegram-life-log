@@ -14,6 +14,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "log", description: "Daily diary & mood reflection" },
   { command: "today", description: "Today's scorecard & progress" },
   { command: "ask", description: "Ask AI about your data & progress" },
+  { command: "doubt", description: "Log or view study/coding doubts" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },
 ];

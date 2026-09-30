@@ -950,3 +950,239 @@ export async function clearWizardSession(chatId: string | number): Promise<boole
   }
 }
 
+// ==========================================
+// DOUBT OPERATIONS & TOPIC DEDUPLICATION
+// ==========================================
+
+export function levenshteinDistance(a: string, b: string): number {
+  const an = a.length;
+  const bn = b.length;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= bn; ++i) matrix[i] = [i];
+  for (let j = 0; j <= an; ++j) matrix[0][j] = j;
+
+  for (let i = 1; i <= bn; ++i) {
+    for (let j = 1; j <= an; ++j) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+  return matrix[bn][an];
+}
+
+export function findMatchingTopic(existingTopics: string[], typedInput: string): string | null {
+  const cleanInput = typedInput.trim().toLowerCase();
+  if (cleanInput.length < 3) return null;
+
+  for (const existing of existingTopics) {
+    const cleanExisting = existing.trim().toLowerCase();
+
+    // Exact match (case insensitive) -> use existing capitalized version
+    if (cleanExisting === cleanInput) {
+      return existing;
+    }
+
+    // Prefix / Substring match (e.g. "electrostat" vs "electrostatics")
+    if (cleanExisting.startsWith(cleanInput) || cleanInput.startsWith(cleanExisting)) {
+      return existing;
+    }
+
+    // Typo check via Levenshtein distance
+    const distance = levenshteinDistance(cleanInput, cleanExisting);
+    const maxAllowed = cleanExisting.length > 7 ? 2 : 1;
+    if (distance <= maxAllowed) {
+      return existing;
+    }
+  }
+
+  return null;
+}
+
+export function extractDoubtTopic(log: Partial<Log>): string {
+  if (log.projects && Array.isArray(log.projects) && log.projects.length > 0 && log.projects[0]) {
+    return String(log.projects[0]).trim();
+  }
+  const summaryMatch = log.summary?.match(/(?:❓ Doubt:|✅ Resolved:)\s*(.+)/i);
+  if (summaryMatch && summaryMatch[1]) {
+    return summaryMatch[1].trim();
+  }
+  const notesMatch = log.notes?.match(/Topic:\s*([^\n]+)/i);
+  if (notesMatch && notesMatch[1]) {
+    return notesMatch[1].trim();
+  }
+  return "General";
+}
+
+export function extractDoubtQuestion(log: Partial<Log>): string {
+  if (!log.notes) return "";
+  const lines = log.notes.split("\n");
+  if (lines.length > 1 && lines[0].includes("Topic:")) {
+    return lines.slice(1).join("\n").trim();
+  }
+  return log.notes.replace(/^(❓ \[Doubt\]|✅ \[Resolved Doubt\])\s*/i, "").trim();
+}
+
+export async function getDoubtTopics(taskId: string): Promise<{ topic: string; count: number }[]> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("summary, notes, projects")
+    .eq("task_id", taskId)
+    .or("summary.ilike.%Doubt:%,summary.ilike.%Resolved:%");
+
+  if (error || !data) return [];
+
+  const counts = new Map<string, number>();
+  for (const row of data) {
+    const topic = extractDoubtTopic(row as Log);
+    if (topic) {
+      counts.set(topic, (counts.get(topic) || 0) + 1);
+    }
+  }
+
+  return Array.from(counts.entries())
+    .map(([topic, count]) => ({ topic, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export async function getTasksWithDoubts(): Promise<{ task: Task; count: number }[]> {
+  const tasks = await getActiveTasks();
+  const timerTasks = tasks.filter((t) => t.type === "timer" && !t.is_system);
+
+  const { data, error } = await supabase
+    .from("logs")
+    .select("task_id, task_name")
+    .or("summary.ilike.%Doubt:%,summary.ilike.%Resolved:%");
+
+  if (error || !data) {
+    return timerTasks.map((task) => ({ task, count: 0 }));
+  }
+
+  const counts = new Map<string, number>();
+  for (const row of data) {
+    if (row.task_id) {
+      counts.set(row.task_id, (counts.get(row.task_id) || 0) + 1);
+    }
+  }
+
+  return timerTasks.map((task) => ({
+    task,
+    count: counts.get(task.id) || 0,
+  }));
+}
+
+export async function getDoubtById(logId: string): Promise<Log | null> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("*")
+    .eq("id", logId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data as Log;
+}
+
+export async function getDoubts(options: {
+  taskId?: string;
+  taskName?: string;
+  topic?: string;
+  status?: "all" | "open" | "resolved";
+  page?: number;
+  pageSize?: number;
+}): Promise<{ doubts: Log[]; total: number }> {
+  const page = options.page && options.page > 0 ? options.page : 1;
+  const pageSize = options.pageSize && options.pageSize > 0 ? options.pageSize : 5;
+  const offset = (page - 1) * pageSize;
+
+  let query = supabase
+    .from("logs")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false });
+
+  if (options.taskId) {
+    query = query.eq("task_id", options.taskId);
+  } else if (options.taskName) {
+    query = query.ilike("task_name", `%${options.taskName}%`);
+  }
+
+  if (options.status === "open") {
+    query = query.ilike("summary", "❓ Doubt:%");
+  } else if (options.status === "resolved") {
+    query = query.ilike("summary", "✅ Resolved:%");
+  } else {
+    query = query.or("summary.ilike.%Doubt:%,summary.ilike.%Resolved:%");
+  }
+
+  if (options.topic && options.topic.toLowerCase() !== "all") {
+    const escapedTopic = escapeLikePattern(options.topic);
+    query = query.or(
+      `notes.ilike.%Topic: ${escapedTopic}%,summary.ilike.%Doubt: ${escapedTopic}%,summary.ilike.%Resolved: ${escapedTopic}%`
+    );
+  }
+
+  query = query.range(offset, offset + pageSize - 1);
+
+  const { data, count, error } = await query;
+  if (error) {
+    console.error("Error fetching doubts:", error);
+    return { doubts: [], total: 0 };
+  }
+
+  return {
+    doubts: (data || []) as Log[],
+    total: count || 0,
+  };
+}
+
+export async function toggleDoubtStatus(logId: string, resolve: boolean): Promise<boolean> {
+  const { data: row, error: fetchErr } = await supabase
+    .from("logs")
+    .select("*")
+    .eq("id", logId)
+    .maybeSingle();
+
+  if (fetchErr || !row) return false;
+
+  let newSummary = row.summary || "";
+  let newNotes = row.notes || "";
+
+  if (resolve) {
+    newSummary = newSummary.replace(/^(❓\s*Doubt:|Doubt:)/i, "✅ Resolved:").trim();
+    if (!newSummary.startsWith("✅ Resolved:")) {
+      newSummary = `✅ Resolved: ${newSummary}`;
+    }
+    newNotes = newNotes.replace(/❓\s*\[Doubt\]/i, "✅ [Resolved Doubt]");
+  } else {
+    newSummary = newSummary.replace(/^✅\s*Resolved:\s*/i, "❓ Doubt: ").trim();
+    if (!newSummary.startsWith("❓ Doubt:")) {
+      newSummary = `❓ Doubt: ${newSummary}`;
+    }
+    newNotes = newNotes.replace(/✅\s*\[Resolved Doubt\]/i, "❓ [Doubt]");
+  }
+
+  const { error } = await supabase
+    .from("logs")
+    .update({ summary: newSummary, notes: newNotes })
+    .eq("id", logId);
+
+  return !error;
+}
+
+export async function deleteDoubt(logId: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("logs")
+    .delete()
+    .eq("id", logId);
+
+  return !error;
+}
+
+

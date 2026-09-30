@@ -65,7 +65,10 @@ export interface WizardSession {
     | 'awaiting_edit_days'
     | 'awaiting_todo_title'
     | 'awaiting_todo_date'
-    | 'awaiting_todo_time';
+    | 'awaiting_todo_time'
+    | 'awaiting_doubt_topic'
+    | 'awaiting_doubt_text'
+    | 'awaiting_doubt_topic_confirm';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -77,6 +80,11 @@ export interface WizardSession {
     promptMessageId?: number;
     todoTitle?: string;
     todoDate?: string; // YYYY-MM-DD
+    doubtTaskId?: string;
+    doubtTaskName?: string;
+    doubtTopic?: string;
+    suggestedTopic?: string;
+    doubtPage?: number;
   };
   updated_at?: string;
 }
