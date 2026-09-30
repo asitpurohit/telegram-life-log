@@ -718,13 +718,13 @@ function buildDoubtTopicKeyboard(
     const row = [
       {
         text: `📑 ${topics[i].topic} (${topics[i].count})`,
-        callback_data: `doubt_tpick:${task.id}:${encodeURIComponent(topics[i].topic)}`,
+        callback_data: `doubt_tpick:${i}`,
       },
     ];
     if (i + 1 < topics.length) {
       row.push({
         text: `📑 ${topics[i + 1].topic} (${topics[i + 1].count})`,
-        callback_data: `doubt_tpick:${task.id}:${encodeURIComponent(topics[i + 1].topic)}`,
+        callback_data: `doubt_tpick:${i + 1}`,
       });
     }
     topicButtons.push(row);
@@ -760,7 +760,7 @@ function buildDoubtListView(
       text,
       keyboard: [
         [{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }],
-        [{ text: "🔙 Back to Topics", callback_data: `doubt_topics:${task.id}` }],
+        [{ text: "🔙 Back to Topics", callback_data: "doubt_back_topics" }],
       ],
     };
   }
@@ -787,17 +787,17 @@ function buildDoubtListView(
     if (isResolved) {
       actionRow.push({
         text: `⭕ Reopen #${num}`,
-        callback_data: `doubt_reop:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+        callback_data: `doubt_reop:${doubtId}`,
       });
     } else {
       actionRow.push({
         text: `✅ Resolve #${num}`,
-        callback_data: `doubt_res:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+        callback_data: `doubt_res:${doubtId}`,
       });
     }
     actionRow.push({
       text: `🗑️ Del #${num}`,
-      callback_data: `doubt_del_ask:${doubtId}:${task.id}:${encodeURIComponent(topic)}:${safePage}`,
+      callback_data: `doubt_del_ask:${doubtId}`,
     });
     kb.push(actionRow);
   });
@@ -806,13 +806,13 @@ function buildDoubtListView(
   if (safePage > 1) {
     navRow.push({
       text: "⬅️ Prev 5",
-      callback_data: `doubt_list:${task.id}:${encodeURIComponent(topic)}:${safePage - 1}`,
+      callback_data: `doubt_page:${safePage - 1}`,
     });
   }
   if (safePage < totalPages) {
     navRow.push({
       text: "➡️ Next 5 (More)",
-      callback_data: `doubt_list:${task.id}:${encodeURIComponent(topic)}:${safePage + 1}`,
+      callback_data: `doubt_page:${safePage + 1}`,
     });
   }
   if (navRow.length > 0) {
@@ -820,7 +820,7 @@ function buildDoubtListView(
   }
 
   kb.push([
-    { text: "🔙 Back to Topics", callback_data: `doubt_topics:${task.id}` },
+    { text: "🔙 Back to Topics", callback_data: "doubt_back_topics" },
     { text: "📋 Main Menu", callback_data: "doubt_menu:view" },
   ]);
 
@@ -1320,6 +1320,11 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        await saveWizardSession(chatId, "awaiting_doubt_topic", {
+          doubtTaskId: task.id,
+          doubtTaskName: task.name,
+        });
+
         const topics = await getDoubtTopics(task.id);
         if (topics.length > 0) {
           const view = buildDoubtTopicKeyboard(task, topics);
@@ -1362,22 +1367,54 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- DOUBT: Pick Existing Topic or Confirm Suggested Topic -> Ask Doubt ---
-      if (callbackData.startsWith("doubt_tpick:") || callbackData.startsWith("doubt_tconfirm:")) {
-        const parts = callbackData.split(":");
-        const taskId = parts[1];
-        const topic = decodeURIComponent(parts.slice(2).join(":"));
-        const task = await getTaskById(taskId);
+      // --- DOUBT: Pick Existing Topic from Buttons -> Ask Doubt ---
+      if (callbackData.startsWith("doubt_tpick:")) {
+        const idx = parseInt(callbackData.split(":")[1], 10);
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
         if (!task) {
-          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          await respondUi(chatId, messageId, "⚠️ Task session expired. Type /doubt to restart.", []);
           return NextResponse.json({ ok: true });
         }
+
+        const topics = await getDoubtTopics(task.id);
+        const topic = topics[idx]?.topic || "General";
 
         await sendWizardPrompt(
           chatId,
           "awaiting_doubt_text",
           { doubtTaskId: task.id, doubtTaskName: task.name, doubtTopic: topic },
           `❓ <b>${task.name} — ${topic}</b>\n\n` +
+            `What is your <b>doubt</b>? Explain what you are stuck on:\n` +
+            `<i>(Type your question or notes)</i>`,
+          [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
+          messageId
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Confirm Suggested Topic or Use Typo ---
+      if (callbackData.startsWith("doubt_tconfirm:")) {
+        const choice = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Type /doubt to restart.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const chosenTopic =
+          choice === "yes"
+            ? session?.task_data?.suggestedTopic || session?.task_data?.doubtTopic || "General"
+            : session?.task_data?.doubtTopic || "General";
+
+        await sendWizardPrompt(
+          chatId,
+          "awaiting_doubt_text",
+          { doubtTaskId: task.id, doubtTaskName: task.name, doubtTopic: chosenTopic },
+          `❓ <b>${task.name} — ${chosenTopic}</b>\n\n` +
             `What is your <b>doubt</b>? Explain what you are stuck on:\n` +
             `<i>(Type your question or notes)</i>`,
           [[{ text: "❌ Cancel", callback_data: "wizard_cancel" }]],
@@ -1394,6 +1431,11 @@ export async function POST(req: NextRequest) {
           await respondUi(chatId, messageId, "⚠️ Task not found.", []);
           return NextResponse.json({ ok: true });
         }
+
+        await saveWizardSession(chatId, "view_doubts", {
+          doubtTaskId: task.id,
+          doubtTaskName: task.name,
+        });
 
         const topics = await getDoubtTopics(task.id);
         const total = topics.reduce((s, t) => s + t.count, 0);
@@ -1416,13 +1458,13 @@ export async function POST(req: NextRequest) {
           const row = [
             {
               text: `📑 ${topics[i].topic} (${topics[i].count})`,
-              callback_data: `doubt_list:${task.id}:${encodeURIComponent(topics[i].topic)}:1`,
+              callback_data: `doubt_top:${i}`,
             },
           ];
           if (i + 1 < topics.length) {
             row.push({
               text: `📑 ${topics[i + 1].topic} (${topics[i + 1].count})`,
-              callback_data: `doubt_list:${task.id}:${encodeURIComponent(topics[i + 1].topic)}:1`,
+              callback_data: `doubt_top:${i + 1}`,
             });
           }
           kb.push(row);
@@ -1431,7 +1473,7 @@ export async function POST(req: NextRequest) {
         kb.push([
           {
             text: `📑 All Topics (${total})`,
-            callback_data: `doubt_list:${task.id}:all:1`,
+            callback_data: `doubt_top:all`,
           },
         ]);
         kb.push([{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }]);
@@ -1446,16 +1488,53 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- DOUBT: View Doubt List (Paginated) ---
-      if (callbackData.startsWith("doubt_list:")) {
-        const [, taskId, encodedTopic, pageStr] = callbackData.split(":");
-        const topic = decodeURIComponent(encodedTopic);
-        const page = parseInt(pageStr, 10) || 1;
-        const task = await getTaskById(taskId);
+      // --- DOUBT: Select Topic to View Doubts ---
+      if (callbackData.startsWith("doubt_top:")) {
+        const choice = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
         if (!task) {
-          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          await respondUi(chatId, messageId, "⚠️ Session expired. Type /doubt to restart.", []);
           return NextResponse.json({ ok: true });
         }
+
+        let topic = "all";
+        if (choice !== "all") {
+          const idx = parseInt(choice, 10);
+          const topics = await getDoubtTopics(task.id);
+          topic = topics[idx]?.topic || "all";
+        }
+
+        await saveWizardSession(chatId, "view_doubts", {
+          doubtTaskId: task.id,
+          doubtTaskName: task.name,
+          doubtTopic: topic,
+          doubtPage: 1,
+        });
+
+        const { doubts, total } = await getDoubts({ taskId: task.id, topic, page: 1, pageSize: 5 });
+        const view = buildDoubtListView(task, topic, 1, doubts, total);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- DOUBT: Pagination ---
+      if (callbackData.startsWith("doubt_page:")) {
+        const page = parseInt(callbackData.split(":")[1], 10) || 1;
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Type /doubt to restart.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const topic = session?.task_data?.doubtTopic || "all";
+        await saveWizardSession(chatId, "view_doubts", {
+          ...session?.task_data,
+          doubtPage: page,
+        });
 
         const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
         const view = buildDoubtListView(task, topic, page, doubts, total);
@@ -1463,15 +1542,66 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- DOUBT: Back to Topics ---
+      if (callbackData === "doubt_back_topics") {
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        if (taskId) {
+          const task = await getTaskById(taskId);
+          if (task) {
+            const topics = await getDoubtTopics(task.id);
+            const total = topics.reduce((s, t) => s + t.count, 0);
+
+            const kb: InlineKeyboard = [];
+            for (let i = 0; i < topics.length; i += 2) {
+              const row = [
+                {
+                  text: `📑 ${topics[i].topic} (${topics[i].count})`,
+                  callback_data: `doubt_top:${i}`,
+                },
+              ];
+              if (i + 1 < topics.length) {
+                row.push({
+                  text: `📑 ${topics[i + 1].topic} (${topics[i + 1].count})`,
+                  callback_data: `doubt_top:${i + 1}`,
+                });
+              }
+              kb.push(row);
+            }
+
+            kb.push([
+              {
+                text: `📑 All Topics (${total})`,
+                callback_data: `doubt_top:all`,
+              },
+            ]);
+            kb.push([{ text: "➕ Log a Doubt", callback_data: `doubt_pick:${task.id}` }]);
+            kb.push([{ text: "🔙 Back to Subjects", callback_data: "doubt_menu:view" }]);
+
+            await respondUi(
+              chatId,
+              messageId,
+              `📚 <b>${task.name} — Select Topic</b>\nChoose a topic to view its questions:`,
+              kb
+            );
+            return NextResponse.json({ ok: true });
+          }
+        }
+        await respondUi(chatId, messageId, buildDoubtMenuText(), buildDoubtMenuKeyboard());
+        return NextResponse.json({ ok: true });
+      }
+
       // --- DOUBT: Mark Resolved ---
       if (callbackData.startsWith("doubt_res:")) {
-        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const doubtId = callbackData.split(":")[1];
         await toggleDoubtStatus(doubtId, true);
 
-        const topic = decodeURIComponent(encodedTopic);
-        const page = parseInt(pageStr, 10) || 1;
-        const task = await getTaskById(taskId);
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
         if (task) {
+          const topic = session?.task_data?.doubtTopic || "all";
+          const page = session?.task_data?.doubtPage || 1;
           const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
           const view = buildDoubtListView(task, topic, page, doubts, total);
           await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -1481,13 +1611,15 @@ export async function POST(req: NextRequest) {
 
       // --- DOUBT: Reopen Resolved Doubt ---
       if (callbackData.startsWith("doubt_reop:")) {
-        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const doubtId = callbackData.split(":")[1];
         await toggleDoubtStatus(doubtId, false);
 
-        const topic = decodeURIComponent(encodedTopic);
-        const page = parseInt(pageStr, 10) || 1;
-        const task = await getTaskById(taskId);
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
         if (task) {
+          const topic = session?.task_data?.doubtTopic || "all";
+          const page = session?.task_data?.doubtPage || 1;
           const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
           const view = buildDoubtListView(task, topic, page, doubts, total);
           await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -1497,9 +1629,11 @@ export async function POST(req: NextRequest) {
 
       // --- DOUBT: Ask Delete Confirmation ---
       if (callbackData.startsWith("doubt_del_ask:")) {
-        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const doubtId = callbackData.split(":")[1];
         const doubt = await getDoubtById(doubtId);
         const q = doubt ? extractDoubtQuestion(doubt) : "this doubt";
+        const session = await getWizardSession(chatId);
+        const page = session?.task_data?.doubtPage || 1;
 
         await respondUi(
           chatId,
@@ -1509,13 +1643,13 @@ export async function POST(req: NextRequest) {
             [
               {
                 text: "🗑️ Yes, Delete",
-                callback_data: `doubt_del_conf:${doubtId}:${taskId}:${encodedTopic}:${pageStr}`,
+                callback_data: `doubt_del_conf:${doubtId}`,
               },
             ],
             [
               {
                 text: "❌ Cancel",
-                callback_data: `doubt_list:${taskId}:${encodedTopic}:${pageStr}`,
+                callback_data: `doubt_page:${page}`,
               },
             ],
           ]
@@ -1525,13 +1659,15 @@ export async function POST(req: NextRequest) {
 
       // --- DOUBT: Confirm Delete ---
       if (callbackData.startsWith("doubt_del_conf:")) {
-        const [, doubtId, taskId, encodedTopic, pageStr] = callbackData.split(":");
+        const doubtId = callbackData.split(":")[1];
         await deleteDoubt(doubtId);
 
-        const topic = decodeURIComponent(encodedTopic);
-        const page = parseInt(pageStr, 10) || 1;
-        const task = await getTaskById(taskId);
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.doubtTaskId;
+        const task = taskId ? await getTaskById(taskId) : null;
         if (task) {
+          const topic = session?.task_data?.doubtTopic || "all";
+          const page = session?.task_data?.doubtPage || 1;
           const { doubts, total } = await getDoubts({ taskId: task.id, topic, page, pageSize: 5 });
           const view = buildDoubtListView(task, topic, page, doubts, total);
           await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -3100,13 +3236,13 @@ export async function POST(req: NextRequest) {
               [
                 {
                   text: `✅ Yes, use "${match}"`,
-                  callback_data: `doubt_tconfirm:${taskId}:${encodeURIComponent(match)}`,
+                  callback_data: "doubt_tconfirm:yes",
                 },
               ],
               [
                 {
                   text: `➕ No, use new "${inputTopic}"`,
-                  callback_data: `doubt_tconfirm:${taskId}:${encodeURIComponent(inputTopic)}`,
+                  callback_data: "doubt_tconfirm:no",
                 },
               ],
               [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],

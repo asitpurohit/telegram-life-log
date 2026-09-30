@@ -68,7 +68,8 @@ export interface WizardSession {
     | 'awaiting_todo_time'
     | 'awaiting_doubt_topic'
     | 'awaiting_doubt_text'
-    | 'awaiting_doubt_topic_confirm';
+    | 'awaiting_doubt_topic_confirm'
+    | 'view_doubts';
   task_data: {
     type?: TaskType;
     name?: string;
