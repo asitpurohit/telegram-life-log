@@ -2568,12 +2568,13 @@ export async function POST(req: NextRequest) {
       const chatId = body.message.chat.id;
       const messageId = body.message.message_id;
 
-      // While a timer is running (or paused), EVERYTHING except answers to an
+      // While a timer is running (or paused), EVERYTHING except /start and answers to an
       // already-open wizard is ignored and removed, so the timer's
       // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
       const isWizardAnswer = activeSession && !text.startsWith("/");
-      if (!isWizardAnswer) {
+      const isAllowedDuringTimer = text === "/start";
+      if (!isWizardAnswer && !isAllowedDuringTimer) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
           if (messageId) {
@@ -2595,6 +2596,29 @@ export async function POST(req: NextRequest) {
         await clearWizardSessionAndRetirePrompt(chatId);
         await setActiveTask(chatId, null);
         await setBotCommands(BOT_COMMANDS);
+
+        // If a timer is currently active, re-send the live timer controls so user can control it
+        const runningTimer = await getActiveTimer(chatId);
+        if (runningTimer) {
+          const pause = await getPauseState(chatId);
+          const view = buildTimerView(
+            runningTimer.task_name,
+            runningTimer.started_at,
+            pause.pausedAt ?? 0,
+            pause.pausedSeconds
+          );
+
+          const sentMessageId = await sendUiMessage(
+            chatId,
+            `⏳ <b>Active Timer: ${runningTimer.task_name}</b>\n\n${view.text}`,
+            view.keyboard
+          );
+          if (sentMessageId) {
+            await trackTimerMessage(chatId, sentMessageId);
+          }
+          return NextResponse.json({ ok: true });
+        }
+
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
