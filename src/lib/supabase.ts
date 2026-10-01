@@ -518,6 +518,39 @@ export async function updateLogFocus(logId: string, focus: string): Promise<bool
   return true;
 }
 
+export async function updateLogSessionNote(logId: string, noteText: string): Promise<boolean> {
+  const cleanNote = noteText.trim();
+  if (!cleanNote) return false;
+
+  const { data: current, error: fetchErr } = await supabase
+    .from("logs")
+    .select("notes")
+    .eq("id", logId)
+    .single();
+
+  if (fetchErr) {
+    console.error("Error fetching log before updating note:", fetchErr);
+    return false;
+  }
+
+  const baseNotes = current?.notes ? String(current.notes).trim() : "";
+  const updatedNotes = baseNotes ? `${baseNotes} — ${cleanNote}` : cleanNote;
+
+  const { error } = await supabase
+    .from("logs")
+    .update({
+      summary: cleanNote,
+      notes: updatedNotes,
+    })
+    .eq("id", logId);
+
+  if (error) {
+    console.error("Error updating log session note:", error);
+    return false;
+  }
+  return true;
+}
+
 // Focus totals for one task today (only positive tagged entries are counted)
 export async function getTodayTaskFocus(taskName: string): Promise<FocusTotals> {
   const today = localDateString();

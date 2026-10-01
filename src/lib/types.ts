@@ -69,7 +69,8 @@ export interface WizardSession {
     | 'awaiting_doubt_topic'
     | 'awaiting_doubt_text'
     | 'awaiting_doubt_topic_confirm'
-    | 'view_doubts';
+    | 'view_doubts'
+    | 'awaiting_session_note';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -86,6 +87,7 @@ export interface WizardSession {
     doubtTopic?: string;
     suggestedTopic?: string;
     doubtPage?: number;
+    sessionLogId?: string;
   };
   updated_at?: string;
 }

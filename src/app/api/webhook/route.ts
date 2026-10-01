@@ -50,6 +50,7 @@ import {
   updateDiaryMood,
   formatMoodDisplay,
   updateLogFocus,
+  updateLogSessionNote,
   getTodayTaskFocus,
   createTodo,
   getTodos,
@@ -1091,11 +1092,37 @@ export async function POST(req: NextRequest) {
         await updateLogFocus(logId, value);
 
         const label = value === "focused" ? "🎯 Focused" : value === "casual" ? "😐 Casual" : "😵 Distracted";
+
+        // Save wizard session so the user's next message is captured as a session note/summary
+        await saveWizardSession(chatId, "awaiting_session_note", {
+          sessionLogId: logId,
+          promptMessageId: messageId,
+        });
+
         const kb: InlineKeyboard = [
-          ...buildFocusKeyboard(logId, value),
+          [{ text: "⏭️ Skip Note", callback_data: `skip_session_note:${logId}` }],
           [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
         ];
-        await respondUi(chatId, messageId, `✅ <b>Session focus saved:</b> ${label}`, kb);
+        await respondUi(
+          chatId,
+          messageId,
+          `✅ <b>Session focus saved:</b> ${label}\n\n` +
+            `📝 <b>What did you work on?</b>\n` +
+            `Send a short note or summary for this session, or tap <b>Skip Note</b>:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Skip Session Note Prompt ---
+      if (callbackData.startsWith("skip_session_note:")) {
+        await clearWizardSession(chatId);
+        await respondUi(
+          chatId,
+          messageId,
+          `✅ <b>Session focus saved!</b>`,
+          [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -1853,6 +1880,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Show Task List (CLEAN - ONLY TASKS) ---
       if (callbackData === "menu_tasks") {
+        await clearWizardSession(chatId);
         await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
@@ -2844,6 +2872,37 @@ export async function POST(req: NextRequest) {
       // 3. CONVERSATIONAL WIZARD STATE HANDLER
       // =======================================================================
       if (activeSession) {
+        // --- State: User Answering Session Note Prompt ---
+        if (activeSession.step === "awaiting_session_note") {
+          const logId = activeSession.task_data.sessionLogId;
+          const promptMessageId = activeSession.task_data.promptMessageId;
+          await clearWizardSession(chatId);
+
+          if (promptMessageId) {
+            try {
+              await removeInlineKeyboard(chatId, promptMessageId);
+            } catch {}
+          }
+
+          if (logId) {
+            await updateLogSessionNote(logId, text);
+          }
+
+          const sanitized = text
+            .trim()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+          await sendUiMessage(
+            chatId,
+            `✅ <b>Note saved to session!</b>\n\n` +
+              `📝 <i>"${sanitized}"</i>`,
+            [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         // --- State: User Answering Diary Prompt ---
         if (activeSession.step === "awaiting_diary_text") {
           const diaryPromptId = activeSession.task_data.promptMessageId;
