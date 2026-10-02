@@ -9,7 +9,8 @@ export interface BotCommand {
 }
 
 export const BOT_COMMANDS: BotCommand[] = [
-  { command: "tasks", description: "View routines & log habits" },
+  { command: "tasks", description: "Today's scheduled tasks" },
+  { command: "alltasks", description: "View all tasks (all days)" },
   { command: "todo", description: "One-time to-dos with date & time" },
   { command: "log", description: "Daily diary & mood reflection" },
   { command: "today", description: "Today's scorecard & progress" },

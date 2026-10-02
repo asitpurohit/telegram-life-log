@@ -71,7 +71,7 @@ import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@
 import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
-import { localDateLabel, localTimeString, localDateString, localDateShort, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
+import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -892,6 +892,48 @@ function formatSplitSummary(parts: { date: string; minutes: number }[]): string 
     (p, i) => `${formatTimerMinutes(p.minutes)} ${i === last ? "today" : `on ${localDateShort(p.date)}`}`
   );
   return `\n🔀 Split: ${pieces.join(" + ")}`;
+}
+
+// Build task list keyboard buttons
+// todayOnly = true  → only tasks scheduled today (for /tasks)
+// todayOnly = false → all tasks (for /alltasks)
+async function buildTaskListButtons(
+  tasks: Task[],
+  todayOnly: boolean
+): Promise<InlineKeyboard> {
+  const filtered = todayOnly
+    ? tasks.filter((t) => isTaskScheduledForToday(t.target_days))
+    : tasks;
+
+  const buttons: InlineKeyboard = [];
+  for (const t of filtered) {
+    if (t.type === "tick") {
+      const isDone = await isTaskCompletedToday(t.id);
+      buttons.push([
+        {
+          text: `${isDone ? "✅" : "📌"} ${t.name}${isDone ? " (Done)" : ""}`,
+          callback_data: `select_task:${t.id}`,
+        },
+      ]);
+    } else if (t.type === "timer") {
+      const todayMins = await getTodayTaskTotal(t.name);
+      buttons.push([
+        {
+          text: `${taskEmoji(t)} ${t.name} (${formatTimerMinutes(todayMins)} / ${formatGoalDisplay(t.target_value, "minutes")})`,
+          callback_data: `select_task:${t.id}`,
+        },
+      ]);
+    } else {
+      const todayCount = await getTodayTaskTotal(t.name);
+      buttons.push([
+        {
+          text: `💧 ${t.name} (${todayCount.toLocaleString()} / ${formatGoalDisplay(t.target_value, t.unit)})`,
+          callback_data: `select_task:${t.id}`,
+        },
+      ]);
+    }
+  }
+  return buttons;
 }
 
 // Build a clean, unbloated Today Scorecard
@@ -1878,7 +1920,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Show Task List (CLEAN - ONLY TASKS) ---
+      // --- Button: Show Task List (Today Only) ---
       if (callbackData === "menu_tasks") {
         await clearWizardSession(chatId);
         await setActiveTask(chatId, null);
@@ -1891,36 +1933,41 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const taskButtons: InlineKeyboard = [];
-        for (const t of tasks) {
-          if (t.type === "tick") {
-            const isDone = await isTaskCompletedToday(t.id);
-            taskButtons.push([
-              {
-                text: `${isDone ? "✅" : "📌"} ${t.name}${isDone ? " (Done)" : ""}`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          } else if (t.type === "timer") {
-            const todayMins = await getTodayTaskTotal(t.name);
-            taskButtons.push([
-              {
-                text: `${taskEmoji(t)} ${t.name} (${formatTimerMinutes(todayMins)} / ${formatGoalDisplay(t.target_value, "minutes")})`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          } else {
-            const todayCount = await getTodayTaskTotal(t.name);
-            taskButtons.push([
-              {
-                text: `💧 ${t.name} (${todayCount.toLocaleString()} / ${formatGoalDisplay(t.target_value, t.unit)})`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          }
+        const taskButtons = await buildTaskListButtons(tasks, true);
+        taskButtons.push([{ text: "📋 See All Tasks", callback_data: "menu_alltasks" }]);
+
+        if (taskButtons.length === 1) {
+          // Only the "See All Tasks" button exists
+          await respondUi(
+            chatId,
+            messageId,
+            "💤 <b>No tasks scheduled for today.</b>\n<i>Your other tasks are set for different days.</i>",
+            taskButtons
+          );
+        } else {
+          const { long: dayLong } = localWeekday();
+          const tasksText = `📋 <b>Today's Tasks</b> <i>(${dayLong})</i>:\nTap a task to log or start:`;
+          await respondUi(chatId, messageId, tasksText, taskButtons);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Show All Tasks List (All Days) ---
+      if (callbackData === "menu_alltasks") {
+        await clearWizardSession(chatId);
+        await setActiveTask(chatId, null);
+        const tasks = await getActiveTasks();
+        if (tasks.length === 0) {
+          await sendTelegramMessage(
+            chatId,
+            "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
+          );
+          return NextResponse.json({ ok: true });
         }
 
-        const tasksText = "📋 <b>Your Tasks:</b>\nTap a task to log or start:";
+        const taskButtons = await buildTaskListButtons(tasks, false);
+        taskButtons.push([{ text: "📅 Today's Tasks Only", callback_data: "menu_tasks" }]);
+        const tasksText = "📋 <b>All Tasks</b> <i>(all days)</i>:\nTap a task to log or start:";
         await respondUi(chatId, messageId, tasksText, taskButtons);
         return NextResponse.json({ ok: true });
       }
@@ -2622,7 +2669,8 @@ export async function POST(req: NextRequest) {
         const welcomeText =
           `👋 <b>Welcome to your Personal Habit & Life-Log Assistant!</b>\n\n` +
           `<b>Available Commands:</b>\n` +
-          `• <b>/tasks</b> — 📋 View routines, start timer, or log counts\n` +
+          `• <b>/tasks</b> — 📋 View today's scheduled tasks\n` +
+          `• <b>/alltasks</b> — 📋 View all tasks across all days\n` +
           `• <b>/todo</b> — 📝 One-time to-dos with date & time\n` +
           `• <b>/doubt</b> — ❓ Log or view study & coding doubts\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
@@ -2752,7 +2800,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /tasks or /task (CLEAN - ONLY TASKS) ---
+      // --- Command: /tasks or /task (Today's Scheduled Tasks) ---
       if (text === "/tasks" || text === "/task") {
         await setActiveTask(chatId, null);
         const tasks = await getActiveTasks();
@@ -2764,36 +2812,45 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const taskButtons: InlineKeyboard = [];
-        for (const t of tasks) {
-          if (t.type === "tick") {
-            const isDone = await isTaskCompletedToday(t.id);
-            taskButtons.push([
-              {
-                text: `${isDone ? "✅" : "📌"} ${t.name}${isDone ? " (Done)" : ""}`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          } else if (t.type === "timer") {
-            const todayMins = await getTodayTaskTotal(t.name);
-            taskButtons.push([
-              {
-                text: `${taskEmoji(t)} ${t.name} (${formatTimerMinutes(todayMins)} / ${formatGoalDisplay(t.target_value, "minutes")})`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          } else {
-            const todayCount = await getTodayTaskTotal(t.name);
-            taskButtons.push([
-              {
-                text: `💧 ${t.name} (${todayCount.toLocaleString()} / ${formatGoalDisplay(t.target_value, t.unit)})`,
-                callback_data: `select_task:${t.id}`,
-              },
-            ]);
-          }
+        const taskButtons = await buildTaskListButtons(tasks, true);
+        taskButtons.push([{ text: "📋 See All Tasks", callback_data: "menu_alltasks" }]);
+
+        if (taskButtons.length === 1) {
+          await sendUiMessage(
+            chatId,
+            "💤 <b>No tasks scheduled for today.</b>\n<i>Your other tasks are set for different days.</i>",
+            taskButtons
+          );
+        } else {
+          const { long: dayLong } = localWeekday();
+          await sendUiMessage(
+            chatId,
+            `📋 <b>Today's Tasks</b> <i>(${dayLong})</i>:\nTap a task to log or start:`,
+            taskButtons
+          );
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /alltasks (All Active Tasks, Any Day) ---
+      if (text === "/alltasks") {
+        await setActiveTask(chatId, null);
+        const tasks = await getActiveTasks();
+        if (tasks.length === 0) {
+          await sendTelegramMessage(
+            chatId,
+            "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
+          );
+          return NextResponse.json({ ok: true });
         }
 
-        await sendUiMessage(chatId, "📋 <b>Your Tasks:</b>\nTap a task to log or start:", taskButtons);
+        const taskButtons = await buildTaskListButtons(tasks, false);
+        taskButtons.push([{ text: "📅 Today's Tasks Only", callback_data: "menu_tasks" }]);
+        await sendUiMessage(
+          chatId,
+          "📋 <b>All Tasks</b> <i>(all days)</i>:\nTap a task to log or start:",
+          taskButtons
+        );
         return NextResponse.json({ ok: true });
       }
 
