@@ -9,8 +9,18 @@ export interface Task {
   unit?: string | null; // 'minutes', 'ml', 'status'
   target_days?: string | null; // 'daily', 'weekdays', 'weekends', or custom
   is_system?: boolean; // system-provisioned task (e.g. Sleep): name locked, cannot be deleted
+  is_project_based?: boolean; // project-based timer tasks (tracks multi-session milestones)
   is_archived: boolean;
   created_at?: string;
+}
+
+export interface Project {
+  id: string;
+  task_id: string;
+  name: string;
+  status: 'in_progress' | 'completed';
+  created_at?: string;
+  completed_at?: string | null;
 }
 
 export type FocusMood = "focused" | "casual" | "distracted";
@@ -29,6 +39,7 @@ export interface Log {
   mood?: string | null;
   focus?: FocusMood | null;
   started_at?: string | null; // exact timer-session start (null for non-session logs)
+  project_id?: string | null; // link to projects table
   created_at?: string;
 }
 
@@ -46,6 +57,8 @@ export interface ActiveTimer {
   chat_id: string;
   task_id: string;
   task_name: string;
+  project_id?: string | null;
+  project_name?: string | null;
   started_at: string;
 }
 
@@ -70,12 +83,13 @@ export interface WizardSession {
     | 'awaiting_doubt_text'
     | 'awaiting_doubt_topic_confirm'
     | 'view_doubts'
-    | 'awaiting_session_note';
+    | 'awaiting_session_note'
+    | 'awaiting_project_name';
   task_data: {
     type?: TaskType;
     name?: string;
     taskId?: string;
-    target_days?: string;
+    target_days?: string | null;
     reminder_time?: string | null;
     target_value?: number | null;
     unit?: string | null;
@@ -88,6 +102,10 @@ export interface WizardSession {
     suggestedTopic?: string;
     doubtPage?: number;
     sessionLogId?: string;
+    is_project_based?: boolean;
+    projectId?: string;
+    projectName?: string;
+    taskName?: string;
   };
   updated_at?: string;
 }

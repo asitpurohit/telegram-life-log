@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     unit TEXT,                                       -- 'minutes', 'ml', 'status'
     target_days TEXT DEFAULT 'daily',                 -- 'daily', 'weekdays', 'weekends', or custom
     is_system BOOLEAN DEFAULT false,                 -- system task (e.g. Sleep): name locked, cannot be deleted
+    is_project_based BOOLEAN DEFAULT false,          -- Project-based timer tasks (asks for project before start & completion on stop)
     is_archived BOOLEAN DEFAULT false,                -- Soft-delete (archived tasks hidden from daily use)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS logs (
     decisions TEXT[],                                -- Extracted decisions made
     focus TEXT,                                      -- Per-session focus: 'focused' | 'casual' | 'distracted'
     started_at TIMESTAMPTZ,                          -- Exact timer-session start (NULL for non-session logs)
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL, -- Links log to a specific project
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -43,13 +45,28 @@ ADD COLUMN IF NOT EXISTS projects TEXT[],
 ADD COLUMN IF NOT EXISTS people TEXT[],
 ADD COLUMN IF NOT EXISTS decisions TEXT[],
 ADD COLUMN IF NOT EXISTS focus TEXT,
-ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE SET NULL;
+
+-- 2.1 Projects Table (Tracks multi-session work on project-based timer tasks)
+CREATE TABLE IF NOT EXISTS projects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_task_status ON projects(task_id, status);
 
 -- 3. Active Timers Table (Tracks currently running stopwatch sessions)
 CREATE TABLE IF NOT EXISTS active_timers (
     chat_id TEXT PRIMARY KEY,
     task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
     task_name TEXT NOT NULL,
+    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    project_name TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -89,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_at);
 
 -- Ensure tables are accessible via API keys
 ALTER TABLE tasks DISABLE ROW LEVEL SECURITY;
+ALTER TABLE projects DISABLE ROW LEVEL SECURITY;
 ALTER TABLE logs DISABLE ROW LEVEL SECURITY;
 ALTER TABLE active_timers DISABLE ROW LEVEL SECURITY;
 ALTER TABLE wizard_sessions DISABLE ROW LEVEL SECURITY;

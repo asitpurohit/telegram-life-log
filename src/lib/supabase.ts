@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { Task, Log, ActiveTimer, WizardSession, Todo } from "./types";
+import { Task, Log, ActiveTimer, WizardSession, Todo, Project } from "./types";
 import { localDateString, localTimeString, localWeekday, splitSessionMinutes } from "./time";
 import { formatMinutes } from "./timeAudit";
 
@@ -229,7 +229,9 @@ export async function archiveTask(taskId: string): Promise<boolean> {
 export async function startActiveTimer(
   chatId: string | number,
   taskId: string,
-  taskName: string
+  taskName: string,
+  projectId?: string | null,
+  projectName?: string | null
 ): Promise<ActiveTimer | null> {
   const startedAt = new Date().toISOString();
 
@@ -241,6 +243,8 @@ export async function startActiveTimer(
       task_id: taskId,
       task_name: taskName,
       started_at: startedAt,
+      project_id: projectId || null,
+      project_name: projectName || null,
     })
     .select()
     .single();
@@ -398,6 +402,8 @@ export async function stopActiveTimer(
   taskId: string;
   logId: string | null;
   split: SessionSplitPart[];
+  projectId: string | null;
+  projectName: string | null;
 } | null> {
   const active = await getActiveTimer(chatId);
   if (!active) return null;
@@ -424,6 +430,7 @@ export async function stopActiveTimer(
     value: part.minutes,
     notes,
     started_at: active.started_at,
+    project_id: active.project_id || null,
   }));
 
   const { data, error } = await supabase.from("logs").insert(rows).select();
@@ -444,7 +451,81 @@ export async function stopActiveTimer(
     taskId: active.task_id,
     logId: lastRow?.id || null,
     split: parts,
+    projectId: active.project_id || null,
+    projectName: active.project_name || null,
   };
+}
+
+// ==========================================
+// PROJECT OPERATIONS
+// ==========================================
+
+export async function getActiveProjectForTask(taskId: string): Promise<Project | null> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("task_id", taskId)
+    .eq("status", "in_progress")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+}
+
+export async function createProject(taskId: string, name: string): Promise<Project | null> {
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({
+      task_id: taskId,
+      name: name.trim(),
+      status: "in_progress",
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error creating project:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function markProjectCompleted(projectId: string): Promise<void> {
+  const { error } = await supabase
+    .from("projects")
+    .update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", projectId);
+
+  if (error) {
+    console.error("Error marking project completed:", error);
+  }
+}
+
+export async function getProjectById(projectId: string): Promise<Project | null> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+}
+
+export async function getLogById(logId: string): Promise<Log | null> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("*")
+    .eq("id", logId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
 }
 
 // ==========================================

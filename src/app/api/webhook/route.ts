@@ -19,6 +19,11 @@ import {
   archiveTask,
   startActiveTimer,
   getActiveTimer,
+  getActiveProjectForTask,
+  createProject,
+  markProjectCompleted,
+  getProjectById,
+  getLogById,
   getPauseState,
   setPauseState,
   clearPauseState,
@@ -325,11 +330,18 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
     const todayMins = await getTodayTaskTotal(task.name);
     const target = task.target_value || 60;
     const percent = Math.min(100, Math.round((todayMins / target) * 100));
+    const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+    const projectLine = task.is_project_based
+      ? (activeProject
+          ? `📦 Active Project: <b>${activeProject.name}</b>\n`
+          : `📦 Project Mode: <b>ON</b> <i>(No active project)</i>\n`)
+      : "";
     return {
       text:
         `${taskEmoji(task)} <b>${task.name}</b>\n` +
         `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
         `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
+        projectLine +
         `📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n\n` +
         `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
@@ -426,11 +438,16 @@ async function openTaskScreen(
 // One-line task summary used in edit/delete confirmations
 function buildTaskSummary(task: Task): string {
   const typeIcon = taskEmoji(task);
+  const projectLine =
+    task.type === "timer" && !isSystemTask(task)
+      ? `\n📦 Project-based: <b>${task.is_project_based ? "Yes" : "No"}</b>`
+      : "";
   return (
     `${typeIcon} <b>${task.name}</b>\n` +
     `🎯 Goal: <b>${formatGoalDisplay(task.target_value, task.unit)}</b>\n` +
     `⏰ Reminder: <b>${formatReminderTime(task.reminder_time)}</b>\n` +
-    `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>`
+    `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>` +
+    projectLine
   );
 }
 
@@ -1029,10 +1046,20 @@ export async function POST(req: NextRequest) {
 
         const label = value === "focused" ? "🎯 Focused" : value === "casual" ? "😐 Casual" : "😵 Distracted";
 
+        const log = await getLogById(logId);
+        const projectId = log?.project_id || undefined;
+        let projectName: string | undefined;
+        if (projectId) {
+          const project = await getProjectById(projectId);
+          projectName = project?.name;
+        }
+
         // Save wizard session so the user's next message is captured as a session note/summary
         await saveWizardSession(chatId, "awaiting_session_note", {
           sessionLogId: logId,
           promptMessageId: messageId,
+          projectId,
+          projectName,
         });
 
         const kb: InlineKeyboard = [
@@ -1052,11 +1079,79 @@ export async function POST(req: NextRequest) {
 
       // --- Skip Session Note Prompt ---
       if (callbackData.startsWith("skip_session_note:")) {
+        const logId = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
         await clearWizardSession(chatId);
+
+        let projectId = session?.task_data?.projectId;
+        let projectName = session?.task_data?.projectName;
+        if (!projectId && logId) {
+          const log = await getLogById(logId);
+          projectId = log?.project_id || undefined;
+          if (projectId) {
+            const project = await getProjectById(projectId);
+            projectName = project?.name;
+          }
+        }
+
+        if (projectId) {
+          const projectKb: InlineKeyboard = [
+            [
+              { text: "✅ Yes, Completed", callback_data: `project_complete:${projectId}` },
+              { text: "⏳ No, In Progress", callback_data: `project_keep_open:${projectId}` },
+            ],
+            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+          ];
+          await respondUi(
+            chatId,
+            messageId,
+            `✅ <b>Session focus saved!</b>\n\n` +
+              `🏁 <b>Project: "${projectName || "Active Project"}"</b>\n` +
+              `Did you complete this project?`,
+            projectKb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         await respondUi(
           chatId,
           messageId,
           `✅ <b>Session focus saved!</b>`,
+          [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Project Status: Completed ---
+      if (callbackData.startsWith("project_complete:")) {
+        const projectId = callbackData.split(":")[1];
+        const project = await getProjectById(projectId);
+        if (project) {
+          await markProjectCompleted(projectId);
+        }
+        const name = project?.name || "Project";
+        await respondUi(
+          chatId,
+          messageId,
+          `🎉 <b>Project Completed!</b>\n\n` +
+            `🏁 <b>${name}</b> has been marked as completed.\n` +
+            `Next time you start this task, you'll be prompted for a new project!`,
+          [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Project Status: Keep In Progress ---
+      if (callbackData.startsWith("project_keep_open:")) {
+        const projectId = callbackData.split(":")[1];
+        const project = await getProjectById(projectId);
+        const name = project?.name || "Project";
+        await respondUi(
+          chatId,
+          messageId,
+          `👍 <b>Progress Saved!</b>\n\n` +
+            `⏳ <b>${name}</b> is still in progress.\n` +
+            `It will be ready for you to continue next time you start!`,
           [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
         );
         return NextResponse.json({ ok: true });
@@ -1774,13 +1869,43 @@ export async function POST(req: NextRequest) {
         }
 
         const taskData = session.task_data;
+
+        // For timer tasks, prompt whether it should be project-based
+        if (taskData.type === "timer") {
+          await saveWizardSession(chatId, "awaiting_days", {
+            ...taskData,
+            target_days: chosenDays,
+            promptMessageId: messageId,
+          });
+
+          const kb: InlineKeyboard = [
+            [
+              { text: "📦 Yes, Project-Based", callback_data: `wizard_project_toggle:yes:${rawDays}` },
+              { text: "⏱️ No, Simple Timer", callback_data: `wizard_project_toggle:no:${rawDays}` },
+            ],
+            [{ text: "❌ Cancel", callback_data: "wizard_cancel" }],
+          ];
+
+          await respondUi(
+            chatId,
+            messageId,
+            `📦 <b>Project Tracking for "${taskData.name}"</b>\n\n` +
+              `Do you want this timer to be project-based?\n\n` +
+              `• <b>Project-based:</b> Before starting, asks what project you're working on. When stopped, tracks project time and asks if you finished it.\n` +
+              `• <b>Simple Timer:</b> Just a regular habit stopwatch.`,
+            kb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         const newTask = await createTask({
           name: taskData.name,
-          type: taskData.type || "timer",
-          target_value: taskData.target_value || (taskData.type === "timer" ? 60 : 5000),
-          unit: taskData.unit || (taskData.type === "timer" ? "minutes" : "ml"),
+          type: taskData.type || "counter",
+          target_value: taskData.target_value || (taskData.type === "tick" ? 1 : 5000),
+          unit: taskData.unit || (taskData.type === "tick" ? "status" : "ml"),
           reminder_time: taskData.reminder_time || null,
           target_days: chosenDays,
+          is_project_based: false,
         });
 
         await clearWizardSession(chatId);
@@ -1809,6 +1934,54 @@ export async function POST(req: NextRequest) {
           actionButtons.push([{ text: `✅ Mark Done for Today`, callback_data: `tick_task:${newTask.id}` }]);
         }
         actionButtons.push([{ text: "📋 View Tasks", callback_data: "menu_tasks" }]);
+
+        await respondUi(chatId, messageId, successText, actionButtons);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- WIZARD: Project-Based Toggle Choice -> Finalize Timer Task ---
+      if (callbackData.startsWith("wizard_project_toggle:")) {
+        const [, choice, rawDays] = callbackData.split(":");
+        const isProjectBased = choice === "yes";
+        const chosenDays = parseScheduleDays(rawDays) || "daily";
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.name) {
+          await sendTelegramMessage(chatId, "⚠️ Session expired. Type /addtask to start again.");
+          return NextResponse.json({ ok: true });
+        }
+
+        const taskData = session.task_data;
+        const newTask = await createTask({
+          name: taskData.name,
+          type: "timer",
+          target_value: taskData.target_value || 60,
+          unit: "minutes",
+          reminder_time: taskData.reminder_time || null,
+          target_days: chosenDays,
+          is_project_based: isProjectBased,
+        });
+
+        await clearWizardSession(chatId);
+
+        if (!newTask) {
+          await respondUi(chatId, messageId, `⚠️ Could not create task (name may already exist).`, []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const successText =
+          `🎉 <b>Task Created Successfully!</b>\n\n` +
+          `📌 <b>${newTask.name}</b>\n` +
+          `⏱️ Type: <b>TIMER</b>\n` +
+          `🎯 Goal: <b>${formatGoalDisplay(newTask.target_value, newTask.unit)}</b>\n` +
+          `⏰ Reminder: <b>${formatReminderTime(newTask.reminder_time)}</b>\n` +
+          `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(newTask))}</b>\n` +
+          `📦 Project Tracking: <b>${isProjectBased ? "Enabled (Project-Based)" : "Disabled"}</b>\n\n` +
+          `Type /tasks to view your routines anytime!`;
+
+        const actionButtons: InlineKeyboard = [
+          [{ text: `▶️ Start ${newTask.name} Now`, callback_data: `start_task:${newTask.id}` }],
+          [{ text: "📋 View Tasks", callback_data: "menu_tasks" }],
+        ];
 
         await respondUi(chatId, messageId, successText, actionButtons);
         return NextResponse.json({ ok: true });
@@ -1984,12 +2157,19 @@ export async function POST(req: NextRequest) {
         if (task.type !== "tick") {
           firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${task.id}:goal` });
         }
+        const isTimer = task.type === "timer" && !isSystemTask(task);
         const editKb: InlineKeyboard = [
           firstRow,
           [
             { text: "⏰ Reminder", callback_data: `edit_field:${task.id}:reminder` },
             { text: "📅 Days", callback_data: `edit_field:${task.id}:days` },
           ],
+          ...(isTimer
+            ? [[{
+                text: task.is_project_based ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
+                callback_data: `toggle_project_based:${task.id}`,
+              }]]
+            : []),
           [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
         ];
 
@@ -1997,6 +2177,48 @@ export async function POST(req: NextRequest) {
           `📝 <b>Edit "${task.name}"</b>\n\n` +
           `${buildTaskSummary(task)}\n\n` +
           `What would you like to change?`;
+
+        await respondUi(chatId, messageId, text, editKb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Toggle Project-Based Mode for Timer Task ---
+      if (callbackData.startsWith("toggle_project_based:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const newState = !task.is_project_based;
+        await updateTask(taskId, { is_project_based: newState });
+        const updatedTask = { ...task, is_project_based: newState };
+
+        const firstRow = isSystemTask(updatedTask)
+          ? []
+          : [{ text: "📝 Name", callback_data: `edit_field:${updatedTask.id}:name` }];
+        if (updatedTask.type !== "tick") {
+          firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${updatedTask.id}:goal` });
+        }
+        const editKb: InlineKeyboard = [
+          firstRow,
+          [
+            { text: "⏰ Reminder", callback_data: `edit_field:${updatedTask.id}:reminder` },
+            { text: "📅 Days", callback_data: `edit_field:${updatedTask.id}:days` },
+          ],
+          [{
+            text: newState ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
+            callback_data: `toggle_project_based:${updatedTask.id}`,
+          }],
+          [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+        ];
+
+        const text =
+          `📝 <b>Edit "${updatedTask.name}"</b>\n\n` +
+          `${buildTaskSummary(updatedTask)}\n\n` +
+          `✅ <i>Project mode ${newState ? "enabled" : "disabled"}!</i>\n` +
+          `What else would you like to change?`;
 
         await respondUi(chatId, messageId, text, editKb);
         return NextResponse.json({ ok: true });
@@ -2256,6 +2478,43 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        // If the task is project-based, check for ongoing project or ask for new project
+        if (task?.is_project_based) {
+          const activeProject = await getActiveProjectForTask(taskId);
+          if (activeProject) {
+            const kb: InlineKeyboard = [
+              [{ text: `▶️ Continue "${activeProject.name}"`, callback_data: `start_task_project:${taskId}:${activeProject.id}` }],
+              [{ text: `➕ Start New Project`, callback_data: `prompt_new_project:${taskId}` }],
+              [{ text: `📋 Back to Tasks`, callback_data: "menu_tasks" }],
+            ];
+            await respondUi(
+              chatId,
+              messageId,
+              `📦 <b>${taskName}</b> is a project-based task.\n\n` +
+                `Active Project: <b>${activeProject.name}</b>\n\n` +
+                `Would you like to continue this project or start a new one?`,
+              kb
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          // No active project: ask for project name
+          await saveWizardSession(chatId, "awaiting_project_name", {
+            taskId: task.id,
+            taskName: task.name,
+            promptMessageId: messageId,
+          });
+          await respondUi(
+            chatId,
+            messageId,
+            `📦 <b>${taskName}</b> is a project-based task.\n\n` +
+              `What project are you working on?\n` +
+              `<i>(e.g., Making PPT for Optics, Chapter 4 Notes, Problem Set 3)</i>`,
+            [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         const active = await startActiveTimer(chatId, taskId, taskName);
         await clearPauseState(chatId);
         await clearNudgeState(chatId);
@@ -2269,6 +2528,60 @@ export async function POST(req: NextRequest) {
         if (timerMsgId) {
           await trackTimerMessage(chatId, timerMsgId);
         }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Start Timer with Existing Project ---
+      if (callbackData.startsWith("start_task_project:")) {
+        const [, taskId, projectId] = callbackData.split(":");
+        const task = await getTaskById(taskId);
+        const project = await getProjectById(projectId);
+        const taskName = task ? task.name : "Study/Work";
+        const projectName = project ? project.name : null;
+
+        const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName);
+        await clearPauseState(chatId);
+        await clearNudgeState(chatId);
+        await setActiveTask(chatId, taskId);
+
+        const startedAt = active?.started_at || new Date().toISOString();
+        const view = buildTimerView(taskName, startedAt, 0, 0, projectName);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+
+        const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
+        if (timerMsgId) {
+          await trackTimerMessage(chatId, timerMsgId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Prompt New Project for Project-Based Task ---
+      if (callbackData.startsWith("prompt_new_project:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        const taskName = task ? task.name : "Study/Work";
+
+        // When starting a new project, auto-complete previous active project
+        const oldActive = await getActiveProjectForTask(taskId);
+        if (oldActive) {
+          await markProjectCompleted(oldActive.id);
+        }
+
+        await saveWizardSession(chatId, "awaiting_project_name", {
+          taskId,
+          taskName,
+          promptMessageId: messageId,
+        });
+
+        await respondUi(
+          chatId,
+          messageId,
+          `📦 <b>New Project for ${taskName}</b>\n\n` +
+            (oldActive ? `<i>Previous project "${oldActive.name}" has been marked complete.</i>\n\n` : "") +
+            `What is the name of your new project?\n` +
+            `<i>(e.g., Making PPT for Optics, Chapter 4 Notes, Problem Set 3)</i>`,
+          [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -2292,7 +2605,7 @@ export async function POST(req: NextRequest) {
         }
         await clearNudgeState(chatId);
 
-        const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds);
+        const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds, active.project_name);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -2326,7 +2639,7 @@ export async function POST(req: NextRequest) {
         }
         await setNudgeState(chatId, { messageId: null, nextNudgeAt: Date.now() + NUDGE_INTERVAL_MS });
 
-        const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds);
+        const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds, active.project_name);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -2349,7 +2662,8 @@ export async function POST(req: NextRequest) {
           active.task_name,
           active.started_at,
           pause.pausedAt ?? fallbackPausedAt,
-          pause.pausedSeconds
+          pause.pausedSeconds,
+          active.project_name
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -2398,8 +2712,8 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
-        // Sessions under 5 minutes skip the review entirely (and Sleep never asks for focus)
-        const showReview = !!result.logId && result.durationSeconds >= 300 && !isSystemTask(task);
+        // Sessions under 5 minutes skip the review unless it's a project session (and Sleep never asks for focus)
+        const showReview = !!result.logId && (result.durationSeconds >= 300 || !!result.projectId) && !isSystemTask(task);
         let stopKb: InlineKeyboard = showReview
           ? buildReviewKeyboard(result.logId as string)
           : BACK_ONLY_KEYBOARD;
@@ -2413,8 +2727,10 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
+          projectLine +
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
           `Saved to your log!` +
@@ -2546,7 +2862,8 @@ export async function POST(req: NextRequest) {
             runningTimer.task_name,
             runningTimer.started_at,
             pause.pausedAt ?? 0,
-            pause.pausedSeconds
+            pause.pausedSeconds,
+            runningTimer.project_name
           );
 
           const sentMessageId = await sendUiMessage(
@@ -2822,7 +3139,8 @@ export async function POST(req: NextRequest) {
             active.task_name,
             active.started_at,
             pause.pausedAt ?? 0,
-            pause.pausedSeconds
+            pause.pausedSeconds,
+            active.project_name
           );
           const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
           if (sentId) {
@@ -2851,6 +3169,8 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_session_note") {
           const logId = activeSession.task_data.sessionLogId;
           const promptMessageId = activeSession.task_data.promptMessageId;
+          const projectId = activeSession.task_data.projectId;
+          const projectName = activeSession.task_data.projectName;
           await clearWizardSession(chatId);
 
           if (promptMessageId) {
@@ -2869,12 +3189,80 @@ export async function POST(req: NextRequest) {
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
 
+          if (projectId) {
+            const kb: InlineKeyboard = [
+              [
+                { text: "✅ Yes, Completed", callback_data: `project_complete:${projectId}` },
+                { text: "⏳ No, In Progress", callback_data: `project_keep_open:${projectId}` },
+              ],
+              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+            ];
+            await sendUiMessage(
+              chatId,
+              `✅ <b>Note saved to session!</b>\n\n` +
+                `📝 <i>"${sanitized}"</i>\n\n` +
+                `🏁 <b>Project: "${projectName || "Active Project"}"</b>\n` +
+                `Did you complete this project?`,
+              kb
+            );
+            return NextResponse.json({ ok: true });
+          }
+
           await sendUiMessage(
             chatId,
             `✅ <b>Note saved to session!</b>\n\n` +
               `📝 <i>"${sanitized}"</i>`,
             [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
           );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: User Entering Project Name for Project-Based Task ---
+        if (activeSession.step === "awaiting_project_name") {
+          const projectName = text.trim();
+          const taskId = activeSession.task_data.taskId!;
+          const taskName = activeSession.task_data.taskName || "Study/Work";
+          const promptId = activeSession.task_data.promptMessageId;
+
+          if (projectName.length < 2) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_project_name",
+              activeSession.task_data,
+              "⚠️ Please provide a valid project name with at least 2 characters (e.g. <b>Making PPT for Optics</b>):",
+              [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const project = await createProject(taskId, projectName);
+          await clearWizardSession(chatId);
+
+          if (promptId) {
+            try {
+              await removeInlineKeyboard(chatId, promptId);
+            } catch {}
+          }
+
+          const active = await startActiveTimer(
+            chatId,
+            taskId,
+            taskName,
+            project?.id || null,
+            project?.name || projectName
+          );
+          await clearPauseState(chatId);
+          await clearNudgeState(chatId);
+          await setActiveTask(chatId, taskId);
+
+          const startedAt = active?.started_at || new Date().toISOString();
+          const view = buildTimerView(taskName, startedAt, 0, 0, project?.name || projectName);
+          await sendUiMessage(chatId, view.text, view.keyboard);
+
+          const timerMsgId = await getTrackedUiMessage(chatId);
+          if (timerMsgId) {
+            await trackTimerMessage(chatId, timerMsgId);
+          }
           return NextResponse.json({ ok: true });
         }
 
