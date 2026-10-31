@@ -31,7 +31,8 @@ export function buildTimerView(
   startedAtIso: string,
   pausedAtMs: number,
   pausedSeconds = 0,
-  projectName?: string | null
+  projectName?: string | null,
+  projectProgress?: string | null
 ): { text: string; keyboard: InlineKeyboard } {
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
@@ -41,7 +42,14 @@ export function buildTimerView(
   const isPaused = pausedAtMs > 0;
   const startedTime = localTimeString(new Date(startedAtIso));
   const emoji = /sleep/i.test(taskName) ? "😴" : "⏱️";
-  const projectLine = projectName ? `\n📦 Project: <b>${projectName}</b>` : "";
+
+  let projectLine = "";
+  if (projectName) {
+    projectLine = `\n📦 Project: <b>${projectName}</b>`;
+    if (projectProgress) {
+      projectLine += `\n📊 Project Progress: <b>${projectProgress}</b>`;
+    }
+  }
 
   const text = isPaused
     ? `${emoji} <b>${taskName}</b> — Paused${projectLine}\n` +

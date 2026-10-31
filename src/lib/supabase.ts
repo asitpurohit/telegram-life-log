@@ -474,13 +474,20 @@ export async function getActiveProjectForTask(taskId: string): Promise<Project |
   return data;
 }
 
-export async function createProject(taskId: string, name: string): Promise<Project | null> {
+export async function createProject(
+  taskId: string,
+  name: string,
+  targetMinutes?: number | null,
+  description?: string | null
+): Promise<Project | null> {
   const { data, error } = await supabase
     .from("projects")
     .insert({
       task_id: taskId,
       name: name.trim(),
       status: "in_progress",
+      target_minutes: targetMinutes ?? null,
+      description: description?.trim() ?? null,
     })
     .select()
     .single();
@@ -490,6 +497,16 @@ export async function createProject(taskId: string, name: string): Promise<Proje
     return null;
   }
   return data;
+}
+
+export async function getProjectTotalMinutes(projectId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("value")
+    .eq("project_id", projectId);
+
+  if (error || !data) return 0;
+  return data.reduce((acc, row) => acc + (row.value || 0), 0);
 }
 
 export async function markProjectCompleted(projectId: string): Promise<void> {

@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS projects (
     task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed')),
+    target_minutes INTEGER,                          -- Estimated time goal in minutes
+    description TEXT,                                -- Project scope notes / outline
     created_at TIMESTAMPTZ DEFAULT NOW(),
     completed_at TIMESTAMPTZ
 );

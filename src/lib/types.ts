@@ -19,6 +19,8 @@ export interface Project {
   task_id: string;
   name: string;
   status: 'in_progress' | 'completed';
+  target_minutes?: number | null;
+  description?: string | null;
   created_at?: string;
   completed_at?: string | null;
 }
@@ -84,7 +86,9 @@ export interface WizardSession {
     | 'awaiting_doubt_topic_confirm'
     | 'view_doubts'
     | 'awaiting_session_note'
-    | 'awaiting_project_name';
+    | 'awaiting_project_name'
+    | 'awaiting_project_target'
+    | 'awaiting_project_description';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -106,6 +110,8 @@ export interface WizardSession {
     projectId?: string;
     projectName?: string;
     taskName?: string;
+    projectTargetMinutes?: number | null;
+    projectDescription?: string | null;
   };
   updated_at?: string;
 }
