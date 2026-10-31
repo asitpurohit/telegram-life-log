@@ -2517,9 +2517,11 @@ export async function POST(req: NextRequest) {
         if (task?.is_project_based) {
           const activeProject = await getActiveProjectForTask(taskId);
           if (activeProject) {
+            const projLabel =
+              activeProject.name.length > 25 ? activeProject.name.slice(0, 25) + "…" : activeProject.name;
             const kb: InlineKeyboard = [
-              [{ text: `▶️ Continue "${activeProject.name}"`, callback_data: `start_task_project:${taskId}:${activeProject.id}` }],
-              [{ text: `➕ Start New Project`, callback_data: `prompt_new_project:${taskId}` }],
+              [{ text: `▶️ Continue "${projLabel}"`, callback_data: `start_proj:${activeProject.id}` }],
+              [{ text: `➕ Start New Project`, callback_data: `new_proj:${taskId}` }],
               [{ text: `📋 Back to Tasks`, callback_data: "menu_tasks" }],
             ];
             await respondUi(
@@ -2567,10 +2569,12 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Button: Start Timer with Existing Project ---
-      if (callbackData.startsWith("start_task_project:")) {
-        const [, taskId, projectId] = callbackData.split(":");
-        const task = await getTaskById(taskId);
+      if (callbackData.startsWith("start_proj:") || callbackData.startsWith("start_task_project:")) {
+        const parts = callbackData.split(":");
+        const projectId = parts.length === 3 ? parts[2] : parts[1];
         const project = await getProjectById(projectId);
+        const taskId = project?.task_id || (parts.length === 3 ? parts[1] : "");
+        const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
         const projectName = project ? project.name : null;
 
@@ -2592,7 +2596,7 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Button: Prompt New Project for Project-Based Task ---
-      if (callbackData.startsWith("prompt_new_project:")) {
+      if (callbackData.startsWith("new_proj:") || callbackData.startsWith("prompt_new_project:")) {
         const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
