@@ -4238,7 +4238,10 @@ export async function POST(req: NextRequest) {
           `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
           `Type any command above or tap the blue <b>≡ Menu</b> button to begin!`;
 
-        await sendTelegramMessage(chatId, welcomeText);
+        await sendUiMessage(chatId, welcomeText);
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4336,9 +4339,6 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /addtask (START WIZARD) ---
       if (text === "/addtask") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await clearWizardSessionAndRetirePrompt(chatId);
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
@@ -4359,22 +4359,25 @@ export async function POST(req: NextRequest) {
           `• 📌 <b>Daily Tick:</b> Wake up, meditation (yes/no daily completion)`;
 
         await sendUiMessage(chatId, promptText, typeKeyboard);
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
       // --- Command: /tasks or /task (Today's Scheduled Tasks) ---
       if (text === "/tasks" || text === "/task") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
-          await sendTelegramMessage(
+          await sendUiMessage(
             chatId,
             "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
           );
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -4395,22 +4398,25 @@ export async function POST(req: NextRequest) {
             taskButtons
           );
         }
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
       // --- Command: /alltasks (All Active Tasks, Any Day) ---
       if (text === "/alltasks") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
-          await sendTelegramMessage(
+          await sendUiMessage(
             chatId,
             "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
           );
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -4421,19 +4427,22 @@ export async function POST(req: NextRequest) {
           "📋 <b>All Tasks</b> <i>(all days)</i>:\nTap a task to log or start:",
           taskButtons
         );
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
       // --- Command: /edit (Task list -> Manage -> Edit / Delete) ---
       if (text === "/edit") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendUiMessage(chatId, "📋 <b>No tasks to edit yet!</b>\nType /addtask to create one.");
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -4445,18 +4454,21 @@ export async function POST(req: NextRequest) {
         ]);
 
         await sendUiMessage(chatId, "✏️ <b>Edit Tasks</b>\nTap a task to edit or delete:", taskButtons);
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
       // --- Command: /todo (one-time reminders with date & time) ---
       if (text === "/todo" || text === "/todos") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
         const todos = await getTodos();
         await sendUiMessage(chatId, buildTodoListText(todos), buildTodoListKeyboard(todos));
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4470,6 +4482,9 @@ export async function POST(req: NextRequest) {
         await clearWizardSessionAndRetirePrompt(chatId);
         await setActiveTask(chatId, null);
         await sendUiMessage(chatId, buildDoubtMenuText(), buildDoubtMenuKeyboard());
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4498,13 +4513,13 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /settings (Idle guardian and preferences) ---
       if (text === "/settings" || text === "/idle") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         await clearIdleAlertCard(chatId);
         const view = await buildSettingsView(chatId);
         await sendUiMessage(chatId, view.text, view.keyboard);
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4596,14 +4611,14 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /today ---
       if (text === "/today") {
-        if (messageId) {
-          await deleteTelegramMessage(chatId, messageId);
-        }
         await setActiveTask(chatId, null);
         const scorecard = await buildTodayScorecard(chatId);
-        const scoreRes = await sendTelegramMessage(chatId, scorecard);
-        if (scoreRes?.result?.message_id) {
-          await trackDailyReminderMessage(chatId, scoreRes.result.message_id, localDateString());
+        const scoreRes = await sendUiMessage(chatId, scorecard);
+        if (scoreRes) {
+          await trackDailyReminderMessage(chatId, scoreRes, localDateString());
+        }
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
         }
         return NextResponse.json({ ok: true });
       }
