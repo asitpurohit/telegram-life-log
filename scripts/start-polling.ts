@@ -1,6 +1,6 @@
 /**
  * Telegram Long Polling Runner
- * Allows you to test and chat with @asit108_bot right from your Mac
+ * Allows you to test and chat with your bot right from your Mac
  * without needing a public domain or Vercel deployment!
  */
 

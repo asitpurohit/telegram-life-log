@@ -609,6 +609,21 @@ export async function getDailyTodosForTask(taskId: string, date: string): Promis
   return data;
 }
 
+export async function getAllProjectTodosForDate(date: string): Promise<ProjectTodo[]> {
+  const { data, error } = await supabase
+    .from("project_todos")
+    .select("*")
+    .eq("todo_date", date)
+    .eq("is_archived", false)
+    .order("created_at", { ascending: true });
+
+  if (error || !data) {
+    if (error) console.error("Error fetching all daily todos for date:", JSON.stringify(error));
+    return [];
+  }
+  return data;
+}
+
 export async function addProjectTodo(
   taskId: string,
   projectId: string | null,

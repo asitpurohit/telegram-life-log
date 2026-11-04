@@ -48,7 +48,7 @@
 
 1. In Telegram, open **@BotFather** and send `/newbot`.
 2. Give it a display name (e.g. `My Habit Tracker`) and a username ending in `bot`
-   (e.g. `asit_habits_bot`).
+   (e.g. `my_life_log_bot`).
 3. BotFather replies with a token like `123456:ABC-DEF…` → that is `TELEGRAM_BOT_TOKEN`.
 4. Optional but recommended: send `/setdescription` and `/setuserpic` to make it pretty.
 5. Get the user's numeric Telegram id: open **@userinfobot**, press Start — it replies with

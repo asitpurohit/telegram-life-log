@@ -96,6 +96,7 @@ import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/ti
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
+import { sendDailySummaryEmail } from "@/lib/dailyEmailSummary";
 
 export const dynamic = "force-dynamic";
 
@@ -518,6 +519,12 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
   const statusEmoji = settings.idle_nudge_enabled ? "🟢" : "⚪";
   const statusLabel = settings.idle_nudge_enabled ? "ON (Active)" : "OFF (Disabled)";
 
+  const emailRecipient = process.env.SUMMARY_EMAIL_TO;
+  const resendKey = process.env.RESEND_API_KEY;
+  const smtpHost = process.env.SMTP_HOST;
+  const emailProviderLabel = resendKey ? "Resend (Free)" : smtpHost ? "Gmail / SMTP" : "None";
+  const emailConfigured = Boolean(emailRecipient && (resendKey || smtpHost));
+
   const text =
     `⚙️ <b>Settings & Preferences</b>\n\n` +
     `🛡️ <b>Anti-Slacking Idle Guardian:</b>\n` +
@@ -525,7 +532,11 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
     `• Active Window: <b>${settings.idle_window_start} – ${settings.idle_window_end}</b>\n` +
     `• Alert Interval: <b>Every ${settings.idle_interval_mins} minutes</b>\n` +
     snoozeStatus +
-    `\n<i>When active and no timer is running during your active hours, the bot sends 4 quick beeps to keep you focused.</i>`;
+    `\n<i>When active and no timer is running during your active hours, the bot sends 4 quick beeps to keep you focused.</i>\n\n` +
+    `📧 <b>Daily Summary Email:</b>\n` +
+    `• Status: <b>${emailConfigured ? "🟢 Active" : "⚪ Not configured"}</b>\n` +
+    `• Recipient: <code>${emailRecipient || "None (set SUMMARY_EMAIL_TO in env)"}</code>\n` +
+    `• Provider: <b>${emailProviderLabel}</b>`;
 
   const keyboard: InlineKeyboard = [
     [
@@ -552,6 +563,9 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
       { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
       { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
       ...(settings.idle_snoozed_until ? [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }] : []),
+    ],
+    [
+      { text: "📨 Send Summary Email Now", callback_data: "send_test_email" },
     ],
     [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
   ];
@@ -1255,7 +1269,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
 
     // =========================================================================
-    // SECURITY GUARD: Allow ONLY the authorized user ID (Asit)
+    // SECURITY GUARD: Allow ONLY the authorized user ID
     // =========================================================================
     const allowedUserId = process.env.ALLOWED_TELEGRAM_USER_ID;
     const senderId = String(body.message?.from?.id || body.callback_query?.from?.id || "");
@@ -1265,7 +1279,7 @@ export async function POST(req: NextRequest) {
       if (chatId) {
         await sendTelegramMessage(
           chatId,
-          "🔒 <b>Access Denied:</b> This is a private life-log assistant for Asit only."
+          "🔒 <b>Access Denied:</b> This is a private life-log assistant."
         );
       }
       return NextResponse.json({ ok: true });
@@ -2686,6 +2700,35 @@ export async function POST(req: NextRequest) {
             [{ text: "↩️ Back to Edit Task", callback_data: `edit_task:${taskId}` }],
           ]
         );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Send Test / Immediate Summary Email ---
+      if (callbackData === "send_test_email") {
+        if (body.callback_query?.id) {
+          await answerCallbackQuery(body.callback_query.id, "Generating and sending email summary...");
+        }
+        const result = await sendDailySummaryEmail();
+        if (result.sent) {
+          await sendTelegramMessage(
+            chatId,
+            `📧 <b>Daily Summary Sent!</b>\n\n` +
+            `Delivered yesterday's debrief to <code>${process.env.SUMMARY_EMAIL_TO}</code> via <b>${result.provider}</b>.\n` +
+            `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
+            `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
+            `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
+          );
+        } else {
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ <b>Email Delivery Failed:</b>\n${result.error || result.reason}\n\n` +
+            `To enable free automatic daily summaries, configure these in your Vercel Project Settings (Environment Variables):\n\n` +
+            `1. <code>SUMMARY_EMAIL_TO=your-email@gmail.com</code>\n` +
+            `2. Free Provider (pick one):\n` +
+            `   • <b>Resend:</b> <code>RESEND_API_KEY=re_...</code>\n` +
+            `   • <b>Gmail SMTP:</b> <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_USER=...</code>, <code>SMTP_PASS=...</code>`
+          );
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4145,6 +4188,8 @@ export async function POST(req: NextRequest) {
           `• <b>/doubt</b> — ❓ Log or view study & coding doubts\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
+          `• <b>/email</b> — 📧 Send yesterday's debrief summary email\n` +
+          `• <b>/settings</b> — ⚙️ Anti-slacking idle guard & preferences\n` +
           `• <b>/ask</b> — 🤖 Ask AI about your data & progress\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
           `• <b>/edit</b> — ✏️ Edit or delete tasks\n\n` +
@@ -4393,6 +4438,35 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const view = await buildSettingsView(chatId);
         await sendUiMessage(chatId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /email or /mail or /email_summary ---
+      if (text === "/email" || text === "/mail" || text === "/email_summary") {
+        await setActiveTask(chatId, null);
+        await sendTelegramMessage(chatId, "⏳ Compiling yesterday's daily summary and sending email...");
+        const result = await sendDailySummaryEmail();
+        if (result.sent) {
+          await sendTelegramMessage(
+            chatId,
+            `📧 <b>Email Delivered!</b>\n\n` +
+            `Yesterday's summary was sent to <code>${process.env.SUMMARY_EMAIL_TO}</code> via <b>${result.provider}</b>.\n` +
+            `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
+            `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
+            `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
+          );
+        } else {
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ <b>Email Could Not Be Sent:</b>\n\n` +
+            `Reason: ${result.error || result.reason}\n\n` +
+            `To enable free automatic daily summaries, configure these in your Vercel Project Settings (Environment Variables):\n\n` +
+            `1. <code>SUMMARY_EMAIL_TO=your-email@gmail.com</code>\n` +
+            `2. Free Provider (pick one):\n` +
+            `   • <b>Resend:</b> <code>RESEND_API_KEY=re_...</code>\n` +
+            `   • <b>Gmail SMTP:</b> <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_USER=...</code>, <code>SMTP_PASS=...</code>`
+          );
+        }
         return NextResponse.json({ ok: true });
       }
 

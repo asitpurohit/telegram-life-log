@@ -98,6 +98,9 @@ Now send `/start` to your bot on Telegram. That's it.
 | `ALLOWED_TELEGRAM_USER_ID` | recommended | Your numeric Telegram id (see [@userinfobot](https://t.me/userinfobot)) — locks the bot to you |
 | `TELEGRAM_DEFAULT_CHAT_ID` | optional | Chat that receives reminders; auto-detected if empty |
 | `CRON_SECRET` | optional | Protects `/api/tick` and `/api/remind` (`?key=…` or `Authorization: Bearer`) |
+| `SUMMARY_EMAIL_TO` | optional | Recipient email for daily morning previous-day debrief |
+| `RESEND_API_KEY` | optional | Free [Resend](https://resend.com) API key (3,000 free emails/mo) |
+| `SMTP_HOST` / `USER` / `PASS` | optional | Free Gmail / SMTP credentials (500 free emails/day) |
 
 ---
 
@@ -107,6 +110,8 @@ Now send `/start` to your bot on Telegram. That's it.
 |---|---|
 | `/start` | Main menu / today at a glance |
 | `/today` | Full scorecard: habits, ticks, diary, wasted time |
+| `/email` | Send yesterday's debrief summary email on demand |
+| `/settings` | Anti-slacking idle guardian & email preferences |
 | `/tasks` | View & log habits (start timers, add counts, mark ticks) |
 | `/addtask` | Guided task creation (timer / counter / tick) |
 | `/edit` | Edit or delete tasks |

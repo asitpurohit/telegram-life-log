@@ -2,6 +2,7 @@ import { supabase, isTaskScheduledForToday, getDueTodos, claimTodoReminder } fro
 import { sendTelegramMessage, InlineKeyboard } from "./telegram";
 import { localDateString, localHHMMSS, todoDueLabel } from "./time";
 import { buildTodayScorecard } from "./scorecard";
+import { sendDailySummaryEmail } from "./dailyEmailSummary";
 
 const MORNING_BRIEFING_TIME = process.env.MORNING_BRIEFING_TIME || "05:00:00";
 
@@ -66,6 +67,19 @@ export async function sendDueReminders(
         sentTasks.push("Morning 5 AM Briefing");
       } catch (err: any) {
         console.error("Error sending 5 AM morning briefing:", err);
+      }
+    }
+
+    // Daily Automated Email Summary for Yesterday (100% Free - Resend / Gmail)
+    const canSendEmail = await claimReminderSend("__morning_email__", localDateString(), "email");
+    if (canSendEmail) {
+      try {
+        const emailResult = await sendDailySummaryEmail();
+        if (emailResult.sent) {
+          sentTasks.push(`Morning Daily Summary Email (${emailResult.provider})`);
+        }
+      } catch (err: any) {
+        console.error("Error sending morning daily summary email:", err);
       }
     }
   }
