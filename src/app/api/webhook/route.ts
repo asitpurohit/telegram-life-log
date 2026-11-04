@@ -26,6 +26,10 @@ import {
   getProjectTotalMinutes,
   getDailyTodosForProject,
   getDailyTodosForTask,
+  getUnfinishedPastTodosForProject,
+  getUnfinishedPastTodosForTask,
+  carryOverTodosToToday,
+  dismissPastTodos,
   addProjectTodo,
   setProjectTodoDone,
   getProjectTodoById,
@@ -612,6 +616,45 @@ async function promptOrStartTimer(
     : await getDailyTodosForTask(taskId, today);
 
   if (existingTodos.length === 0) {
+    // Check if there are unfinished tasks from previous sessions
+    const pastTodos = projectId
+      ? await getUnfinishedPastTodosForProject(projectId, today)
+      : await getUnfinishedPastTodosForTask(taskId, today);
+
+    if (pastTodos.length > 0) {
+      await saveWizardSession(chatId, "awaiting_daily_todo_carryover", {
+        taskId,
+        taskName,
+        projectId: projectId || undefined,
+        projectName: projectName || undefined,
+        promptMessageId: messageId,
+        pastTodoIds: pastTodos.map((t) => t.id),
+      });
+
+      const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+      const pastList = pastTodos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
+
+      const kb: InlineKeyboard = [
+        [{ text: `📥 Carry Over to Today (${pastTodos.length})`, callback_data: "carryover_apply" }],
+        [{ text: "✨ Start Fresh / New Tasks", callback_data: "carryover_fresh" }],
+        [{ text: "🗑️ Dismiss Past Tasks", callback_data: "carryover_dismiss" }],
+        [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
+        [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+      ];
+
+      const promptText =
+        `${projectTag}⏳ <b>You have ${pastTodos.length} unfinished task${pastTodos.length > 1 ? "s" : ""} from previous sessions:</b>\n\n` +
+        `${pastList}\n\n` +
+        `Would you like to carry them over to today, or start fresh?`;
+
+      if (messageId) {
+        await respondUi(chatId, messageId, promptText, kb);
+      } else {
+        await sendUiMessage(chatId, promptText, kb);
+      }
+      return;
+    }
+
     await saveWizardSession(chatId, "awaiting_daily_todo_input", {
       taskId,
       taskName,
@@ -628,8 +671,8 @@ async function promptOrStartTimer(
 
     const promptText =
       `${projectTag}📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
-      `Send your tasks one by one:\n` +
-      `<i>(e.g., "Read Snell's Law", "Solve numericals 1-10", "Optics formulas")</i>\n\n` +
+      `Send your tasks one by one or separated by commas:\n` +
+      `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>\n\n` +
       `Tap <b>Start Timer</b> below if you prefer to leave it blank:`;
 
     if (messageId) {
@@ -2822,6 +2865,129 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Button: Apply Carry-Over of Past Incomplete To-Dos ---
+      if (callbackData === "carryover_apply") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName, pastTodoIds } = session.task_data;
+        const today = localDateString();
+
+        if (pastTodoIds && pastTodoIds.length > 0) {
+          await carryOverTodosToToday(pastTodoIds, today);
+        }
+
+        const todos = projectId
+          ? await getDailyTodosForProject(projectId, today)
+          : await getDailyTodosForTask(taskId, today);
+
+        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+          taskId,
+          taskName,
+          projectId,
+          projectName,
+          promptMessageId: messageId,
+        });
+
+        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n` : "";
+        const listText = todos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
+
+        const kb: InlineKeyboard = [
+          [{ text: `▶️ Done / Start Timer (${todos.length} task${todos.length > 1 ? "s" : ""})`, callback_data: "daily_todo_done" }],
+          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+        ];
+
+        await respondUi(
+          chatId,
+          messageId,
+          `${projectTag}📋 <b>Today's Plan (Carried Over):</b>\n\n` +
+            `${listText}\n\n` +
+            `Send more tasks to add (one by one or comma-separated), or tap <b>Done / Start Timer</b> below:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Start Fresh / New Tasks (Leave Past To-Dos untouched) ---
+      if (callbackData === "carryover_fresh") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+
+        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+          taskId,
+          taskName,
+          projectId,
+          projectName,
+          promptMessageId: messageId,
+        });
+
+        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+        const kb: InlineKeyboard = [
+          [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
+          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+        ];
+
+        await respondUi(
+          chatId,
+          messageId,
+          `${projectTag}📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
+            `Send your tasks one by one or separated by commas:\n` +
+            `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>\n\n` +
+            `Tap <b>Start Timer</b> below if you prefer to leave it blank:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Dismiss Past To-Dos (Mark Completed / Inactive) ---
+      if (callbackData === "carryover_dismiss") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName, pastTodoIds } = session.task_data;
+
+        if (pastTodoIds && pastTodoIds.length > 0) {
+          await dismissPastTodos(pastTodoIds);
+        }
+
+        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+          taskId,
+          taskName,
+          projectId,
+          projectName,
+          promptMessageId: messageId,
+        });
+
+        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+        const kb: InlineKeyboard = [
+          [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
+          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+        ];
+
+        await respondUi(
+          chatId,
+          messageId,
+          `${projectTag}🗑️ <i>Past unfinished tasks dismissed.</i>\n\n` +
+            `📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
+            `Send your tasks one by one or separated by commas:\n` +
+            `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>\n\n` +
+            `Tap <b>Start Timer</b> below if you prefer to leave it blank:`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Button: Daily To-Do Done (Show Session To-Do Pick) ---
       if (callbackData === "daily_todo_done") {
         const session = await getWizardSession(chatId);
@@ -2890,9 +3056,9 @@ export async function POST(req: NextRequest) {
         await respondUi(
           chatId,
           messageId,
-          `${projectTag}➕ <b>Add a task to today's plan:</b>\n\n` +
-            `Type your task description:\n` +
-            `<i>(e.g., "Read Snell's Law", "Numericals 1-10")</i>`,
+          `${projectTag}➕ <b>Add tasks to today's plan:</b>\n\n` +
+            `Type your tasks (one by one or separated by commas):\n` +
+            `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>`,
           kb
         );
         return NextResponse.json({ ok: true });
@@ -3779,21 +3945,66 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        // --- State: User In Carry-Over Prompt ---
+        if (activeSession.step === "awaiting_daily_todo_carryover") {
+          const taskData = activeSession.task_data;
+          const taskId = taskData.taskId!;
+          const pastIds = taskData.pastTodoIds || [];
+
+          const kb: InlineKeyboard = [
+            [{ text: `📥 Carry Over to Today (${pastIds.length})`, callback_data: "carryover_apply" }],
+            [{ text: "✨ Start Fresh / New Tasks", callback_data: "carryover_fresh" }],
+            [{ text: "🗑️ Dismiss Past Tasks", callback_data: "carryover_dismiss" }],
+            [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
+            [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+          ];
+
+          await sendTelegramMessage(
+            chatId,
+            "⚠️ Please tap an option below regarding your unfinished tasks from previous sessions:",
+            kb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         // --- State: User Adding Daily To-Dos for Project / Task ---
         if (activeSession.step === "awaiting_daily_todo_input") {
-          const itemText = text.trim();
           const taskData = activeSession.task_data;
           const taskId = taskData.taskId!;
           const projectId = taskData.projectId || null;
           const promptId = taskData.promptMessageId;
 
-          if (itemText.length < 2) {
+          // Split by newlines and commas, and strip numbering / bullets
+          const rawText = String(text || "");
+          const lines = rawText.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean);
+          const newItems: string[] = [];
+
+          for (const line of lines) {
+            if (line.includes(",")) {
+              const parts = line.split(",").map((p: string) => p.trim()).filter(Boolean);
+              for (const part of parts) {
+                const cleaned = part.replace(/^(\d+[\.\)]\s*|[-•*]\s*)/, "").trim();
+                if (cleaned.length >= 2) {
+                  newItems.push(cleaned);
+                }
+              }
+            } else {
+              const cleaned = line.replace(/^(\d+[\.\)]\s*|[-•*]\s*)/, "").trim();
+              if (cleaned.length >= 2) {
+                newItems.push(cleaned);
+              }
+            }
+          }
+
+          if (newItems.length === 0) {
             await sendTelegramMessage(chatId, "⚠️ Task name is too short. Please enter a valid task description:");
             return NextResponse.json({ ok: true });
           }
 
-          // Add the to-do
-          await addProjectTodo(taskId, projectId, itemText);
+          // Add each to-do
+          for (const item of newItems) {
+            await addProjectTodo(taskId, projectId, item);
+          }
 
           // Get all to-dos added today
           const today = localDateString();
@@ -3802,9 +4013,13 @@ export async function POST(req: NextRequest) {
             : await getDailyTodosForTask(taskId, today);
 
           const listText = todos
-            .map((t, idx) => `${idx + 1}. ${t.title}${t.id === todos[todos.length - 1].id ? " <i>(just added)</i>" : ""}`)
+            .map((t, idx) => `${idx + 1}. ${t.title}`)
             .join("\n");
           const projectLine = taskData.projectName ? `📦 Project: <b>${taskData.projectName}</b>\n` : "";
+          const addedBadge =
+            newItems.length > 1
+              ? `<i>(Added ${newItems.length} tasks)</i>\n\n`
+              : `<i>(Added: ${newItems[0]})</i>\n\n`;
 
           const kb: InlineKeyboard = [
             [{ text: `▶️ Done / Start Timer (${todos.length} task${todos.length > 1 ? "s" : ""})`, callback_data: "daily_todo_done" }],
@@ -3819,9 +4034,9 @@ export async function POST(req: NextRequest) {
 
           const sentId = await sendUiMessage(
             chatId,
-            `${projectLine}📋 <b>Today's Plan:</b>\n\n` +
+            `${projectLine}📋 <b>Today's Plan:</b>\n${addedBadge}` +
               `${listText}\n\n` +
-              `Send another task to add, or tap <b>Done / Start Timer</b> below:`,
+              `Send more tasks to add (one by one or comma-separated), or tap <b>Done / Start Timer</b> below:`,
             kb
           );
 

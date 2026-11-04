@@ -625,6 +625,59 @@ export async function getProjectTodoById(todoId: string): Promise<ProjectTodo | 
   return data;
 }
 
+export async function getUnfinishedPastTodosForProject(
+  projectId: string,
+  today: string
+): Promise<ProjectTodo[]> {
+  const { data, error } = await supabase
+    .from("project_todos")
+    .select("*")
+    .eq("project_id", projectId)
+    .lt("todo_date", today)
+    .eq("is_done", false)
+    .order("todo_date", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(15);
+
+  if (error || !data) return [];
+  return data;
+}
+
+export async function getUnfinishedPastTodosForTask(
+  taskId: string,
+  today: string
+): Promise<ProjectTodo[]> {
+  const { data, error } = await supabase
+    .from("project_todos")
+    .select("*")
+    .eq("task_id", taskId)
+    .is("project_id", null)
+    .lt("todo_date", today)
+    .eq("is_done", false)
+    .order("todo_date", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(15);
+
+  if (error || !data) return [];
+  return data;
+}
+
+export async function carryOverTodosToToday(todoIds: string[], today: string): Promise<void> {
+  if (todoIds.length === 0) return;
+  await supabase
+    .from("project_todos")
+    .update({ todo_date: today })
+    .in("id", todoIds);
+}
+
+export async function dismissPastTodos(todoIds: string[]): Promise<void> {
+  if (todoIds.length === 0) return;
+  await supabase
+    .from("project_todos")
+    .update({ is_done: true, done_at: new Date().toISOString() })
+    .in("id", todoIds);
+}
+
 export async function getLogById(logId: string): Promise<Log | null> {
   const { data, error } = await supabase
     .from("logs")

@@ -105,6 +105,7 @@ export interface WizardSession {
     | 'awaiting_project_target'
     | 'awaiting_project_description'
     | 'awaiting_daily_todo_input'
+    | 'awaiting_daily_todo_carryover'
     | 'awaiting_session_todo_pick';
   task_data: {
     type?: TaskType;
@@ -130,6 +131,7 @@ export interface WizardSession {
     projectTargetMinutes?: number | null;
     projectDescription?: string | null;
     todoId?: string;
+    pastTodoIds?: string[];
   };
   updated_at?: string;
 }
