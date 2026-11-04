@@ -4467,18 +4467,39 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /email or /mail or /email_summary ---
-      if (text === "/email" || text === "/mail" || text === "/email_summary") {
+      // --- Command: /email or /mail [optional date] ---
+      if (text.startsWith("/email") || text.startsWith("/mail")) {
         await setActiveTask(chatId, null);
-        await sendTelegramMessage(chatId, "⏳ Compiling yesterday's daily summary and sending email...");
+        const arg = text.replace(/^\/(email_summary|email|mail)\s*/i, "").trim().toLowerCase();
+
+        const today = localDateString();
+        let targetDate = shiftDateString(today, -1); // default yesterday
+
+        if (arg) {
+          if (arg === "today") {
+            targetDate = today;
+          } else if (arg === "yesterday") {
+            targetDate = shiftDateString(today, -1);
+          } else if (/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
+            targetDate = arg;
+          } else if (/^(\d+)\s*days?\s*ago$/i.test(arg)) {
+            const daysAgo = parseInt(arg.match(/^(\d+)/)![1], 10);
+            targetDate = shiftDateString(today, -daysAgo);
+          } else if (/^\d+$/.test(arg)) {
+            const daysAgo = parseInt(arg, 10);
+            targetDate = shiftDateString(today, -daysAgo);
+          }
+        }
+
+        await sendTelegramMessage(chatId, `⏳ Compiling summary for <b>${targetDate}</b> and sending email...`);
         const userSettings = await getUserSettings(chatId);
         const recipient = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
-        const result = await sendDailySummaryEmail(undefined, recipient || undefined);
+        const result = await sendDailySummaryEmail(targetDate, recipient || undefined);
         if (result.sent) {
           await sendTelegramMessage(
             chatId,
             `📧 <b>Email Delivered!</b>\n\n` +
-            `Yesterday's summary was sent to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
+            `Summary for <b>${result.summary?.dateFormatted || targetDate}</b> was sent to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
             `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
             `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
             `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
