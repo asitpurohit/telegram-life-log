@@ -1,4 +1,4 @@
-import { supabase, isTaskScheduledForToday, getDueTodos, claimTodoReminder } from "./supabase";
+import { supabase, isTaskScheduledForToday, getDueTodos, claimTodoReminder, getUserSettings } from "./supabase";
 import { sendTelegramMessage, InlineKeyboard } from "./telegram";
 import { localDateString, localHHMMSS, todoDueLabel } from "./time";
 import { buildTodayScorecard } from "./scorecard";
@@ -74,7 +74,9 @@ export async function sendDueReminders(
     const canSendEmail = await claimReminderSend("__morning_email__", localDateString(), "email");
     if (canSendEmail) {
       try {
-        const emailResult = await sendDailySummaryEmail();
+        const userSettings = await getUserSettings(targetChatId);
+        const recipient = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
+        const emailResult = await sendDailySummaryEmail(undefined, recipient || undefined);
         if (emailResult.sent) {
           sentTasks.push(`Morning Daily Summary Email (${emailResult.provider})`);
         }

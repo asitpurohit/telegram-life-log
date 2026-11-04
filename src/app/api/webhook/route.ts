@@ -88,6 +88,7 @@ import {
   updateActiveTimer,
   getUserSettings,
   updateUserSettings,
+  setUserSummaryEmail,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -519,7 +520,7 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
   const statusEmoji = settings.idle_nudge_enabled ? "🟢" : "⚪";
   const statusLabel = settings.idle_nudge_enabled ? "ON (Active)" : "OFF (Disabled)";
 
-  const emailRecipient = process.env.SUMMARY_EMAIL_TO;
+  const emailRecipient = settings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
   const resendKey = process.env.RESEND_API_KEY;
   const smtpHost = process.env.SMTP_HOST;
   const emailProviderLabel = resendKey ? "Resend (Free)" : smtpHost ? "Gmail / SMTP" : "None";
@@ -535,7 +536,7 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
     `\n<i>When active and no timer is running during your active hours, the bot sends 4 quick beeps to keep you focused.</i>\n\n` +
     `📧 <b>Daily Summary Email:</b>\n` +
     `• Status: <b>${emailConfigured ? "🟢 Active" : "⚪ Not configured"}</b>\n` +
-    `• Recipient: <code>${emailRecipient || "None (set SUMMARY_EMAIL_TO in env)"}</code>\n` +
+    `• Recipient: <code>${emailRecipient || "None (tap Change Email below)"}</code>\n` +
     `• Provider: <b>${emailProviderLabel}</b>`;
 
   const keyboard: InlineKeyboard = [
@@ -565,7 +566,8 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
       ...(settings.idle_snoozed_until ? [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }] : []),
     ],
     [
-      { text: "📨 Send Summary Email Now", callback_data: "send_test_email" },
+      { text: "✏️ Change Email", callback_data: "set_summary_email" },
+      { text: "📨 Send Email Now", callback_data: "send_test_email" },
     ],
     [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
   ];
@@ -2708,12 +2710,14 @@ export async function POST(req: NextRequest) {
         if (body.callback_query?.id) {
           await answerCallbackQuery(body.callback_query.id, "Generating and sending email summary...");
         }
-        const result = await sendDailySummaryEmail();
+        const userSettings = await getUserSettings(chatId);
+        const recipient = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
+        const result = await sendDailySummaryEmail(undefined, recipient || undefined);
         if (result.sent) {
           await sendTelegramMessage(
             chatId,
             `📧 <b>Daily Summary Sent!</b>\n\n` +
-            `Delivered yesterday's debrief to <code>${process.env.SUMMARY_EMAIL_TO}</code> via <b>${result.provider}</b>.\n` +
+            `Delivered yesterday's debrief to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
             `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
             `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
             `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
@@ -2722,13 +2726,28 @@ export async function POST(req: NextRequest) {
           await sendTelegramMessage(
             chatId,
             `⚠️ <b>Email Delivery Failed:</b>\n${result.error || result.reason}\n\n` +
-            `To enable free automatic daily summaries, configure these in your Vercel Project Settings (Environment Variables):\n\n` +
-            `1. <code>SUMMARY_EMAIL_TO=your-email@gmail.com</code>\n` +
-            `2. Free Provider (pick one):\n` +
-            `   • <b>Resend:</b> <code>RESEND_API_KEY=re_...</code>\n` +
-            `   • <b>Gmail SMTP:</b> <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_USER=...</code>, <code>SMTP_PASS=...</code>`
+            `You can update your email anytime right here in <b>/settings</b> → [✏️ Change Email]!`
           );
         }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Change Daily Summary Email ---
+      if (callbackData === "set_summary_email") {
+        await saveWizardSession(chatId, "awaiting_settings_email", {
+          promptMessageId: messageId,
+        });
+        const userSettings = await getUserSettings(chatId);
+        const currentEmail = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO || "None";
+        await respondUi(
+          chatId,
+          messageId,
+          `✉️ <b>Change Daily Summary Email</b>\n\n` +
+          `Current recipient: <code>${currentEmail}</code>\n\n` +
+          `Please reply with your new email address as a chat message (e.g. <code>name@example.com</code>).\n\n` +
+          `<i>Type /cancel to keep your current email.</i>`,
+          [[{ text: "↩️ Cancel", callback_data: "menu_settings" }]]
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -4445,12 +4464,14 @@ export async function POST(req: NextRequest) {
       if (text === "/email" || text === "/mail" || text === "/email_summary") {
         await setActiveTask(chatId, null);
         await sendTelegramMessage(chatId, "⏳ Compiling yesterday's daily summary and sending email...");
-        const result = await sendDailySummaryEmail();
+        const userSettings = await getUserSettings(chatId);
+        const recipient = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
+        const result = await sendDailySummaryEmail(undefined, recipient || undefined);
         if (result.sent) {
           await sendTelegramMessage(
             chatId,
             `📧 <b>Email Delivered!</b>\n\n` +
-            `Yesterday's summary was sent to <code>${process.env.SUMMARY_EMAIL_TO}</code> via <b>${result.provider}</b>.\n` +
+            `Yesterday's summary was sent to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
             `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
             `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
             `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
@@ -4460,11 +4481,7 @@ export async function POST(req: NextRequest) {
             chatId,
             `⚠️ <b>Email Could Not Be Sent:</b>\n\n` +
             `Reason: ${result.error || result.reason}\n\n` +
-            `To enable free automatic daily summaries, configure these in your Vercel Project Settings (Environment Variables):\n\n` +
-            `1. <code>SUMMARY_EMAIL_TO=your-email@gmail.com</code>\n` +
-            `2. Free Provider (pick one):\n` +
-            `   • <b>Resend:</b> <code>RESEND_API_KEY=re_...</code>\n` +
-            `   • <b>Gmail SMTP:</b> <code>SMTP_HOST=smtp.gmail.com</code>, <code>SMTP_USER=...</code>, <code>SMTP_PASS=...</code>`
+            `You can update your email anytime right here in <b>/settings</b> → [✏️ Change Email]!`
           );
         }
         return NextResponse.json({ ok: true });
@@ -5248,6 +5265,36 @@ export async function POST(req: NextRequest) {
             `⚠️ I couldn't understand that time window.\n\n` +
               `Please send like <b>05:00 to 22:00</b> or <b>6am to 10pm</b>:`,
             [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Custom Daily Summary Email ---
+        if (activeSession.step === "awaiting_settings_email") {
+          const emailInput = text.trim();
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+          if (!emailRegex.test(emailInput)) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_settings_email",
+              activeSession.task_data,
+              `⚠️ <b>Invalid Email Address:</b>\n\n` +
+                `Please send a valid email address (e.g. <code>name@example.com</code>):\n\n` +
+                `<i>Or type /cancel to go back.</i>`,
+              [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          await setUserSummaryEmail(chatId, emailInput);
+          await clearWizardSession(chatId);
+          const view = await buildSettingsView(chatId);
+          await sendUiMessage(
+            chatId,
+            `✅ <b>Summary Email Updated!</b>\n\n` +
+              `Your daily summary debriefs will now be sent to <code>${emailInput.toLowerCase()}</code>.\n\n${view.text}`,
+            view.keyboard
           );
           return NextResponse.json({ ok: true });
         }

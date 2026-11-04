@@ -1579,6 +1579,7 @@ export const DEFAULT_USER_SETTINGS: Omit<UserSettings, "chat_id"> = {
   idle_interval_mins: 3,
   idle_snoozed_until: null,
   last_idle_nudge_at: null,
+  summary_email_to: null,
 };
 
 export async function getUserSettings(chatId: string | number): Promise<UserSettings> {
@@ -1588,13 +1589,51 @@ export async function getUserSettings(chatId: string | number): Promise<UserSett
     .eq("chat_id", String(chatId))
     .maybeSingle();
 
-  if (error || !data) {
-    return {
-      chat_id: String(chatId),
-      ...DEFAULT_USER_SETTINGS,
-    };
+  let emailFromPref: string | null = null;
+  try {
+    const { data: prefRow } = await supabase
+      .from("wizard_sessions")
+      .select("task_data")
+      .eq("chat_id", `__pref_email__:${chatId}`)
+      .maybeSingle();
+    if (prefRow?.task_data?.email) {
+      emailFromPref = prefRow.task_data.email;
+    }
+  } catch {}
+
+  const baseSettings = (data as UserSettings) || {
+    chat_id: String(chatId),
+    ...DEFAULT_USER_SETTINGS,
+  };
+
+  const effectiveEmail = baseSettings.summary_email_to || emailFromPref || process.env.SUMMARY_EMAIL_TO || null;
+
+  return {
+    ...baseSettings,
+    summary_email_to: effectiveEmail,
+  };
+}
+
+export async function setUserSummaryEmail(chatId: string | number, email: string): Promise<boolean> {
+  const normalized = email.trim().toLowerCase();
+
+  // 1. Try updating user_settings table
+  try {
+    await updateUserSettings(chatId, { summary_email_to: normalized });
+  } catch {}
+
+  // 2. Also persist in wizard_sessions as instant fallback (no SQL migration required)
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: `__pref_email__:${chatId}`,
+      step: "user_preference",
+      task_data: { email: normalized, updated_at: new Date().toISOString() },
+    });
+  } catch (err) {
+    console.error("Error persisting user email pref:", err);
   }
-  return data as UserSettings;
+
+  return true;
 }
 
 export async function updateUserSettings(

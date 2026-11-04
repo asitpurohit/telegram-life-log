@@ -121,7 +121,8 @@ export interface WizardSession {
     | 'awaiting_project_todos_resolution'
     | 'awaiting_session_todo_pick'
     | 'awaiting_settings_window'
-    | 'awaiting_settings_interval';
+    | 'awaiting_settings_interval'
+    | 'awaiting_settings_email';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -165,6 +166,7 @@ export interface UserSettings {
   idle_interval_mins: number; // e.g. 3, 5, 15
   idle_snoozed_until?: string | null;
   last_idle_nudge_at?: string | null;
+  summary_email_to?: string | null;
   updated_at?: string;
 }
 
