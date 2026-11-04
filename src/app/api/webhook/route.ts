@@ -4214,8 +4214,7 @@ export async function POST(req: NextRequest) {
           `• <b>/doubt</b> — ❓ Log or view study & coding doubts\n` +
           `• <b>/log</b> — 📖 Write daily diary & mood reflection\n` +
           `• <b>/today</b> — 📊 Daily scorecard & habits progress\n` +
-          `• <b>/email [date]</b> — 📧 Email summary debrief\n` +
-          `   <i>Examples: <code>/email</code>, <code>/email today</code>, <code>/email 3 days ago</code>, <code>/email 2026-11-01</code></i>\n` +
+          `• <b>/email</b> — 📧 Send yesterday's debrief summary email\n` +
           `• <b>/settings</b> — ⚙️ Anti-slacking guard & email preferences\n` +
           `• <b>/ask &lt;question&gt;</b> — 🤖 Ask AI anything about your past data\n` +
           `• <b>/addtask</b> — ➕ Create a new habit (guided wizard)\n` +
@@ -4473,19 +4472,6 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const arg = text.replace(/^\/(email_summary|email|mail)\s*/i, "").trim().toLowerCase();
 
-        if (arg === "help" || arg === "?") {
-          await sendTelegramMessage(
-            chatId,
-            `📧 <b>Email Debrief Commands:</b>\n\n` +
-            `• <code>/email</code> — Yesterday's summary (default)\n` +
-            `• <code>/email today</code> — Today's summary so far\n` +
-            `• <code>/email 2026-11-02</code> — Specific date (YYYY-MM-DD)\n` +
-            `• <code>/email 3 days ago</code> — By days in the past\n\n` +
-            `<i>Change your recipient email anytime in /settings!</i>`
-          );
-          return NextResponse.json({ ok: true });
-        }
-
         const today = localDateString();
         let targetDate = shiftDateString(today, -1); // default yesterday
 
@@ -4516,8 +4502,7 @@ export async function POST(req: NextRequest) {
             `Summary for <b>${result.summary?.dateFormatted || targetDate}</b> was sent to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
             `• Focus time: <b>${result.summary ? formatTimerMinutes(result.summary.totalFocusMin) : "N/A"}</b>\n` +
             `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
-            `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>\n\n` +
-            `💡 <i>Tip: Request any past day using: <code>/email 2026-11-01</code> or <code>/email 3 days ago</code></i>`
+            `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
           );
         } else {
           await sendTelegramMessage(
