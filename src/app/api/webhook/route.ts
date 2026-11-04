@@ -86,13 +86,15 @@ import {
   extractDoubtTopic,
   extractDoubtQuestion,
   updateActiveTimer,
+  getUserSettings,
+  updateUserSettings,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS, PomodoroInfo } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
-import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer } from "@/lib/types";
+import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 
 export const dynamic = "force-dynamic";
@@ -498,6 +500,63 @@ async function openTaskScreen(
   } else {
     await respondUi(chatId, messageId, detail.text, detail.keyboard);
   }
+}
+
+async function buildSettingsView(chatId: string | number): Promise<{ text: string; keyboard: InlineKeyboard }> {
+  const settings = await getUserSettings(chatId);
+  const now = Date.now();
+
+  let snoozeStatus = "";
+  if (settings.idle_snoozed_until) {
+    const snoozeEnd = new Date(settings.idle_snoozed_until).getTime();
+    if (now < snoozeEnd) {
+      const remainingMins = Math.ceil((snoozeEnd - now) / 60000);
+      snoozeStatus = `\n⏸️ <i>Snoozed for next ${remainingMins} minutes</i>\n`;
+    }
+  }
+
+  const statusEmoji = settings.idle_nudge_enabled ? "🟢" : "⚪";
+  const statusLabel = settings.idle_nudge_enabled ? "ON (Active)" : "OFF (Disabled)";
+
+  const text =
+    `⚙️ <b>Settings & Preferences</b>\n\n` +
+    `🛡️ <b>Anti-Slacking Idle Guardian:</b>\n` +
+    `• Status: <b>${statusEmoji} ${statusLabel}</b>\n` +
+    `• Active Window: <b>${settings.idle_window_start} – ${settings.idle_window_end}</b>\n` +
+    `• Alert Interval: <b>Every ${settings.idle_interval_mins} minutes</b>\n` +
+    snoozeStatus +
+    `\n<i>When active and no timer is running during your active hours, the bot sends 4 quick beeps to keep you focused.</i>`;
+
+  const keyboard: InlineKeyboard = [
+    [
+      {
+        text: settings.idle_nudge_enabled ? "🔴 Turn OFF Idle Guard" : "🟢 Turn ON Idle Guard",
+        callback_data: "toggle_idle_guardian",
+      },
+    ],
+    [
+      { text: `⏱️ 3m${settings.idle_interval_mins === 3 ? " ✓" : ""}`, callback_data: "set_idle_interval:3" },
+      { text: `⏱️ 5m${settings.idle_interval_mins === 5 ? " ✓" : ""}`, callback_data: "set_idle_interval:5" },
+      { text: `⏱️ 15m${settings.idle_interval_mins === 15 ? " ✓" : ""}`, callback_data: "set_idle_interval:15" },
+      { text: `⏱️ 30m${settings.idle_interval_mins === 30 ? " ✓" : ""}`, callback_data: "set_idle_interval:30" },
+    ],
+    [
+      { text: "⏰ Window: 5 AM – 10 PM", callback_data: "set_idle_window:05:00:22:00" },
+      { text: "⏰ 6 AM – 11 PM", callback_data: "set_idle_window:06:00:23:00" },
+    ],
+    [
+      { text: "✏️ Custom Window", callback_data: "set_idle_window:custom" },
+      { text: "✏️ Custom Interval", callback_data: "set_idle_interval:custom" },
+    ],
+    [
+      { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+      { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
+      ...(settings.idle_snoozed_until ? [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }] : []),
+    ],
+    [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+  ];
+
+  return { text, keyboard };
 }
 
 // One-line task summary used in edit/delete confirmations
@@ -2630,6 +2689,114 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Button: Show Settings Menu ---
+      if (callbackData === "menu_settings" || callbackData === "menu_settings_idle") {
+        await clearWizardSession(chatId);
+        await setActiveTask(chatId, null);
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Toggle Idle Guardian (ON / OFF) ---
+      if (callbackData === "toggle_idle_guardian") {
+        const current = await getUserSettings(chatId);
+        const newState = !current.idle_nudge_enabled;
+        await updateUserSettings(chatId, {
+          idle_nudge_enabled: newState,
+          last_idle_nudge_at: new Date().toISOString(),
+        });
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Set Idle Interval ---
+      if (callbackData.startsWith("set_idle_interval:")) {
+        const value = callbackData.split(":")[1];
+        if (value === "custom") {
+          await saveWizardSession(chatId, "awaiting_settings_interval", {
+            promptMessageId: messageId,
+          });
+          await respondUi(
+            chatId,
+            messageId,
+            `⏱️ <b>Custom Idle Alert Interval</b>\n\n` +
+              `How many minutes of idle time before the 4-beep alert?\n` +
+              `<i>(e.g., 3, 5, 10, 15, 20)</i>`,
+            [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const mins = parseInt(value, 10) || 3;
+        await updateUserSettings(chatId, {
+          idle_interval_mins: mins,
+          last_idle_nudge_at: new Date().toISOString(),
+        });
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Set Idle Active Window ---
+      if (callbackData.startsWith("set_idle_window:")) {
+        const parts = callbackData.split(":");
+        if (parts[1] === "custom") {
+          await saveWizardSession(chatId, "awaiting_settings_window", {
+            promptMessageId: messageId,
+          });
+          await respondUi(
+            chatId,
+            messageId,
+            `⏰ <b>Custom Active Hours Window</b>\n\n` +
+              `Enter start and end time (e.g. <b>05:00 to 22:00</b> or <b>6am to 11pm</b>):`,
+            [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const start = parts[1];
+        const end = parts[2];
+        await updateUserSettings(chatId, {
+          idle_window_start: start,
+          idle_window_end: end,
+          last_idle_nudge_at: new Date().toISOString(),
+        });
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Idle Snooze ---
+      if (callbackData.startsWith("idle_snooze:")) {
+        const mins = parseInt(callbackData.split(":")[1], 10) || 30;
+        const snoozeUntil = new Date(Date.now() + mins * 60 * 1000).toISOString();
+        await updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil });
+        await respondUi(
+          chatId,
+          messageId,
+          `⏸️ <b>Idle Guardian Snoozed for ${mins} minutes!</b>\n\n` +
+            `Take your time for lunch/break. No idle alerts will ring until then.`,
+          [
+            [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }],
+            [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
+          ]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Cancel Snooze ---
+      if (callbackData === "idle_unsnooze") {
+        await updateUserSettings(chatId, {
+          idle_snoozed_until: null,
+          last_idle_nudge_at: new Date().toISOString(),
+        });
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Button: Manage Task (from /edit list) -> Edit or Delete ---
       if (callbackData.startsWith("manage_task:")) {
         await setActiveTask(chatId, null);
@@ -4221,6 +4388,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Command: /settings (Idle guardian and preferences) ---
+      if (text === "/settings" || text === "/idle") {
+        await setActiveTask(chatId, null);
+        const view = await buildSettingsView(chatId);
+        await sendUiMessage(chatId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Command: /status (graceful fallback: timer if running, else scorecard) ---
       if (text === "/status") {
         await setActiveTask(chatId, null);
@@ -4935,6 +5110,70 @@ export async function POST(req: NextRequest) {
               [{ text: `▶️ Start ${taskName}`, callback_data: `start_task:${taskId}` }],
               [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
             ]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Custom Idle Interval ---
+        if (activeSession.step === "awaiting_settings_interval") {
+          const rawNum = parseInt(text.trim(), 10);
+          if (isNaN(rawNum) || rawNum <= 0 || rawNum > 120) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_settings_interval",
+              activeSession.task_data,
+              "⚠️ Please enter a valid number of minutes between 1 and 120 (e.g. 3, 5, 15, 30):",
+              [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          await updateUserSettings(chatId, {
+            idle_interval_mins: rawNum,
+            last_idle_nudge_at: new Date().toISOString(),
+          });
+          await clearWizardSession(chatId);
+          const view = await buildSettingsView(chatId);
+          await sendUiMessage(
+            chatId,
+            `✅ <b>Idle Alert Interval set to ${rawNum} minutes!</b>\n\n${view.text}`,
+            view.keyboard
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Custom Idle Active Hours Window ---
+        if (activeSession.step === "awaiting_settings_window") {
+          const parts = text.split(/to|-|–/).map((s: string) => s.trim());
+          if (parts.length === 2) {
+            const t1 = parseReminderTime(parts[0]);
+            const t2 = parseReminderTime(parts[1]);
+            if (t1 && t2) {
+              const start = t1.slice(0, 5);
+              const end = t2.slice(0, 5);
+              await updateUserSettings(chatId, {
+                idle_window_start: start,
+                idle_window_end: end,
+                last_idle_nudge_at: new Date().toISOString(),
+              });
+              await clearWizardSession(chatId);
+              const view = await buildSettingsView(chatId);
+              await sendUiMessage(
+                chatId,
+                `✅ <b>Active Hours Window set to ${start} – ${end}!</b>\n\n${view.text}`,
+                view.keyboard
+              );
+              return NextResponse.json({ ok: true });
+            }
+          }
+
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_settings_window",
+            activeSession.task_data,
+            `⚠️ I couldn't understand that time window.\n\n` +
+              `Please send like <b>05:00 to 22:00</b> or <b>6am to 10pm</b>:`,
+            [[{ text: "❌ Cancel", callback_data: "menu_settings" }]]
           );
           return NextResponse.json({ ok: true });
         }

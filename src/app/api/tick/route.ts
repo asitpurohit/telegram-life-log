@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refreshRunningTimerMessages } from "@/lib/timerRuntime";
+import { checkAndSendIdleNudges } from "@/lib/idleGuardian";
 import { sendDueReminders } from "@/lib/reminders";
 import { recordCronHeartbeat, ensureSystemTasks } from "@/lib/supabase";
 import { isCronAuthorized } from "@/lib/cronAuth";
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 // ONE cron URL that does both jobs every minute:
 //  - refreshes running stopwatch messages (1-minute ticking on Vercel)
+//  - checks and sends idle anti-slacking alerts
 //  - sends any reminders that are due right now
 export async function GET(req: NextRequest) {
   if (!isCronAuthorized(req)) {
@@ -18,6 +20,7 @@ export async function GET(req: NextRequest) {
     await recordCronHeartbeat("tick");
     await ensureSystemTasks();
     await refreshRunningTimerMessages();
+    await checkAndSendIdleNudges();
     const reminders = await sendDueReminders();
     return NextResponse.json({ status: "ok", reminders });
   } catch (err: any) {

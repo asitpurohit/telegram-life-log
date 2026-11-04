@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { Task, Log, ActiveTimer, WizardSession, Todo, Project, ProjectTodo } from "./types";
+import { Task, Log, ActiveTimer, WizardSession, Todo, Project, ProjectTodo, UserSettings } from "./types";
 import { localDateString, localTimeString, localWeekday, splitSessionMinutes } from "./time";
 import { formatMinutes } from "./timeAudit";
 
@@ -477,6 +477,9 @@ export async function stopActiveTimer(
 
   // Remove from active timers
   await supabase.from("active_timers").delete().eq("chat_id", String(chatId));
+
+  // Anchor idle guardian countdown from the moment the session stops
+  await updateUserSettings(chatId, { last_idle_nudge_at: new Date().toISOString() });
 
   return {
     taskName: active.task_name,
@@ -1548,6 +1551,68 @@ export async function deleteDoubt(logId: string): Promise<boolean> {
     .eq("id", logId);
 
   return !error;
+}
+
+// ==========================================
+// USER SETTINGS & IDLE GUARDIAN OPERATIONS
+// ==========================================
+
+export const DEFAULT_USER_SETTINGS: Omit<UserSettings, "chat_id"> = {
+  idle_nudge_enabled: false,
+  idle_window_start: "05:00",
+  idle_window_end: "22:00",
+  idle_interval_mins: 3,
+  idle_snoozed_until: null,
+  last_idle_nudge_at: null,
+};
+
+export async function getUserSettings(chatId: string | number): Promise<UserSettings> {
+  const { data, error } = await supabase
+    .from("user_settings")
+    .select("*")
+    .eq("chat_id", String(chatId))
+    .maybeSingle();
+
+  if (error || !data) {
+    return {
+      chat_id: String(chatId),
+      ...DEFAULT_USER_SETTINGS,
+    };
+  }
+  return data as UserSettings;
+}
+
+export async function updateUserSettings(
+  chatId: string | number,
+  updates: Partial<UserSettings>
+): Promise<UserSettings | null> {
+  const payload = {
+    chat_id: String(chatId),
+    ...updates,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from("user_settings")
+    .upsert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error updating user settings:", error);
+    return null;
+  }
+  return data as UserSettings;
+}
+
+export async function getAllUserSettings(): Promise<UserSettings[]> {
+  const { data, error } = await supabase
+    .from("user_settings")
+    .select("*")
+    .eq("idle_nudge_enabled", true);
+
+  if (error || !data) return [];
+  return data as UserSettings[];
 }
 
 

@@ -18,6 +18,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "doubt", description: "Log or view study/coding doubts" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },
+  { command: "settings", description: "Anti-slacking idle guard & preferences" },
 ];
 
 export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {

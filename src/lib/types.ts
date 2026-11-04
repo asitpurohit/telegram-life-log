@@ -119,7 +119,9 @@ export interface WizardSession {
     | 'awaiting_daily_todo_input'
     | 'awaiting_daily_todo_carryover'
     | 'awaiting_project_todos_resolution'
-    | 'awaiting_session_todo_pick';
+    | 'awaiting_session_todo_pick'
+    | 'awaiting_settings_window'
+    | 'awaiting_settings_interval';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -155,6 +157,14 @@ export interface WizardSession {
   updated_at?: string;
 }
 
-
-
+export interface UserSettings {
+  chat_id: string;
+  idle_nudge_enabled: boolean;
+  idle_window_start: string; // e.g. "05:00"
+  idle_window_end: string;   // e.g. "22:00"
+  idle_interval_mins: number; // e.g. 3, 5, 15
+  idle_snoozed_until?: string | null;
+  last_idle_nudge_at?: string | null;
+  updated_at?: string;
+}
 
