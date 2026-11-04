@@ -132,6 +132,7 @@ export interface WizardSession {
     target_value?: number | null;
     unit?: string | null;
     promptMessageId?: number;
+    userMessageId?: number;
     todoTitle?: string;
     todoDate?: string; // YYYY-MM-DD
     doubtTaskId?: string;

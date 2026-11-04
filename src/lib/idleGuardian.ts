@@ -2,14 +2,27 @@ import {
   getAllUserSettings,
   updateUserSettings,
   getActiveTimer,
+  trackIdleAlertMessage,
+  getIdleAlertMessage,
+  clearIdleAlertState,
 } from "./supabase";
 import {
   sendTelegramMessage,
+  deleteTelegramMessage,
   InlineKeyboard,
 } from "./telegram";
 import { localHHMMSS } from "./time";
 
-// 4-Beep Idle Alert sequence spaced 2.5s apart to trigger multiple physical phone vibrations
+export async function clearIdleAlertCard(chatId: string | number): Promise<void> {
+  const prevId = await getIdleAlertMessage(chatId);
+  if (prevId) {
+    await deleteTelegramMessage(chatId, prevId);
+  }
+  await clearIdleAlertState(chatId);
+}
+
+// 4-Beep Idle Alert sequence spaced 2.5s apart to trigger multiple physical phone vibrations.
+// After the final actionable card lands, preliminary audio pings are cleanly deleted.
 export async function sendQuadChimeAlert(
   chatId: string | number,
   ping1: string,
@@ -17,17 +30,30 @@ export async function sendQuadChimeAlert(
   ping3: string,
   finalText: string,
   keyboard?: InlineKeyboard
-): Promise<void> {
-  await sendTelegramMessage(chatId, ping1);
+): Promise<number | undefined> {
+  const r1 = await sendTelegramMessage(chatId, ping1);
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  await sendTelegramMessage(chatId, ping2);
+  const r2 = await sendTelegramMessage(chatId, ping2);
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  await sendTelegramMessage(chatId, ping3);
+  const r3 = await sendTelegramMessage(chatId, ping3);
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  await sendTelegramMessage(chatId, finalText, keyboard);
+  const finalRes = await sendTelegramMessage(chatId, finalText, keyboard);
+
+  // Clean up preliminary audio pings now that sounds have triggered on phone
+  if (r1?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r1.result.message_id);
+  }
+  if (r2?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r2.result.message_id);
+  }
+  if (r3?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r3.result.message_id);
+  }
+
+  return finalRes?.result?.message_id;
 }
 
 export function isTimeInWindow(current: string, start: string, end: string): boolean {
@@ -65,6 +91,8 @@ export async function checkAndSendIdleNudges(): Promise<void> {
     // 3. Check if any timer is currently running (Study, Sleep, Project, etc.)
     const running = await getActiveTimer(settings.chat_id);
     if (running) {
+      // User has started working; clean any lingering idle alert card
+      await clearIdleAlertCard(settings.chat_id);
       continue;
     }
 
@@ -77,7 +105,9 @@ export async function checkAndSendIdleNudges(): Promise<void> {
       continue;
     }
 
-    // 5. Send the 4-beep idle alert!
+    // 5. Send the 4-beep idle alert (replaces any previous idle card so only 1 exists)
+    await clearIdleAlertCard(settings.chat_id);
+
     const alertKb: InlineKeyboard = [
       [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
       [
@@ -87,7 +117,7 @@ export async function checkAndSendIdleNudges(): Promise<void> {
       [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
     ];
 
-    await sendQuadChimeAlert(
+    const finalMsgId = await sendQuadChimeAlert(
       settings.chat_id,
       "⏰ <b>BEEP!</b> (Idle Alert 1/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 2/4)",
@@ -97,6 +127,10 @@ export async function checkAndSendIdleNudges(): Promise<void> {
         `Don't let procrastination win today — ready to get back to work?`,
       alertKb
     );
+
+    if (finalMsgId) {
+      await trackIdleAlertMessage(settings.chat_id, finalMsgId);
+    }
 
     // Update last_idle_nudge_at to anchor the next interval
     await updateUserSettings(settings.chat_id, {

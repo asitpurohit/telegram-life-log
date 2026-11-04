@@ -1,8 +1,18 @@
-import { supabase, isTaskScheduledForToday, getDueTodos, claimTodoReminder, getUserSettings } from "./supabase";
-import { sendTelegramMessage, InlineKeyboard } from "./telegram";
+import {
+  supabase,
+  isTaskScheduledForToday,
+  getDueTodos,
+  claimTodoReminder,
+  getUserSettings,
+  trackDailyReminderMessage,
+  getStaleDailyReminderMessages,
+  getTrackedUiMessage,
+} from "./supabase";
+import { sendTelegramMessage, deleteTelegramMessage, InlineKeyboard } from "./telegram";
 import { localDateString, localHHMMSS, todoDueLabel } from "./time";
 import { buildTodayScorecard } from "./scorecard";
 import { sendDailySummaryEmail } from "./dailyEmailSummary";
+import { clearIdleAlertCard } from "./idleGuardian";
 
 const MORNING_BRIEFING_TIME = process.env.MORNING_BRIEFING_TIME || "05:00:00";
 
@@ -61,10 +71,33 @@ export async function sendDueReminders(
     const canSendMorning = await claimReminderSend("__morning_briefing__", localDateString(), "5am");
     if (canSendMorning) {
       try {
+        // --- Option 1: Fresh Daily Canvas Cleanup ---
+        // 1. Purge yesterday's stale reminder cards & receipts from Telegram
+        const staleRows = await getStaleDailyReminderMessages(targetChatId, localDateString());
+        for (const stale of staleRows) {
+          for (const msgId of stale.messageIds) {
+            await deleteTelegramMessage(targetChatId, msgId);
+          }
+          await supabase.from("wizard_sessions").delete().eq("chat_id", stale.rowKey);
+        }
+
+        // 2. Clear any lingering idle alert card from yesterday
+        await clearIdleAlertCard(targetChatId);
+
+        // 3. Clear any stale UI menu card from yesterday
+        const staleUiMsgId = await getTrackedUiMessage(targetChatId);
+        if (staleUiMsgId) {
+          await deleteTelegramMessage(targetChatId, staleUiMsgId);
+        }
+
+        // 4. Send today's fresh morning scorecard
         const scorecard = await buildTodayScorecard(targetChatId);
         const morningMessage = `☀️ <b>Good Morning! (5:00 AM Daily Plan)</b>\n\n${scorecard}`;
-        await sendTelegramMessage(targetChatId, morningMessage);
-        sentTasks.push("Morning 5 AM Briefing");
+        const morningRes = await sendTelegramMessage(targetChatId, morningMessage);
+        if (morningRes?.result?.message_id) {
+          await trackDailyReminderMessage(targetChatId, morningRes.result.message_id, localDateString());
+        }
+        sentTasks.push("Morning 5 AM Briefing (Fresh Canvas)");
       } catch (err: any) {
         console.error("Error sending 5 AM morning briefing:", err);
       }
@@ -131,7 +164,10 @@ export async function sendDueReminders(
       ];
     }
 
-    await sendTelegramMessage(targetChatId, text, keyboard);
+    const remRes = await sendTelegramMessage(targetChatId, text, keyboard);
+    if (remRes?.result?.message_id) {
+      await trackDailyReminderMessage(targetChatId, remRes.result.message_id, localDateString());
+    }
     sentTasks.push(task.name);
   }
 
@@ -143,13 +179,16 @@ export async function sendDueReminders(
     const claimed = await claimTodoReminder(todo.id);
     if (!claimed) continue;
 
-    await sendTelegramMessage(
+    const todoRes = await sendTelegramMessage(
       targetChatId,
       `⏰ <b>Todo: ${todo.title}</b>\n` +
         `🕐 ${todoDueLabel(todo.due_at)}\n\n` +
         `Tap below when it's done:`,
       [[{ text: `✅ Done: ${todo.title.slice(0, 30)}`, callback_data: `todo_done:${todo.id}` }]]
     );
+    if (todoRes?.result?.message_id) {
+      await trackDailyReminderMessage(targetChatId, todoRes.result.message_id, localDateString());
+    }
     sentTodos.push(todo.title);
   }
 

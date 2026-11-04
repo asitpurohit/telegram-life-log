@@ -89,6 +89,7 @@ import {
   getUserSettings,
   updateUserSettings,
   setUserSummaryEmail,
+  trackDailyReminderMessage,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -98,6 +99,7 @@ import { localDateLabel, localTimeString, localDateString, localDateShort, local
 import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 import { sendDailySummaryEmail } from "@/lib/dailyEmailSummary";
+import { clearIdleAlertCard } from "@/lib/idleGuardian";
 
 export const dynamic = "force-dynamic";
 
@@ -162,7 +164,11 @@ async function sendWizardPrompt(
 
   const previousPromptId = taskData.promptMessageId;
   if (previousPromptId && previousPromptId !== promptMessageId) {
-    await removeInlineKeyboard(chatId, previousPromptId);
+    await deleteTelegramMessage(chatId, previousPromptId);
+  }
+
+  if (taskData.userMessageId) {
+    await deleteTelegramMessage(chatId, taskData.userMessageId);
   }
 
   // Retire whatever menu was previously the active surface for this chat
@@ -172,13 +178,13 @@ async function sendWizardPrompt(
     await trackUiMessage(chatId, promptMessageId);
   }
 
-  await saveWizardSession(chatId, step, { ...taskData, promptMessageId });
+  await saveWizardSession(chatId, step, { ...taskData, promptMessageId, userMessageId: undefined });
 }
 
 async function retireTrackedUi(chatId: string | number, keepMessageId?: number): Promise<void> {
   const trackedId = await getTrackedUiMessage(chatId);
   if (trackedId && trackedId !== keepMessageId) {
-    await removeInlineKeyboard(chatId, trackedId);
+    await deleteTelegramMessage(chatId, trackedId);
   }
 }
 
@@ -224,9 +230,13 @@ async function respondUi(
 async function clearWizardSessionAndRetirePrompt(chatId: string | number): Promise<void> {
   const session = await getWizardSession(chatId);
   const promptId = session?.task_data?.promptMessageId;
+  const userMsgId = session?.task_data?.userMessageId;
   await clearWizardSession(chatId);
   if (promptId) {
-    await removeInlineKeyboard(chatId, promptId);
+    await deleteTelegramMessage(chatId, promptId);
+  }
+  if (userMsgId) {
+    await deleteTelegramMessage(chatId, userMsgId);
   }
   await retireTrackedUi(chatId, promptId);
 }
@@ -631,6 +641,7 @@ async function doStartActiveTimer(
   const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName, todoId, todoTitle);
   await clearPauseState(chatId);
   await clearNudgeState(chatId);
+  await clearIdleAlertCard(chatId);
   await setActiveTask(chatId, taskId);
 
   const startedAt = active?.started_at || new Date().toISOString();
@@ -1340,8 +1351,9 @@ export async function POST(req: NextRequest) {
       // --- WIZARD: Cancel Active Action ---
       if (callbackData === "wizard_cancel") {
         await clearWizardSession(chatId);
-        const cancelText = "❌ <i>Action cancelled.</i>";
-        await respondUi(chatId, messageId, cancelText, []);
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -2351,6 +2363,7 @@ export async function POST(req: NextRequest) {
       if (callbackData === "menu_tasks") {
         await clearWizardSession(chatId);
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendTelegramMessage(
@@ -2762,6 +2775,7 @@ export async function POST(req: NextRequest) {
       if (callbackData === "menu_settings" || callbackData === "menu_settings_idle") {
         await clearWizardSession(chatId);
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const view = await buildSettingsView(chatId);
         await respondUi(chatId, messageId, view.text, view.keyboard);
         return NextResponse.json({ ok: true });
@@ -2842,6 +2856,7 @@ export async function POST(req: NextRequest) {
         const mins = parseInt(callbackData.split(":")[1], 10) || 30;
         const snoozeUntil = new Date(Date.now() + mins * 60 * 1000).toISOString();
         await updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil });
+        await clearIdleAlertCard(chatId);
         await respondUi(
           chatId,
           messageId,
@@ -4167,7 +4182,9 @@ export async function POST(req: NextRequest) {
       // --- Command: /cancel ---
       if (text === "/cancel") {
         await clearWizardSessionAndRetirePrompt(chatId);
-        await sendTelegramMessage(chatId, "❌ <i>Action cancelled.</i>");
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -4319,8 +4336,12 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /addtask (START WIZARD) ---
       if (text === "/addtask") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await clearWizardSessionAndRetirePrompt(chatId);
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const typeKeyboard: InlineKeyboard = [
           [
             { text: "⏱️ Timer", callback_data: "wizard_type:timer" },
@@ -4343,7 +4364,11 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /tasks or /task (Today's Scheduled Tasks) ---
       if (text === "/tasks" || text === "/task") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendTelegramMessage(
@@ -4375,7 +4400,11 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /alltasks (All Active Tasks, Any Day) ---
       if (text === "/alltasks") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendTelegramMessage(
@@ -4397,7 +4426,11 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /edit (Task list -> Manage -> Edit / Delete) ---
       if (text === "/edit") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const tasks = await getActiveTasks();
         if (tasks.length === 0) {
           await sendUiMessage(chatId, "📋 <b>No tasks to edit yet!</b>\nType /addtask to create one.");
@@ -4417,7 +4450,11 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /todo (one-time reminders with date & time) ---
       if (text === "/todo" || text === "/todos") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const todos = await getTodos();
         await sendUiMessage(chatId, buildTodoListText(todos), buildTodoListKeyboard(todos));
         return NextResponse.json({ ok: true });
@@ -4461,7 +4498,11 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /settings (Idle guardian and preferences) ---
       if (text === "/settings" || text === "/idle") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
+        await clearIdleAlertCard(chatId);
         const view = await buildSettingsView(chatId);
         await sendUiMessage(chatId, view.text, view.keyboard);
         return NextResponse.json({ ok: true });
@@ -4469,6 +4510,9 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /email or /mail [optional date] ---
       if (text.startsWith("/email") || text.startsWith("/mail")) {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
         const arg = text.replace(/^\/(email_summary|email|mail)\s*/i, "").trim().toLowerCase();
 
@@ -4491,12 +4535,15 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        await sendTelegramMessage(chatId, `⏳ Compiling summary for <b>${targetDate}</b> and sending email...`);
+        const waitMsg = await sendTelegramMessage(chatId, `⏳ Compiling summary for <b>${targetDate}</b> and sending email...`);
         const userSettings = await getUserSettings(chatId);
         const recipient = userSettings.summary_email_to || process.env.SUMMARY_EMAIL_TO;
         const result = await sendDailySummaryEmail(targetDate, recipient || undefined);
+        if (waitMsg?.result?.message_id) {
+          await deleteTelegramMessage(chatId, waitMsg.result.message_id);
+        }
         if (result.sent) {
-          await sendTelegramMessage(
+          const sentRes = await sendTelegramMessage(
             chatId,
             `📧 <b>Email Delivered!</b>\n\n` +
             `Summary for <b>${result.summary?.dateFormatted || targetDate}</b> was sent to <code>${recipient}</code> via <b>${result.provider}</b>.\n` +
@@ -4504,6 +4551,9 @@ export async function POST(req: NextRequest) {
             `• Completed items: <b>${result.summary ? result.summary.completedTodos.length : 0}</b>\n` +
             `• Incomplete items: <b>${result.summary ? result.summary.incompleteTodos.length : 0}</b>`
           );
+          if (sentRes?.result?.message_id) {
+            await trackDailyReminderMessage(chatId, sentRes.result.message_id, localDateString());
+          }
         } else {
           await sendTelegramMessage(
             chatId,
@@ -4546,9 +4596,15 @@ export async function POST(req: NextRequest) {
 
       // --- Command: /today ---
       if (text === "/today") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
         await setActiveTask(chatId, null);
         const scorecard = await buildTodayScorecard(chatId);
-        await sendTelegramMessage(chatId, scorecard);
+        const scoreRes = await sendTelegramMessage(chatId, scorecard);
+        if (scoreRes?.result?.message_id) {
+          await trackDailyReminderMessage(chatId, scoreRes.result.message_id, localDateString());
+        }
         return NextResponse.json({ ok: true });
       }
 
@@ -5059,6 +5115,9 @@ export async function POST(req: NextRequest) {
           activeSession.step === "awaiting_edit_reminder" ||
           activeSession.step === "awaiting_edit_days"
         ) {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const taskId = activeSession.task_data.taskId || "";
           const task = await getTaskById(taskId);
           if (!task) {
@@ -5151,10 +5210,14 @@ export async function POST(req: NextRequest) {
           const updated = await getTaskById(task.id);
           await clearWizardSession(chatId);
 
-          await sendUiMessage(
-            chatId,
-            `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`
-          );
+          const promptId = activeSession.task_data?.promptMessageId;
+          const updatedText = `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`;
+          const updatedKb: InlineKeyboard = [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]];
+          if (promptId) {
+            await editTelegramMessage(chatId, promptId, updatedText, updatedKb);
+          } else {
+            await sendUiMessage(chatId, updatedText, updatedKb);
+          }
           return NextResponse.json({ ok: true });
         }
 
@@ -5235,6 +5298,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: Custom Idle Interval ---
         if (activeSession.step === "awaiting_settings_interval") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const rawNum = parseInt(text.trim(), 10);
           if (isNaN(rawNum) || rawNum <= 0 || rawNum > 120) {
             await sendWizardPrompt(
@@ -5252,17 +5318,22 @@ export async function POST(req: NextRequest) {
             last_idle_nudge_at: new Date().toISOString(),
           });
           await clearWizardSession(chatId);
+          const promptId = activeSession.task_data?.promptMessageId;
           const view = await buildSettingsView(chatId);
-          await sendUiMessage(
-            chatId,
-            `✅ <b>Idle Alert Interval set to ${rawNum} minutes!</b>\n\n${view.text}`,
-            view.keyboard
-          );
+          const successText = `✅ <b>Idle Alert Interval set to ${rawNum} minutes!</b>\n\n${view.text}`;
+          if (promptId) {
+            await editTelegramMessage(chatId, promptId, successText, view.keyboard);
+          } else {
+            await sendUiMessage(chatId, successText, view.keyboard);
+          }
           return NextResponse.json({ ok: true });
         }
 
         // --- State: Custom Idle Active Hours Window ---
         if (activeSession.step === "awaiting_settings_window") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const parts = text.split(/to|-|–/).map((s: string) => s.trim());
           if (parts.length === 2) {
             const t1 = parseReminderTime(parts[0]);
@@ -5276,12 +5347,14 @@ export async function POST(req: NextRequest) {
                 last_idle_nudge_at: new Date().toISOString(),
               });
               await clearWizardSession(chatId);
+              const promptId = activeSession.task_data?.promptMessageId;
               const view = await buildSettingsView(chatId);
-              await sendUiMessage(
-                chatId,
-                `✅ <b>Active Hours Window set to ${start} – ${end}!</b>\n\n${view.text}`,
-                view.keyboard
-              );
+              const successText = `✅ <b>Active Hours Window set to ${start} – ${end}!</b>\n\n${view.text}`;
+              if (promptId) {
+                await editTelegramMessage(chatId, promptId, successText, view.keyboard);
+              } else {
+                await sendUiMessage(chatId, successText, view.keyboard);
+              }
               return NextResponse.json({ ok: true });
             }
           }
@@ -5299,6 +5372,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: Custom Daily Summary Email ---
         if (activeSession.step === "awaiting_settings_email") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const emailInput = text.trim();
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -5317,18 +5393,24 @@ export async function POST(req: NextRequest) {
 
           await setUserSummaryEmail(chatId, emailInput);
           await clearWizardSession(chatId);
+          const promptId = activeSession.task_data?.promptMessageId;
           const view = await buildSettingsView(chatId);
-          await sendUiMessage(
-            chatId,
+          const successText =
             `✅ <b>Summary Email Updated!</b>\n\n` +
-              `Your daily summary debriefs will now be sent to <code>${emailInput.toLowerCase()}</code>.\n\n${view.text}`,
-            view.keyboard
-          );
+            `Your daily summary debriefs will now be sent to <code>${emailInput.toLowerCase()}</code>.\n\n${view.text}`;
+          if (promptId) {
+            await editTelegramMessage(chatId, promptId, successText, view.keyboard);
+          } else {
+            await sendUiMessage(chatId, successText, view.keyboard);
+          }
           return NextResponse.json({ ok: true });
         }
 
         // --- State: New To-Do (title -> date -> time) ---
         if (activeSession.step === "awaiting_todo_title") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const title = text.trim();
           if (title.length < 2 || isQuickGibberishCheck(title)) {
             await sendWizardPrompt(
@@ -5353,6 +5435,9 @@ export async function POST(req: NextRequest) {
         }
 
         if (activeSession.step === "awaiting_todo_date") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const dateStr = parseTodoDate(text);
           if (!dateStr || dateStr < localDateString()) {
             await sendWizardPrompt(
@@ -5378,6 +5463,9 @@ export async function POST(req: NextRequest) {
         }
 
         if (activeSession.step === "awaiting_todo_time") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const parsedTime = parseReminderTime(text);
           if (!parsedTime) {
             await sendWizardPrompt(
@@ -5411,6 +5499,11 @@ export async function POST(req: NextRequest) {
 
           const todo = await createTodo(todoTitle, dueAt.toISOString());
           await clearWizardSession(chatId);
+
+          const promptId = activeSession.task_data?.promptMessageId;
+          if (promptId) {
+            await deleteTelegramMessage(chatId, promptId);
+          }
 
           if (!todo) {
             await sendUiMessage(chatId, "⚠️ Could not save the to-do. Please try again.");
@@ -5537,6 +5630,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: Step 1 Name Input -> Branch by Task Type ---
         if (activeSession.step === "awaiting_name") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const taskName = text.trim();
           if (taskName.length < 2 || isQuickGibberishCheck(taskName)) {
             await sendWizardPrompt(
@@ -5646,6 +5742,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: User Typed Timer Goal -> Prompt Reminder ---
         if (activeSession.step === "awaiting_timer_goal") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const parsedMins = parseTimerGoal(text);
           if (!parsedMins || parsedMins <= 0) {
             await sendWizardPrompt(
@@ -5683,6 +5782,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: User Typed Counter Goal (Amount + Unit) -> Prompt Reminder ---
         if (activeSession.step === "awaiting_counter_goal") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const parsed = parseCountGoalAndUnit(text);
           if (!parsed || parsed.value <= 0) {
             await sendWizardPrompt(
@@ -5720,6 +5822,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: User Typed Reminder Time -> Prompt Which Days ---
         if (activeSession.step === "awaiting_reminder") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const parsedTime = parseReminderTime(text);
           if (!parsedTime) {
             await sendWizardPrompt(
@@ -5761,6 +5866,9 @@ export async function POST(req: NextRequest) {
 
         // --- State: User Typed Custom Days -> Finalize & Save Task ---
         if (activeSession.step === "awaiting_days") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
           const chosenDays = parseScheduleDays(text);
           if (!chosenDays) {
             await sendWizardPrompt(
@@ -5795,14 +5903,15 @@ export async function POST(req: NextRequest) {
 
           await clearWizardSession(chatId);
 
+          if (previousPromptId) {
+            await deleteTelegramMessage(chatId, previousPromptId);
+          }
+
           if (!newTask) {
             await sendTelegramMessage(
               chatId,
               `⚠️ Could not create task (a task named "${taskData.name}" may already exist).`
             );
-            if (previousPromptId) {
-              await removeInlineKeyboard(chatId, previousPromptId);
-            }
             return NextResponse.json({ ok: true });
           }
 

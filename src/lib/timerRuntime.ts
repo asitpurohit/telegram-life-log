@@ -192,20 +192,31 @@ export function buildTimerView(
 
 // Triple-Ping alert sequence: sends 3 distinct notifications spaced 2.5s apart
 // to allow the phone's notification sound and vibration motor to ring 3 separate times.
+// Preliminary audio pings are cleanly auto-deleted once the actionable final card lands.
 async function sendTripleChimeAlert(
   chatId: string | number,
   ping1: string,
   ping2: string,
   finalText: string,
   keyboard?: InlineKeyboard
-): Promise<void> {
-  await sendTelegramMessage(chatId, ping1);
+): Promise<number | undefined> {
+  const r1 = await sendTelegramMessage(chatId, ping1);
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  await sendTelegramMessage(chatId, ping2);
+  const r2 = await sendTelegramMessage(chatId, ping2);
   await new Promise((resolve) => setTimeout(resolve, 2500));
 
-  await sendTelegramMessage(chatId, finalText, keyboard);
+  const finalRes = await sendTelegramMessage(chatId, finalText, keyboard);
+
+  // Clean up preliminary audio pings after sounds have played on phone
+  if (r1?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r1.result.message_id);
+  }
+  if (r2?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r2.result.message_id);
+  }
+
+  return finalRes?.result?.message_id;
 }
 
 // Called periodically by the local polling runner (5s) and by the Vercel cron

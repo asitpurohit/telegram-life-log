@@ -1669,4 +1669,113 @@ export async function getAllUserSettings(): Promise<UserSettings[]> {
   return data as UserSettings[];
 }
 
+// ==========================================
+// IDLE ALERT TRACKING (single card in chat)
+// ==========================================
+
+const IDLE_ALERT_PREFIX = "__idle_alert__:";
+
+export async function trackIdleAlertMessage(
+  chatId: string | number,
+  messageId: number
+): Promise<void> {
+  return setTrackedMessage(IDLE_ALERT_PREFIX, chatId, messageId);
+}
+
+export async function getIdleAlertMessage(
+  chatId: string | number
+): Promise<number | null> {
+  return getTrackedMessage(IDLE_ALERT_PREFIX, chatId);
+}
+
+export async function clearIdleAlertState(
+  chatId: string | number
+): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .delete()
+    .eq("chat_id", `${IDLE_ALERT_PREFIX}${chatId}`);
+  if (error) console.error("Error clearing idle alert state:", error);
+}
+
+// ==========================================
+// DAILY REMINDER TRACKING (Option 1 Fresh Daily Canvas)
+// ==========================================
+
+const DAILY_REMINDER_PREFIX = "__daily_rem__:";
+
+export async function trackDailyReminderMessage(
+  chatId: string | number,
+  messageId: number,
+  date: string
+): Promise<void> {
+  const rowKey = `${DAILY_REMINDER_PREFIX}${chatId}:${date}`;
+  const { data } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", rowKey)
+    .maybeSingle();
+
+  const existingIds: number[] = Array.isArray(data?.task_data?.messageIds)
+    ? data.task_data.messageIds
+    : [];
+
+  if (!existingIds.includes(messageId)) {
+    existingIds.push(messageId);
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: rowKey,
+      step: "ui_daily_rem",
+      task_data: { messageIds: existingIds },
+      updated_at: new Date().toISOString(),
+    });
+  }
+}
+
+export async function getDailyReminderMessages(
+  chatId: string | number,
+  date: string
+): Promise<number[]> {
+  const rowKey = `${DAILY_REMINDER_PREFIX}${chatId}:${date}`;
+  const { data } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", rowKey)
+    .maybeSingle();
+
+  return Array.isArray(data?.task_data?.messageIds) ? data.task_data.messageIds : [];
+}
+
+export async function getStaleDailyReminderMessages(
+  chatId: string | number,
+  todayDate: string
+): Promise<{ rowKey: string; messageIds: number[] }[]> {
+  const prefix = `${DAILY_REMINDER_PREFIX}${chatId}:`;
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("chat_id, task_data")
+    .like("chat_id", `${prefix}%`);
+
+  if (error || !data) return [];
+
+  const results: { rowKey: string; messageIds: number[] }[] = [];
+  for (const row of data) {
+    if (row.chat_id !== `${prefix}${todayDate}`) {
+      const ids: number[] = Array.isArray(row.task_data?.messageIds)
+        ? row.task_data.messageIds
+        : [];
+      results.push({ rowKey: row.chat_id, messageIds: ids });
+    }
+  }
+  return results;
+}
+
+export async function clearDailyReminderMessages(
+  chatId: string | number,
+  date: string
+): Promise<void> {
+  const rowKey = `${DAILY_REMINDER_PREFIX}${chatId}:${date}`;
+  await supabase.from("wizard_sessions").delete().eq("chat_id", rowKey);
+}
+
+
 
