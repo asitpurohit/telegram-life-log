@@ -120,6 +120,7 @@ export interface WizardSession {
     | 'awaiting_daily_todo_carryover'
     | 'awaiting_project_todos_resolution'
     | 'awaiting_session_todo_pick'
+    | 'checkout_review'
     | 'awaiting_settings_window'
     | 'awaiting_settings_interval'
     | 'awaiting_settings_email';
@@ -155,6 +156,14 @@ export interface WizardSession {
     todoId?: string;
     pastTodoIds?: string[];
     transferTodoIds?: string[];
+    projectStatus?: 'completed' | 'in_progress';
+    todoStatus?: 'completed' | 'in_progress';
+    focus?: FocusMood;
+    totalToday?: number;
+    target?: number;
+    percent?: number;
+    durationSeconds?: number;
+    splitStr?: string;
   };
   updated_at?: string;
 }

@@ -96,7 +96,7 @@ import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS, PomodoroInfo } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
-import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings } from "@/lib/types";
+import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings, FocusMood } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 import { sendDailySummaryEmail } from "@/lib/dailyEmailSummary";
 import { clearIdleAlertCard } from "@/lib/idleGuardian";
@@ -140,7 +140,8 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("todo_time:") ||
     data.startsWith("daily_todo_") ||
     data.startsWith("pick_todo") ||
-    data.startsWith("todo_fin:")
+    data.startsWith("todo_fin:") ||
+    data.startsWith("checkout_")
   );
 }
 
@@ -837,6 +838,86 @@ const BACK_ONLY_KEYBOARD: InlineKeyboard = [
   [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
 ];
 
+function buildCheckoutViewText(data: WizardSession["task_data"]): string {
+  const projectLine = data.projectName ? `📦 Project: <b>${data.projectName}</b>\n` : "";
+  const todoLine = data.todoTitle ? `🎯 Task: <b>${data.todoTitle}</b>\n` : "";
+  const splitLine = data.splitStr ? `${data.splitStr}\n` : "";
+  const durStr = data.durationSeconds ? formatDuration(data.durationSeconds) : "0s";
+  const totalStr = formatTimerMinutes(data.totalToday || 0);
+  const targetStr = formatTimerMinutes(data.target || 60);
+  const pctStr = `${data.percent ?? 0}%`;
+
+  return (
+    `🎉 <b>${data.taskName || "Task"} Session Completed!</b>\n\n` +
+    projectLine +
+    todoLine +
+    `⏱️ This Session: <b>${durStr}</b>\n` +
+    `📊 Today's Total: <b>${totalStr} / ${targetStr}</b> (${pctStr} of daily goal)\n\n` +
+    `Saved to your log!\n` +
+    splitLine +
+    `\n<b>Review your session below:</b>`
+  );
+}
+
+function buildCheckoutKeyboard(data: WizardSession["task_data"]): InlineKeyboard {
+  const kb: InlineKeyboard = [];
+
+  // Sub-task row (only if todoId exists)
+  if (data.todoId) {
+    const isDone = data.todoStatus === "completed";
+    kb.push([
+      {
+        text: isDone ? "✅ Task Done" : "Task Done",
+        callback_data: "checkout_todo:done",
+      },
+      {
+        text: !isDone ? "✅ ⏳ In Progress" : "⏳ In Progress",
+        callback_data: "checkout_todo:prog",
+      },
+    ]);
+  }
+
+  // Project row (only if projectId exists)
+  if (data.projectId) {
+    const isDone = data.projectStatus === "completed";
+    kb.push([
+      {
+        text: isDone ? "✅ 🏁 Project Done" : "🏁 Project Done",
+        callback_data: "checkout_proj:done",
+      },
+      {
+        text: !isDone ? "✅ ⏳ Keep Open" : "⏳ Keep Open",
+        callback_data: "checkout_proj:prog",
+      },
+    ]);
+  }
+
+  // Focus row (default: casual)
+  const focus = data.focus || "casual";
+  kb.push([
+    {
+      text: focus === "focused" ? "✅ 🎯 Focused" : "🎯 Focused",
+      callback_data: "checkout_focus:focused",
+    },
+    {
+      text: focus === "casual" ? "✅ 😐 Casual" : "😐 Casual",
+      callback_data: "checkout_focus:casual",
+    },
+    {
+      text: focus === "distracted" ? "✅ 😵 Distracted" : "😵 Distracted",
+      callback_data: "checkout_focus:distracted",
+    },
+  ]);
+
+  // Actions row: Add Note + Done & Back to Tasks
+  kb.push([
+    { text: "📝 Add Session Note", callback_data: "checkout_note" },
+    { text: "📋 Done & Back to Tasks", callback_data: "checkout_finish" },
+  ]);
+
+  return kb;
+}
+
 // Diary mentions become note-only rows on the matching tasks.
 // value is always 0, so totals, counters and ticks are never affected.
 async function attachDiarySubjects(
@@ -1280,6 +1361,37 @@ async function buildTaskListButtons(
   return buttons;
 }
 
+async function renderTodayTaskList(chatId: string | number, messageId?: number): Promise<void> {
+  await clearWizardSession(chatId);
+  await setActiveTask(chatId, null);
+  await clearIdleAlertCard(chatId);
+  const tasks = await getActiveTasks();
+  if (tasks.length === 0) {
+    await sendTelegramMessage(
+      chatId,
+      "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
+    );
+    return;
+  }
+
+  const taskButtons = await buildTaskListButtons(tasks, true);
+  taskButtons.push([{ text: "📋 See All Tasks", callback_data: "menu_alltasks" }]);
+
+  if (taskButtons.length === 1) {
+    // Only the "See All Tasks" button exists
+    await respondUi(
+      chatId,
+      messageId,
+      "💤 <b>No tasks scheduled for today.</b>\n<i>Your other tasks are set for different days.</i>",
+      taskButtons
+    );
+  } else {
+    const { long: dayLong } = localWeekday();
+    const tasksText = `📋 <b>Today's Tasks</b> <i>(${dayLong})</i>:\nTap a task to log or start:`;
+    await respondUi(chatId, messageId, tasksText, taskButtons);
+  }
+}
+
 // =========================================================================
 // MAIN WEBHOOK HANDLER
 // =========================================================================
@@ -1439,11 +1551,164 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Checkout: Sub-task Toggle (Done / In Progress) ---
+      if (callbackData.startsWith("checkout_todo:")) {
+        const action = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        if (session && (session.step === "checkout_review" || session.step === "awaiting_session_note")) {
+          session.task_data.todoStatus = action === "done" ? "completed" : "in_progress";
+          if (session.task_data.todoId) {
+            await setProjectTodoDone(session.task_data.todoId, action === "done");
+          }
+          await saveWizardSession(chatId, session.step, session.task_data);
+          const text = buildCheckoutViewText(session.task_data);
+          const kb = buildCheckoutKeyboard(session.task_data);
+          await respondUi(chatId, messageId, text, kb);
+        } else {
+          await answerCallbackQuery(callbackQuery.id, "Session expired");
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Checkout: Project Status Toggle (Done / Keep Open) ---
+      if (callbackData.startsWith("checkout_proj:")) {
+        const action = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        if (session && (session.step === "checkout_review" || session.step === "awaiting_session_note")) {
+          session.task_data.projectStatus = action === "done" ? "completed" : "in_progress";
+          await saveWizardSession(chatId, session.step, session.task_data);
+          const text = buildCheckoutViewText(session.task_data);
+          const kb = buildCheckoutKeyboard(session.task_data);
+          await respondUi(chatId, messageId, text, kb);
+        } else {
+          await answerCallbackQuery(callbackQuery.id, "Session expired");
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Checkout: Focus Mood Toggle ---
+      if (callbackData.startsWith("checkout_focus:")) {
+        const val = callbackData.split(":")[1] as FocusMood;
+        const session = await getWizardSession(chatId);
+        if (session && (session.step === "checkout_review" || session.step === "awaiting_session_note")) {
+          session.task_data.focus = val;
+          if (session.task_data.sessionLogId) {
+            await updateLogFocus(session.task_data.sessionLogId, val);
+          }
+          await saveWizardSession(chatId, session.step, session.task_data);
+          const text = buildCheckoutViewText(session.task_data);
+          const kb = buildCheckoutKeyboard(session.task_data);
+          await respondUi(chatId, messageId, text, kb);
+        } else {
+          await answerCallbackQuery(callbackQuery.id, "Session expired");
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Checkout: Prompt for Session Note ---
+      if (callbackData === "checkout_note") {
+        const session = await getWizardSession(chatId);
+        if (session) {
+          await saveWizardSession(chatId, "awaiting_session_note", {
+            ...session.task_data,
+            promptMessageId: messageId,
+          });
+
+          const kb: InlineKeyboard = [
+            [{ text: "⏭️ Skip Note & Finish", callback_data: `skip_session_note:${session.task_data.sessionLogId}` }],
+            [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+          ];
+
+          await respondUi(
+            chatId,
+            messageId,
+            `📝 <b>What did you work on?</b>\n\n` +
+              `Send a quick message in chat (e.g. <i>"Read pages 20-35"</i>):\n\n` +
+              `<i>Or tap <b>Skip Note & Finish</b> to complete without a note.</i>`,
+            kb
+          );
+        } else {
+          await answerCallbackQuery(callbackQuery.id, "Session expired");
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Checkout: Done & Back to Tasks (1 Tap Finish) ---
+      if (callbackData === "checkout_finish") {
+        const session = await getWizardSession(chatId);
+        await clearWizardSession(chatId);
+
+        if (session) {
+          if (session.task_data.todoId) {
+            await setProjectTodoDone(session.task_data.todoId, session.task_data.todoStatus === "completed");
+          }
+          if (session.task_data.projectId && session.task_data.projectStatus === "completed") {
+            const projectId = session.task_data.projectId;
+            const project = await getProjectById(projectId);
+            await markProjectCompleted(projectId);
+            const totalMinutes = await getProjectTotalMinutes(projectId);
+            const name = project?.name || "Project";
+            const targetStr = project?.target_minutes
+              ? `\n🎯 <b>Estimated Goal:</b> ${formatTimerMinutes(project.target_minutes)}`
+              : "";
+            const descStr = project?.description
+              ? `\n📝 <b>Scope:</b> <i>${project.description}</i>`
+              : "";
+
+            await respondUi(
+              chatId,
+              messageId,
+              `🎉 <b>Project Completed: ${name}!</b>\n\n` +
+                `⏱️ <b>Total Time Logged:</b> ${formatTimerMinutes(totalMinutes)}` +
+                targetStr +
+                descStr +
+                `\n\n🏁 <i>Great work! Next time you start this task, you'll be prompted for a new project.</i>`,
+              [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+        }
+
+        await renderTodayTaskList(chatId, messageId);
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Skip Session Note Prompt ---
-      if (callbackData.startsWith("skip_session_note:")) {
+      if (callbackData.startsWith("skip_session_note:") || callbackData === "skip_session_note") {
         const logId = callbackData.split(":")[1];
         const session = await getWizardSession(chatId);
         await clearWizardSession(chatId);
+
+        if (session) {
+          if (session.task_data.todoId) {
+            await setProjectTodoDone(session.task_data.todoId, session.task_data.todoStatus === "completed");
+          }
+          if (session.task_data.projectId && session.task_data.projectStatus === "completed") {
+            const projectId = session.task_data.projectId;
+            const project = await getProjectById(projectId);
+            await markProjectCompleted(projectId);
+            const totalMinutes = await getProjectTotalMinutes(projectId);
+            const name = project?.name || "Project";
+            const targetStr = project?.target_minutes
+              ? `\n🎯 <b>Estimated Goal:</b> ${formatTimerMinutes(project.target_minutes)}`
+              : "";
+            const descStr = project?.description
+              ? `\n📝 <b>Scope:</b> <i>${project.description}</i>`
+              : "";
+
+            await respondUi(
+              chatId,
+              messageId,
+              `🎉 <b>Project Completed: ${name}!</b>\n\n` +
+                `⏱️ <b>Total Time Logged:</b> ${formatTimerMinutes(totalMinutes)}` +
+                targetStr +
+                descStr +
+                `\n\n🏁 <i>Great work! Next time you start this task, you'll be prompted for a new project.</i>`,
+              [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+        }
 
         let projectId = session?.task_data?.projectId;
         let projectName = session?.task_data?.projectName;
@@ -1456,7 +1721,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        if (projectId) {
+        if (projectId && !session?.task_data?.projectStatus) {
           const projectKb: InlineKeyboard = [
             [
               { text: "✅ Yes, Completed", callback_data: `project_complete:${projectId}` },
@@ -1475,12 +1740,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        await respondUi(
-          chatId,
-          messageId,
-          `✅ <b>Session focus saved!</b>`,
-          [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
-        );
+        await renderTodayTaskList(chatId, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -2361,34 +2621,7 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Show Task List (Today Only) ---
       if (callbackData === "menu_tasks") {
-        await clearWizardSession(chatId);
-        await setActiveTask(chatId, null);
-        await clearIdleAlertCard(chatId);
-        const tasks = await getActiveTasks();
-        if (tasks.length === 0) {
-          await sendTelegramMessage(
-            chatId,
-            "📋 <b>No tasks created yet!</b>\nType /addtask to create your first routine."
-          );
-          return NextResponse.json({ ok: true });
-        }
-
-        const taskButtons = await buildTaskListButtons(tasks, true);
-        taskButtons.push([{ text: "📋 See All Tasks", callback_data: "menu_alltasks" }]);
-
-        if (taskButtons.length === 1) {
-          // Only the "See All Tasks" button exists
-          await respondUi(
-            chatId,
-            messageId,
-            "💤 <b>No tasks scheduled for today.</b>\n<i>Your other tasks are set for different days.</i>",
-            taskButtons
-          );
-        } else {
-          const { long: dayLong } = localWeekday();
-          const tasksText = `📋 <b>Today's Tasks</b> <i>(${dayLong})</i>:\nTap a task to log or start:`;
-          await respondUi(chatId, messageId, tasksText, taskButtons);
-        }
+        await renderTodayTaskList(chatId, messageId);
         return NextResponse.json({ ok: true });
       }
 
@@ -4017,13 +4250,49 @@ export async function POST(req: NextRequest) {
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
-        // Sessions under 5 minutes skip the review unless it's a project session (and Sleep never asks for focus)
-        const showReview = !!result.logId && (result.durationSeconds >= 300 || !!result.projectId) && !isSystemTask(task);
-        let stopKb: InlineKeyboard = showReview
-          ? buildReviewKeyboard(result.logId as string)
-          : BACK_ONLY_KEYBOARD;
+        // Sessions under 5 minutes skip the review unless it's a project session or to-do session (and Sleep never asks for focus)
+        const showReview = !!result.logId && (result.durationSeconds >= 300 || !!result.projectId || !!result.todoId) && !isSystemTask(task);
 
-        // When the stop was tapped from an "open task" warning, offer the task again
+        if (showReview && result.logId) {
+          // Pre-save default focus (casual) so log has valid mood even if user finishes immediately
+          await updateLogFocus(result.logId, "casual");
+
+          const taskData: WizardSession["task_data"] = {
+            sessionLogId: result.logId,
+            promptMessageId: messageId,
+            projectId: result.projectId || undefined,
+            projectName: result.projectName || undefined,
+            todoId: result.todoId || undefined,
+            todoTitle: result.todoTitle || undefined,
+            taskName: result.taskName,
+            focus: "casual",
+            todoStatus: "in_progress",
+            projectStatus: "in_progress",
+            durationSeconds: result.durationSeconds,
+            totalToday,
+            target,
+            percent,
+            splitStr: formatSplitSummary(result.split),
+          };
+
+          await saveWizardSession(chatId, "checkout_review", taskData);
+
+          const text = buildCheckoutViewText(taskData);
+          let stopKb = buildCheckoutKeyboard(taskData);
+
+          if (callbackData.startsWith("stop_then_open:")) {
+            const openTaskId = callbackData.split(":")[1];
+            const openTask = await getTaskById(openTaskId);
+            if (openTask) {
+              stopKb = [...stopKb, [{ text: `📂 Open ${openTask.name}`, callback_data: `open_task:${openTask.id}` }]];
+            }
+          }
+
+          await respondUi(chatId, messageId, text, stopKb);
+          return NextResponse.json({ ok: true });
+        }
+
+        let stopKb: InlineKeyboard = BACK_ONLY_KEYBOARD;
         if (callbackData.startsWith("stop_then_open:")) {
           const openTaskId = callbackData.split(":")[1];
           const openTask = await getTaskById(openTaskId);
@@ -4032,48 +4301,16 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // If a specific sub-task was being worked on, ask if it was completed
-        if (result.todoId && result.todoTitle) {
-          await saveWizardSession(chatId, "awaiting_session_note", {
-            sessionLogId: result.logId || undefined,
-            promptMessageId: messageId,
-            projectId: result.projectId || undefined,
-            projectName: result.projectName || undefined,
-            todoId: result.todoId,
-            todoTitle: result.todoTitle,
-            taskName: result.taskName,
-          });
-
-          const todoKb: InlineKeyboard = [
-            [
-              { text: "✅ Yes, Completed", callback_data: `todo_fin:y:${result.todoId}` },
-              { text: "⏳ No, In Progress", callback_data: `todo_fin:n:${result.todoId}` },
-            ],
-          ];
-
-          const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
-          const text =
-            `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
-            projectLine +
-            `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
-            `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
-            `Saved to your log!` +
-            formatSplitSummary(result.split) +
-            `\n\n🎯 <b>Did you complete: "${result.todoTitle}"?</b>`;
-
-          await respondUi(chatId, messageId, text, todoKb);
-          return NextResponse.json({ ok: true });
-        }
-
         const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
+        const todoLine = result.todoTitle ? `🎯 Task: <b>${result.todoTitle}</b>\n` : "";
         const text =
           `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
           projectLine +
+          todoLine +
           `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
           `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
           `Saved to your log!` +
-          formatSplitSummary(result.split) +
-          (showReview ? FOCUS_QUESTION : "");
+          formatSplitSummary(result.split);
 
         await respondUi(chatId, messageId, text, stopKb);
         return NextResponse.json({ ok: true });
@@ -4627,23 +4864,34 @@ export async function POST(req: NextRequest) {
       // 3. CONVERSATIONAL WIZARD STATE HANDLER
       // =======================================================================
       if (activeSession) {
-        // --- State: User Answering Session Note Prompt ---
-        if (activeSession.step === "awaiting_session_note") {
+        // --- State: User Answering Session Note Prompt OR Typing Note on Checkout Card ---
+        if (activeSession.step === "awaiting_session_note" || activeSession.step === "checkout_review") {
           const logId = activeSession.task_data.sessionLogId;
           const promptMessageId = activeSession.task_data.promptMessageId;
           const projectId = activeSession.task_data.projectId;
           const projectName = activeSession.task_data.projectName;
-          await clearWizardSession(chatId);
 
-          if (promptMessageId) {
-            try {
-              await removeInlineKeyboard(chatId, promptMessageId);
-            } catch {}
+          // Delete user's typed message to keep chat clean
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
           }
 
           if (logId) {
             await updateLogSessionNote(logId, text);
           }
+
+          // Finalize todo status
+          if (activeSession.task_data.todoId) {
+            await setProjectTodoDone(activeSession.task_data.todoId, activeSession.task_data.todoStatus === "completed");
+          }
+
+          // Finalize project status
+          const isProjectCompleted = activeSession.task_data.projectStatus === "completed" && !!projectId;
+          if (isProjectCompleted && projectId) {
+            await markProjectCompleted(projectId);
+          }
+
+          await clearWizardSession(chatId);
 
           const sanitized = text
             .trim()
@@ -4651,31 +4899,43 @@ export async function POST(req: NextRequest) {
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
 
-          if (projectId) {
-            const kb: InlineKeyboard = [
-              [
-                { text: "✅ Yes, Completed", callback_data: `project_complete:${projectId}` },
-                { text: "⏳ No, In Progress", callback_data: `project_keep_open:${projectId}` },
-              ],
-              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-            ];
-            await sendUiMessage(
-              chatId,
-              `✅ <b>Note saved to session!</b>\n\n` +
-                `📝 <i>"${sanitized}"</i>\n\n` +
-                `🏁 <b>Project: "${projectName || "Active Project"}"</b>\n` +
-                `Did you complete this project?`,
-              kb
-            );
+          if (isProjectCompleted && projectId) {
+            const project = await getProjectById(projectId);
+            const totalMinutes = await getProjectTotalMinutes(projectId);
+            const name = project?.name || projectName || "Project";
+            const targetStr = project?.target_minutes
+              ? `\n🎯 <b>Estimated Goal:</b> ${formatTimerMinutes(project.target_minutes)}`
+              : "";
+            const descStr = project?.description
+              ? `\n📝 <b>Scope:</b> <i>${project.description}</i>`
+              : "";
+
+            const finalText =
+              `✅ <b>Note saved to session!</b>\n` +
+              `📝 <i>"${sanitized}"</i>\n\n` +
+              `🎉 <b>Project Completed: ${name}!</b>\n\n` +
+              `⏱️ <b>Total Time Logged:</b> ${formatTimerMinutes(totalMinutes)}` +
+              targetStr +
+              descStr +
+              `\n\n🏁 <i>Great work! Next time you start this task, you'll be prompted for a new project.</i>`;
+
+            if (promptMessageId) {
+              await respondUi(chatId, promptMessageId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
+            } else {
+              await sendUiMessage(chatId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
+            }
             return NextResponse.json({ ok: true });
           }
 
-          await sendUiMessage(
-            chatId,
+          const finalText =
             `✅ <b>Note saved to session!</b>\n\n` +
-              `📝 <i>"${sanitized}"</i>`,
-            [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]
-          );
+            `📝 <i>"${sanitized}"</i>`;
+
+          if (promptMessageId) {
+            await respondUi(chatId, promptMessageId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
+          } else {
+            await sendUiMessage(chatId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
+          }
           return NextResponse.json({ ok: true });
         }
 
