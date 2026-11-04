@@ -2895,8 +2895,13 @@ export async function POST(req: NextRequest) {
         const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n` : "";
         const listText = todos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
 
+        const startLabel =
+          todos.length === 1
+            ? `▶️ Start Timer (1 task)`
+            : `▶️ Done / Start Timer (${todos.length} tasks)`;
+
         const kb: InlineKeyboard = [
-          [{ text: `▶️ Done / Start Timer (${todos.length} task${todos.length > 1 ? "s" : ""})`, callback_data: "daily_todo_done" }],
+          [{ text: startLabel, callback_data: "daily_todo_done" }],
           [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
         ];
 
@@ -2988,8 +2993,68 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Daily To-Do Done (Show Session To-Do Pick) ---
+      // --- Button: Daily To-Do Done (Start Timer Directly or Show Pick) ---
       if (callbackData === "daily_todo_done") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+        const today = localDateString();
+        const todos = projectId
+          ? await getDailyTodosForProject(projectId, today)
+          : await getDailyTodosForTask(taskId, today);
+        const pending = todos.filter((t) => !t.is_done);
+
+        await clearWizardSession(chatId);
+
+        // If exactly 1 pending task, start timer directly with that task (no extra questions!)
+        if (pending.length === 1) {
+          await doStartActiveTimer(
+            chatId,
+            messageId,
+            taskId,
+            taskName || "Study/Work",
+            projectId || null,
+            projectName || null,
+            pending[0].id,
+            pending[0].title
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // If no pending tasks (or all completed), start general timer directly
+        if (pending.length === 0) {
+          await doStartActiveTimer(
+            chatId,
+            messageId,
+            taskId,
+            taskName || "Study/Work",
+            projectId || null,
+            projectName || null,
+            null,
+            null
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // Multiple pending tasks (>= 2): ask which one to start with
+        await showSessionTodoPick(
+          chatId,
+          messageId,
+          taskId,
+          taskName || "Study/Work",
+          projectId || null,
+          projectName || null,
+          todos
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Back to Session To-Do Pick Menu ---
+      if (callbackData === "daily_todo_back") {
         const session = await getWizardSession(chatId);
         if (!session || !session.task_data.taskId) {
           await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
@@ -3050,7 +3115,7 @@ export async function POST(req: NextRequest) {
 
         const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
         const kb: InlineKeyboard = [
-          [{ text: "🔙 Back to Task List", callback_data: "daily_todo_done" }],
+          [{ text: "🔙 Back to Task List", callback_data: "daily_todo_back" }],
         ];
 
         await respondUi(
@@ -4021,8 +4086,13 @@ export async function POST(req: NextRequest) {
               ? `<i>(Added ${newItems.length} tasks)</i>\n\n`
               : `<i>(Added: ${newItems[0]})</i>\n\n`;
 
+          const startLabel =
+            todos.length === 1
+              ? `▶️ Start Timer (1 task)`
+              : `▶️ Done / Start Timer (${todos.length} tasks)`;
+
           const kb: InlineKeyboard = [
-            [{ text: `▶️ Done / Start Timer (${todos.length} task${todos.length > 1 ? "s" : ""})`, callback_data: "daily_todo_done" }],
+            [{ text: startLabel, callback_data: "daily_todo_done" }],
             [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
           ];
 
@@ -4032,11 +4102,16 @@ export async function POST(req: NextRequest) {
             } catch {}
           }
 
+          const promptHint =
+            todos.length === 1
+              ? `Send another task to add, or tap <b>Start Timer</b> below:`
+              : `Send more tasks to add (one by one or comma-separated), or tap <b>Done / Start Timer</b> below:`;
+
           const sentId = await sendUiMessage(
             chatId,
             `${projectLine}📋 <b>Today's Plan:</b>\n${addedBadge}` +
               `${listText}\n\n` +
-              `Send more tasks to add (one by one or comma-separated), or tap <b>Done / Start Timer</b> below:`,
+              promptHint,
             kb
           );
 
