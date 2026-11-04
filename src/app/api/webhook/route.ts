@@ -4480,8 +4480,7 @@ export async function POST(req: NextRequest) {
             `• <code>/email</code> — Yesterday's summary (default)\n` +
             `• <code>/email today</code> — Today's summary so far\n` +
             `• <code>/email 2026-11-02</code> — Specific date (YYYY-MM-DD)\n` +
-            `• <code>/email 3 days ago</code> — By days in the past\n` +
-            `• <code>/email 5</code> — 5 days ago\n\n` +
+            `• <code>/email 3 days ago</code> — By days in the past\n\n` +
             `<i>Change your recipient email anytime in /settings!</i>`
           );
           return NextResponse.json({ ok: true });
