@@ -556,7 +556,10 @@ export async function getDailyTodosForProject(projectId: string, date: string): 
     .eq("todo_date", date)
     .order("created_at", { ascending: true });
 
-  if (error || !data) return [];
+  if (error || !data) {
+    if (error) console.error("Error fetching daily todos for project:", JSON.stringify(error));
+    return [];
+  }
   return data;
 }
 
@@ -568,7 +571,10 @@ export async function getDailyTodosForTask(taskId: string, date: string): Promis
     .eq("todo_date", date)
     .order("created_at", { ascending: true });
 
-  if (error || !data) return [];
+  if (error || !data) {
+    if (error) console.error("Error fetching daily todos for task:", JSON.stringify(error));
+    return [];
+  }
   return data;
 }
 
@@ -592,7 +598,7 @@ export async function addProjectTodo(
     .single();
 
   if (error) {
-    console.error("Error adding project todo:", error);
+    console.error("Error adding project todo:", JSON.stringify(error));
     return null;
   }
   return data;

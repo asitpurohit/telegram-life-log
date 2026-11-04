@@ -4066,16 +4066,35 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ ok: true });
           }
 
-          // Add each to-do
+          // Add each to-do and verify insertion
+          const addedTodos: ProjectTodo[] = [];
           for (const item of newItems) {
-            await addProjectTodo(taskId, projectId, item);
+            const saved = await addProjectTodo(taskId, projectId, item);
+            if (saved) {
+              addedTodos.push(saved);
+            }
+          }
+
+          if (addedTodos.length === 0) {
+            await sendTelegramMessage(
+              chatId,
+              "⚠️ <b>Database Error:</b> Could not save tasks to Supabase.\n\n" +
+                "Row Level Security (RLS) is blocking access on <code>project_todos</code>.\n\n" +
+                "👉 Please run this in your Supabase SQL Editor:\n" +
+                "<code>ALTER TABLE project_todos DISABLE ROW LEVEL SECURITY;</code>"
+            );
+            return NextResponse.json({ ok: true });
           }
 
           // Get all to-dos added today
           const today = localDateString();
-          const todos = projectId
+          let todos = projectId
             ? await getDailyTodosForProject(projectId, today)
             : await getDailyTodosForTask(taskId, today);
+
+          if (todos.length === 0 && addedTodos.length > 0) {
+            todos = addedTodos;
+          }
 
           const listText = todos
             .map((t, idx) => `${idx + 1}. ${t.title}`)
