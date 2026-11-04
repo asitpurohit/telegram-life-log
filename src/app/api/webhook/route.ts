@@ -85,13 +85,14 @@ import {
   findMatchingTopic,
   extractDoubtTopic,
   extractDoubtQuestion,
+  updateActiveTimer,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
-import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
+import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS, PomodoroInfo } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
-import { TaskType, Task, WizardSession, Todo, ProjectTodo } from "@/lib/types";
+import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 
 export const dynamic = "force-dynamic";
@@ -110,7 +111,9 @@ function isTimerCallback(data: string): boolean {
     data === "stop_active_timer" ||
     data.startsWith("timer_resume:") ||
     data.startsWith("timer_refresh:") ||
-    data.startsWith("timer_stop:")
+    data.startsWith("timer_stop:") ||
+    data === "pomodoro_skip_break" ||
+    data === "pomodoro_next_round"
   );
 }
 
@@ -391,17 +394,22 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
       }
     }
 
+    const pomodoroLine = task.is_pomodoro
+      ? `\n🍅 Pomodoro: <b>${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break</b>`
+      : "";
+
     return {
       text:
         `${taskEmoji(task)} <b>${task.name}</b>\n` +
         `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
         `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
         projectLine +
-        `📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n` +
+        pomodoroLine +
+        `\n📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n` +
         todosLine +
         `\nStart the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
-        [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
+        [{ text: task.is_pomodoro ? `🍅 Start Pomodoro (${task.pomodoro_work_mins || 25}m/${task.pomodoro_break_mins || 5}m)` : `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
         ...(!task.is_system ? [[{ text: "❓ View Doubts", callback_data: `doubt_topics:${task.id}` }]] : []),
         [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
       ],
@@ -498,13 +506,32 @@ function buildTaskSummary(task: Task): string {
     task.type === "timer" && !isSystemTask(task)
       ? `\n📦 Project-based: <b>${task.is_project_based ? "Yes" : "No"}</b>`
       : "";
+  const pomodoroLine =
+    task.type === "timer" && !isSystemTask(task)
+      ? task.is_pomodoro
+        ? `\n🍅 Pomodoro: <b>ON (${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break)</b>`
+        : `\n🍅 Pomodoro: <b>OFF</b>`
+      : "";
   return (
     `${typeIcon} <b>${task.name}</b>\n` +
     `🎯 Goal: <b>${formatGoalDisplay(task.target_value, task.unit)}</b>\n` +
     `⏰ Reminder: <b>${formatReminderTime(task.reminder_time)}</b>\n` +
     `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>` +
-    projectLine
+    projectLine +
+    pomodoroLine
   );
+}
+
+function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | null {
+  if (!active || !active.is_pomodoro) return null;
+  return {
+    isPomodoro: true,
+    workMins: active.pomodoro_work_mins || 25,
+    breakMins: active.pomodoro_break_mins || 5,
+    round: active.pomodoro_round || 1,
+    phase: (active.pomodoro_phase as "work" | "break") || "work",
+    phaseStartedAtIso: active.phase_started_at || active.started_at,
+  };
 }
 
 // Start active timer with optional project and optional sub-task
@@ -528,7 +555,8 @@ async function doStartActiveTimer(
   if (projectId) {
     progressStr = await getTimerProjectProgress(projectId);
   }
-  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle);
+  const pomodoroInfo = extractPomodoroInfo(active);
+  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo);
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
   } else {
@@ -2407,6 +2435,9 @@ export async function POST(req: NextRequest) {
           firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${task.id}:goal` });
         }
         const isTimer = task.type === "timer" && !isSystemTask(task);
+        const pomodoroBtnText = task.is_pomodoro
+          ? `🍅 Pomodoro: ON (${task.pomodoro_work_mins || 25}m / ${task.pomodoro_break_mins || 5}m)`
+          : `🍅 Pomodoro: OFF`;
         const editKb: InlineKeyboard = [
           firstRow,
           [
@@ -2414,10 +2445,16 @@ export async function POST(req: NextRequest) {
             { text: "📅 Days", callback_data: `edit_field:${task.id}:days` },
           ],
           ...(isTimer
-            ? [[{
-                text: task.is_project_based ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
-                callback_data: `toggle_project_based:${task.id}`,
-              }]]
+            ? [
+                [{
+                  text: task.is_project_based ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
+                  callback_data: `toggle_project_based:${task.id}`,
+                }],
+                [{
+                  text: pomodoroBtnText,
+                  callback_data: `menu_pomodoro:${task.id}`,
+                }],
+              ]
             : []),
           [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
         ];
@@ -2450,16 +2487,28 @@ export async function POST(req: NextRequest) {
         if (updatedTask.type !== "tick") {
           firstRow.push({ text: "🎯 Goal", callback_data: `edit_field:${updatedTask.id}:goal` });
         }
+        const isTimer = updatedTask.type === "timer" && !isSystemTask(updatedTask);
+        const pomodoroBtnText = updatedTask.is_pomodoro
+          ? `🍅 Pomodoro: ON (${updatedTask.pomodoro_work_mins || 25}m / ${updatedTask.pomodoro_break_mins || 5}m)`
+          : `🍅 Pomodoro: OFF`;
         const editKb: InlineKeyboard = [
           firstRow,
           [
             { text: "⏰ Reminder", callback_data: `edit_field:${updatedTask.id}:reminder` },
             { text: "📅 Days", callback_data: `edit_field:${updatedTask.id}:days` },
           ],
-          [{
-            text: newState ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
-            callback_data: `toggle_project_based:${updatedTask.id}`,
-          }],
+          ...(isTimer
+            ? [
+                [{
+                  text: newState ? "📦 Project Mode: ON (Tap to Disable)" : "📦 Project Mode: OFF (Tap to Enable)",
+                  callback_data: `toggle_project_based:${updatedTask.id}`,
+                }],
+                [{
+                  text: pomodoroBtnText,
+                  callback_data: `menu_pomodoro:${updatedTask.id}`,
+                }],
+              ]
+            : []),
           [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
         ];
 
@@ -2470,6 +2519,113 @@ export async function POST(req: NextRequest) {
           `What else would you like to change?`;
 
         await respondUi(chatId, messageId, text, editKb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Pomodoro Settings Menu ---
+      if (callbackData.startsWith("menu_pomodoro:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const statusLine = task.is_pomodoro
+          ? `✅ <b>Status: ON</b> (${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break)`
+          : `⚪ <b>Status: OFF</b> (Normal continuous stopwatch)`;
+
+        const text =
+          `🍅 <b>Pomodoro Settings for "${task.name}"</b>\n\n` +
+          `${statusLine}\n\n` +
+          `When enabled, the timer will automatically:\n` +
+          `• Count down your focus session\n` +
+          `• Auto-pause and chime when focus ends\n` +
+          `• Guide you through a restful break (excluded from study time)\n` +
+          `• Sound an alarm when break ends\n\n` +
+          `Choose an interval preset or toggle:`;
+
+        const kb: InlineKeyboard = [
+          [
+            { text: "🍅 25m Focus / 5m Break", callback_data: `set_pomodoro:${task.id}:25:5` },
+          ],
+          [
+            { text: "🍅 50m Focus / 10m Break", callback_data: `set_pomodoro:${task.id}:50:10` },
+          ],
+          [
+            { text: "✏️ Custom Intervals", callback_data: `set_pomodoro:${task.id}:custom` },
+          ],
+          ...(task.is_pomodoro
+            ? [[{ text: "❌ Turn OFF Pomodoro", callback_data: `set_pomodoro:${task.id}:off` }]]
+            : [[{ text: "✅ Turn ON (25m / 5m)", callback_data: `set_pomodoro:${task.id}:25:5` }]]),
+          [{ text: "↩️ Back to Edit Task", callback_data: `edit_task:${task.id}` }],
+        ];
+
+        await respondUi(chatId, messageId, text, kb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Apply Pomodoro Preset / Toggle ---
+      if (callbackData.startsWith("set_pomodoro:")) {
+        const parts = callbackData.split(":");
+        const taskId = parts[1];
+        const action = parts[2];
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        if (action === "off") {
+          await updateTask(taskId, { is_pomodoro: false });
+          await respondUi(
+            chatId,
+            messageId,
+            `🍅 <b>Pomodoro Mode Disabled for "${task.name}"</b>\n\n` +
+              `It will now run as a normal continuous stopwatch.`,
+            [[{ text: "↩️ Back to Edit Task", callback_data: `edit_task:${taskId}` }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        if (action === "custom") {
+          await saveWizardSession(chatId, "awaiting_edit_pomodoro_work", {
+            taskId,
+            taskName: task.name,
+            promptMessageId: messageId,
+          });
+          await respondUi(
+            chatId,
+            messageId,
+            `🍅 <b>Custom Pomodoro for "${task.name}"</b>\n\n` +
+              `How many minutes of focus work per round?\n` +
+              `<i>(e.g., 20, 25, 30, 45, 60)</i>`,
+            [[{ text: "❌ Cancel", callback_data: `menu_pomodoro:${taskId}` }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const workMins = parseInt(parts[2], 10) || 25;
+        const breakMins = parseInt(parts[3], 10) || 5;
+
+        await updateTask(taskId, {
+          is_pomodoro: true,
+          pomodoro_work_mins: workMins,
+          pomodoro_break_mins: breakMins,
+        });
+
+        await respondUi(
+          chatId,
+          messageId,
+          `🍅 <b>Pomodoro Enabled for "${task.name}"!</b>\n\n` +
+            `🎯 Focus: <b>${workMins} minutes</b>\n` +
+            `☕ Break: <b>${breakMins} minutes</b>\n\n` +
+            `Whenever you start this task, it will run in Pomodoro mode automatically.`,
+          [
+            [{ text: "⚙️ Pomodoro Settings", callback_data: `menu_pomodoro:${taskId}` }],
+            [{ text: "↩️ Back to Edit Task", callback_data: `edit_task:${taskId}` }],
+          ]
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -3325,7 +3481,8 @@ export async function POST(req: NextRequest) {
         await clearNudgeState(chatId);
 
         const progressStr = await getTimerProjectProgress(active.project_id);
-        const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds, active.project_name, progressStr);
+        const pomodoroInfo = extractPomodoroInfo(active);
+        const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds, active.project_name, progressStr, active.todo_title, pomodoroInfo);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -3347,10 +3504,20 @@ export async function POST(req: NextRequest) {
         const pausedAt = pause.pausedAt ?? fallbackPausedAt;
 
         let pausedSeconds = pause.pausedSeconds;
+        let pauseDurationMs = 0;
         if (pausedAt > 0) {
-          pausedSeconds += Math.max(0, Math.round((Date.now() - pausedAt) / 1000));
+          pauseDurationMs = Math.max(0, Date.now() - pausedAt);
+          pausedSeconds += Math.round(pauseDurationMs / 1000);
         }
         await setPauseState(chatId, { pausedAt: null, pausedSeconds });
+
+        // If in Pomodoro work phase, shift phase_started_at forward by pause duration
+        if (active.is_pomodoro && active.pomodoro_phase === "work" && pauseDurationMs > 0 && active.phase_started_at) {
+          const newPhaseStartMs = new Date(active.phase_started_at).getTime() + pauseDurationMs;
+          const newPhaseStartedAtIso = new Date(newPhaseStartMs).toISOString();
+          await updateActiveTimer(chatId, { phase_started_at: newPhaseStartedAtIso });
+          active.phase_started_at = newPhaseStartedAtIso;
+        }
 
         // Nudge interval restarts from the resume moment
         const nudge = await getNudgeState(chatId);
@@ -3360,7 +3527,8 @@ export async function POST(req: NextRequest) {
         await setNudgeState(chatId, { messageId: null, nextNudgeAt: Date.now() + NUDGE_INTERVAL_MS });
 
         const progressStr = await getTimerProjectProgress(active.project_id);
-        const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds, active.project_name, progressStr);
+        const pomodoroInfo = extractPomodoroInfo(active);
+        const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds, active.project_name, progressStr, active.todo_title, pomodoroInfo);
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
@@ -3380,13 +3548,16 @@ export async function POST(req: NextRequest) {
         const pause = await getPauseState(chatId);
         const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
         const progressStr = await getTimerProjectProgress(active.project_id);
+        const pomodoroInfo = extractPomodoroInfo(active);
         const view = buildTimerView(
           active.task_name,
           active.started_at,
           pause.pausedAt ?? fallbackPausedAt,
           pause.pausedSeconds,
           active.project_name,
-          progressStr
+          progressStr,
+          active.todo_title,
+          pomodoroInfo
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -3397,6 +3568,108 @@ export async function POST(req: NextRequest) {
           await setNudgeState(chatId, { messageId: null, nextNudgeAt: nudge.nextNudgeAt });
         }
 
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Pomodoro: Skip Break & Start Next Round ---
+      if (callbackData === "pomodoro_skip_break") {
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pause = await getPauseState(chatId);
+        const now = Date.now();
+        const phaseStartMs = new Date(active.phase_started_at || active.started_at).getTime();
+        const breakSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+        const newPausedSeconds = pause.pausedSeconds + breakSec;
+
+        const nextRound = (active.pomodoro_round || 1) + 1;
+        const nowIso = new Date(now).toISOString();
+
+        await setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds });
+        await updateActiveTimer(chatId, {
+          pomodoro_phase: "work",
+          pomodoro_round: nextRound,
+          phase_started_at: nowIso,
+        });
+
+        const progressStr = await getTimerProjectProgress(active.project_id);
+        const pomodoroInfo: PomodoroInfo = {
+          isPomodoro: true,
+          workMins: active.pomodoro_work_mins || 25,
+          breakMins: active.pomodoro_break_mins || 5,
+          round: nextRound,
+          phase: "work",
+          phaseStartedAtIso: nowIso,
+        };
+
+        const view = buildTimerView(
+          active.task_name,
+          active.started_at,
+          0,
+          newPausedSeconds,
+          active.project_name,
+          progressStr,
+          active.todo_title,
+          pomodoroInfo
+        );
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Pomodoro: Start Next Round (from break alarm) ---
+      if (callbackData === "pomodoro_next_round") {
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pause = await getPauseState(chatId);
+        const now = Date.now();
+
+        let newPausedSeconds = pause.pausedSeconds;
+        if (pause.pausedAt && pause.pausedAt > 0) {
+          const waitSec = Math.max(0, Math.floor((now - pause.pausedAt) / 1000));
+          newPausedSeconds += waitSec;
+        }
+
+        const nowIso = new Date(now).toISOString();
+        await setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds });
+        await updateActiveTimer(chatId, {
+          pomodoro_phase: "work",
+          phase_started_at: nowIso,
+        });
+
+        const progressStr = await getTimerProjectProgress(active.project_id);
+        const pomodoroInfo: PomodoroInfo = {
+          isPomodoro: true,
+          workMins: active.pomodoro_work_mins || 25,
+          breakMins: active.pomodoro_break_mins || 5,
+          round: active.pomodoro_round || 1,
+          phase: "work",
+          phaseStartedAtIso: nowIso,
+        };
+
+        const view = buildTimerView(
+          active.task_name,
+          active.started_at,
+          0,
+          newPausedSeconds,
+          active.project_name,
+          progressStr,
+          active.todo_title,
+          pomodoroInfo
+        );
+        await respondUi(chatId, messageId, view.text, view.keyboard);
         if (messageId) {
           await trackTimerMessage(chatId, messageId);
         }
@@ -3615,13 +3888,16 @@ export async function POST(req: NextRequest) {
         if (runningTimer) {
           const pause = await getPauseState(chatId);
           const progressStr = await getTimerProjectProgress(runningTimer.project_id);
+          const pomodoroInfo = extractPomodoroInfo(runningTimer);
           const view = buildTimerView(
             runningTimer.task_name,
             runningTimer.started_at,
             pause.pausedAt ?? 0,
             pause.pausedSeconds,
             runningTimer.project_name,
-            progressStr
+            progressStr,
+            runningTimer.todo_title,
+            pomodoroInfo
           );
 
           const sentMessageId = await sendUiMessage(
@@ -3894,13 +4170,16 @@ export async function POST(req: NextRequest) {
         if (active) {
           const pause = await getPauseState(chatId);
           const progressStr = await getTimerProjectProgress(active.project_id);
+          const pomodoroInfo = extractPomodoroInfo(active);
           const view = buildTimerView(
             active.task_name,
             active.started_at,
             pause.pausedAt ?? 0,
             pause.pausedSeconds,
             active.project_name,
-            progressStr
+            progressStr,
+            active.todo_title,
+            pomodoroInfo
           );
           const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
           if (sentId) {
@@ -4523,6 +4802,81 @@ export async function POST(req: NextRequest) {
           await sendUiMessage(
             chatId,
             `✅ <b>Task Updated!</b>\n\n${updated ? buildTaskSummary(updated) : ""}`
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Custom Pomodoro Focus Minutes ---
+        if (activeSession.step === "awaiting_edit_pomodoro_work") {
+          const rawNum = parseInt(text.trim(), 10);
+          if (isNaN(rawNum) || rawNum <= 0 || rawNum > 240) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_edit_pomodoro_work",
+              activeSession.task_data,
+              "⚠️ Please enter a valid number of focus minutes between 1 and 240 (e.g. 25, 45, 60):",
+              [[{ text: "❌ Cancel", callback_data: `menu_pomodoro:${activeSession.task_data.taskId}` }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const nextData = {
+            ...activeSession.task_data,
+            pomodoroWorkMins: rawNum,
+            pomodoro_work_mins: rawNum,
+          };
+          await sendWizardPrompt(
+            chatId,
+            "awaiting_edit_pomodoro_break",
+            nextData,
+            `🎯 Focus set to <b>${rawNum} minutes</b>!\n\n` +
+              `Now, how many minutes of break between rounds?\n` +
+              `<i>(e.g., 5, 10, 15)</i>`,
+            [[{ text: "❌ Cancel", callback_data: `menu_pomodoro:${activeSession.task_data.taskId}` }]]
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Custom Pomodoro Break Minutes ---
+        if (activeSession.step === "awaiting_edit_pomodoro_break") {
+          const rawNum = parseInt(text.trim(), 10);
+          if (isNaN(rawNum) || rawNum <= 0 || rawNum > 60) {
+            await sendWizardPrompt(
+              chatId,
+              "awaiting_edit_pomodoro_break",
+              activeSession.task_data,
+              "⚠️ Please enter a valid number of break minutes between 1 and 60 (e.g. 5, 10):",
+              [[{ text: "❌ Cancel", callback_data: `menu_pomodoro:${activeSession.task_data.taskId}` }]]
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          const taskId = activeSession.task_data.taskId;
+          const workMins = activeSession.task_data.pomodoroWorkMins || activeSession.task_data.pomodoro_work_mins || 25;
+          const breakMins = rawNum;
+
+          if (taskId) {
+            await updateTask(taskId, {
+              is_pomodoro: true,
+              pomodoro_work_mins: workMins,
+              pomodoro_break_mins: breakMins,
+            });
+          }
+
+          await clearWizardSession(chatId);
+          const task = taskId ? await getTaskById(taskId) : null;
+          const taskName = task?.name || activeSession.task_data.taskName || "Task";
+
+          await sendUiMessage(
+            chatId,
+            `🍅 <b>Pomodoro Configured for "${taskName}"!</b>\n\n` +
+              `🎯 Focus: <b>${workMins} minutes</b>\n` +
+              `☕ Break: <b>${breakMins} minutes</b>\n\n` +
+              `Whenever you start this task, it will automatically run with these intervals.`,
+            [
+              [{ text: `▶️ Start ${taskName}`, callback_data: `start_task:${taskId}` }],
+              [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
+            ]
           );
           return NextResponse.json({ ok: true });
         }

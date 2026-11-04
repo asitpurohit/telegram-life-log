@@ -236,6 +236,8 @@ export async function startActiveTimer(
   todoTitle?: string | null
 ): Promise<ActiveTimer | null> {
   const startedAt = new Date().toISOString();
+  const task = await getTaskById(taskId);
+  const isPomodoro = !!task?.is_pomodoro;
 
   // Upsert active timer for this chat
   const { data, error } = await supabase
@@ -249,12 +251,36 @@ export async function startActiveTimer(
       project_name: projectName || null,
       todo_id: todoId || null,
       todo_title: todoTitle || null,
+      is_pomodoro: isPomodoro,
+      pomodoro_work_mins: isPomodoro ? task?.pomodoro_work_mins || 25 : null,
+      pomodoro_break_mins: isPomodoro ? task?.pomodoro_break_mins || 5 : null,
+      pomodoro_round: 1,
+      pomodoro_phase: "work",
+      phase_started_at: startedAt,
     })
     .select()
     .single();
 
   if (error) {
     console.error("Error starting timer:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function updateActiveTimer(
+  chatId: string | number,
+  updates: Partial<ActiveTimer>
+): Promise<ActiveTimer | null> {
+  const { data, error } = await supabase
+    .from("active_timers")
+    .update(updates)
+    .eq("chat_id", String(chatId))
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error updating active timer:", error);
     return null;
   }
   return data;

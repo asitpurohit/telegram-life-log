@@ -10,6 +10,9 @@ export interface Task {
   target_days?: string | null; // 'daily', 'weekdays', 'weekends', or custom
   is_system?: boolean; // system-provisioned task (e.g. Sleep): name locked, cannot be deleted
   is_project_based?: boolean; // project-based timer tasks (tracks multi-session milestones)
+  is_pomodoro?: boolean; // Pomodoro timer task with work/break intervals
+  pomodoro_work_mins?: number | null; // e.g. 25
+  pomodoro_break_mins?: number | null; // e.g. 5
   is_archived: boolean;
   created_at?: string;
 }
@@ -78,6 +81,12 @@ export interface ActiveTimer {
   todo_id?: string | null;
   todo_title?: string | null;
   started_at: string;
+  is_pomodoro?: boolean;
+  pomodoro_work_mins?: number | null;
+  pomodoro_break_mins?: number | null;
+  pomodoro_round?: number;
+  pomodoro_phase?: 'work' | 'break';
+  phase_started_at?: string;
 }
 
 export interface WizardSession {
@@ -94,6 +103,8 @@ export interface WizardSession {
     | 'awaiting_edit_goal'
     | 'awaiting_edit_reminder'
     | 'awaiting_edit_days'
+    | 'awaiting_edit_pomodoro_work'
+    | 'awaiting_edit_pomodoro_break'
     | 'awaiting_todo_title'
     | 'awaiting_todo_date'
     | 'awaiting_todo_time'
@@ -127,6 +138,11 @@ export interface WizardSession {
     doubtPage?: number;
     sessionLogId?: string;
     is_project_based?: boolean;
+    is_pomodoro?: boolean;
+    pomodoro_work_mins?: number | null;
+    pomodoro_break_mins?: number | null;
+    pomodoroWorkMins?: number;
+    pomodoroBreakMins?: number;
     projectId?: string;
     projectName?: string;
     taskName?: string;
