@@ -10,6 +10,7 @@ import {
   getPauseState,
   formatMoodDisplay,
   getTodos,
+  getDailyTodosForTask,
 } from "./supabase";
 import { formatTimerMinutes, computeWastedDays } from "./timeAudit";
 import {
@@ -89,6 +90,13 @@ export async function buildTodayScorecard(chatId: string | number): Promise<stri
         const pct = Math.min(100, Math.round((mins / target) * 100));
         const focusBadge = formatFocusBadge(await getTodayTaskFocus(t.name));
         text += `${taskEmoji(t)} <b>${t.name}:</b> ${formatTimerMinutes(mins)} / ${formatGoalDisplay(target, "minutes")} (${pct}%)${reminderTag}${focusBadge}\n`;
+
+        const dailyTodos = await getDailyTodosForTask(t.id, localDateString());
+        if (dailyTodos.length > 0) {
+          for (const td of dailyTodos) {
+            text += `   ${td.is_done ? "✅" : "▫️"} <i>${td.title}</i>\n`;
+          }
+        }
       } else {
         const val = await getTodayTaskTotal(t.name);
         const target = t.target_value || 5000;

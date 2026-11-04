@@ -24,6 +24,11 @@ import {
   markProjectCompleted,
   getProjectById,
   getProjectTotalMinutes,
+  getDailyTodosForProject,
+  getDailyTodosForTask,
+  addProjectTodo,
+  setProjectTodoDone,
+  getProjectTodoById,
   getLogById,
   getPauseState,
   setPauseState,
@@ -78,7 +83,7 @@ import { askAboutData } from "@/lib/analytics";
 import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
-import { TaskType, Task, WizardSession, Todo } from "@/lib/types";
+import { TaskType, Task, WizardSession, Todo, ProjectTodo } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 
 export const dynamic = "force-dynamic";
@@ -114,7 +119,10 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("edit_set_days:") ||
     data.startsWith("todo_add:") ||
     data.startsWith("todo_date:") ||
-    data.startsWith("todo_time:")
+    data.startsWith("todo_time:") ||
+    data.startsWith("daily_todo_") ||
+    data.startsWith("pick_todo") ||
+    data.startsWith("todo_fin:")
   );
 }
 
@@ -361,14 +369,29 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
         projectLine = `📦 Project Mode: <b>ON</b> <i>(No active project)</i>\n`;
       }
     }
+    const today = localDateString();
+    const dailyTodos = activeProject
+      ? await getDailyTodosForProject(activeProject.id, today)
+      : await getDailyTodosForTask(task.id, today);
+
+    let todosLine = "";
+    if (dailyTodos.length > 0) {
+      const completedCount = dailyTodos.filter((t) => t.is_done).length;
+      todosLine = `\n📋 Today's Tasks: <b>${completedCount}/${dailyTodos.length} done</b>\n`;
+      for (const td of dailyTodos) {
+        todosLine += `  ${td.is_done ? "✅" : "▫️"} ${td.title}\n`;
+      }
+    }
+
     return {
       text:
         `${taskEmoji(task)} <b>${task.name}</b>\n` +
         `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
         `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
         projectLine +
-        `📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n\n` +
-        `Start the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
+        `📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n` +
+        todosLine +
+        `\nStart the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
       keyboard: [
         [{ text: `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
         ...(!task.is_system ? [[{ text: "❓ View Doubts", callback_data: `doubt_topics:${task.id}` }]] : []),
@@ -474,6 +497,150 @@ function buildTaskSummary(task: Task): string {
     `📅 Days: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>` +
     projectLine
   );
+}
+
+// Start active timer with optional project and optional sub-task
+async function doStartActiveTimer(
+  chatId: string | number,
+  messageId: number | undefined,
+  taskId: string,
+  taskName: string,
+  projectId?: string | null,
+  projectName?: string | null,
+  todoId?: string | null,
+  todoTitle?: string | null
+): Promise<void> {
+  const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName, todoId, todoTitle);
+  await clearPauseState(chatId);
+  await clearNudgeState(chatId);
+  await setActiveTask(chatId, taskId);
+
+  const startedAt = active?.started_at || new Date().toISOString();
+  let progressStr: string | null = null;
+  if (projectId) {
+    progressStr = await getTimerProjectProgress(projectId);
+  }
+  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle);
+  if (messageId) {
+    await respondUi(chatId, messageId, view.text, view.keyboard);
+  } else {
+    await sendUiMessage(chatId, view.text, view.keyboard);
+  }
+
+  const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
+  if (timerMsgId) {
+    await trackTimerMessage(chatId, timerMsgId);
+  }
+}
+
+// Display the session to-do picker for starting a stopwatch session
+async function showSessionTodoPick(
+  chatId: string | number,
+  messageId: number | undefined,
+  taskId: string,
+  taskName: string,
+  projectId?: string | null,
+  projectName?: string | null,
+  todos?: ProjectTodo[]
+): Promise<void> {
+  const today = localDateString();
+  const allTodos =
+    todos ||
+    (projectId
+      ? await getDailyTodosForProject(projectId, today)
+      : await getDailyTodosForTask(taskId, today));
+
+  const pendingTodos = allTodos.filter((t) => !t.is_done);
+  const completedCount = allTodos.filter((t) => t.is_done).length;
+
+  await saveWizardSession(chatId, "awaiting_session_todo_pick", {
+    taskId,
+    taskName,
+    projectId: projectId || undefined,
+    projectName: projectName || undefined,
+    promptMessageId: messageId,
+  });
+
+  const buttons: InlineKeyboard = [];
+
+  for (const todo of pendingTodos) {
+    const label = todo.title.length > 28 ? todo.title.slice(0, 28) + "…" : todo.title;
+    buttons.push([{ text: `📌 ${label}`, callback_data: `pick_todo:${todo.id}` }]);
+  }
+
+  buttons.push([
+    { text: "➕ Add New Task", callback_data: "daily_todo_add_more" },
+    { text: "⏩ General / None", callback_data: "pick_todo_none" },
+  ]);
+  buttons.push([{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]);
+
+  const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n` : "";
+  const completedNotice = completedCount > 0 ? ` <i>(${completedCount} completed today)</i>` : "";
+
+  let promptText = `${projectTag}🎯 <b>Which task are you working on right now?</b>${completedNotice}\n\n`;
+  if (pendingTodos.length > 0) {
+    promptText += `Pick a task below, add a new one, or choose General:`;
+  } else {
+    promptText += `All of today's planned tasks are completed! 🎉\nAdd a new task or start with General:`;
+  }
+
+  if (messageId) {
+    await respondUi(chatId, messageId, promptText, buttons);
+  } else {
+    await sendUiMessage(chatId, promptText, buttons);
+  }
+}
+
+// Prompt for morning daily to-do list if none set today, or show to-do pick
+async function promptOrStartTimer(
+  chatId: string | number,
+  messageId: number | undefined,
+  taskId: string,
+  taskName: string,
+  projectId?: string | null,
+  projectName?: string | null
+): Promise<void> {
+  const task = await getTaskById(taskId);
+  if (isSystemTask(task)) {
+    await doStartActiveTimer(chatId, messageId, taskId, taskName, null, null, null, null);
+    return;
+  }
+
+  const today = localDateString();
+  const existingTodos = projectId
+    ? await getDailyTodosForProject(projectId, today)
+    : await getDailyTodosForTask(taskId, today);
+
+  if (existingTodos.length === 0) {
+    await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+      taskId,
+      taskName,
+      projectId: projectId || undefined,
+      projectName: projectName || undefined,
+      promptMessageId: messageId,
+    });
+
+    const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+    const kb: InlineKeyboard = [
+      [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
+      [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+    ];
+
+    const promptText =
+      `${projectTag}📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
+      `Send your tasks one by one:\n` +
+      `<i>(e.g., "Read Snell's Law", "Solve numericals 1-10", "Optics formulas")</i>\n\n` +
+      `Tap <b>Start Timer</b> below if you prefer to leave it blank:`;
+
+    if (messageId) {
+      await respondUi(chatId, messageId, promptText, kb);
+    } else {
+      await sendUiMessage(chatId, promptText, kb);
+    }
+    return;
+  }
+
+  await showSessionTodoPick(chatId, messageId, taskId, taskName, projectId, projectName, existingTodos);
 }
 
 // Focus buttons shown after positive task entries (timer stop, minutes, counts)
@@ -2552,19 +2719,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const active = await startActiveTimer(chatId, taskId, taskName);
-        await clearPauseState(chatId);
-        await clearNudgeState(chatId);
-        await setActiveTask(chatId, taskId);
-
-        const startedAt = active?.started_at || new Date().toISOString();
-        const view = buildTimerView(taskName, startedAt, 0);
-        await respondUi(chatId, messageId, view.text, view.keyboard);
-
-        const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
-        if (timerMsgId) {
-          await trackTimerMessage(chatId, timerMsgId);
-        }
+        await promptOrStartTimer(chatId, messageId, taskId, taskName, null, null);
         return NextResponse.json({ ok: true });
       }
 
@@ -2578,20 +2733,7 @@ export async function POST(req: NextRequest) {
         const taskName = task ? task.name : "Study/Work";
         const projectName = project ? project.name : null;
 
-        const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName);
-        await clearPauseState(chatId);
-        await clearNudgeState(chatId);
-        await setActiveTask(chatId, taskId);
-
-        const startedAt = active?.started_at || new Date().toISOString();
-        const progressStr = await getTimerProjectProgress(projectId);
-        const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr);
-        await respondUi(chatId, messageId, view.text, view.keyboard);
-
-        const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
-        if (timerMsgId) {
-          await trackTimerMessage(chatId, timerMsgId);
-        }
+        await promptOrStartTimer(chatId, messageId, taskId, taskName, projectId, projectName);
         return NextResponse.json({ ok: true });
       }
 
@@ -2676,20 +2818,169 @@ export async function POST(req: NextRequest) {
         const project = await createProject(taskId, projectName, targetMinutes, null);
         await clearWizardSession(chatId);
 
-        const active = await startActiveTimer(chatId, taskId, taskName, project?.id || null, project?.name || projectName);
-        await clearPauseState(chatId);
-        await clearNudgeState(chatId);
-        await setActiveTask(chatId, taskId);
+        await promptOrStartTimer(chatId, messageId, taskId, taskName, project?.id || null, project?.name || projectName);
+        return NextResponse.json({ ok: true });
+      }
 
-        const startedAt = active?.started_at || new Date().toISOString();
-        const progressStr = formatProjectProgress(0, targetMinutes);
-        const view = buildTimerView(taskName, startedAt, 0, 0, project?.name || projectName, progressStr);
-        await respondUi(chatId, messageId, view.text, view.keyboard);
-
-        const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
-        if (timerMsgId) {
-          await trackTimerMessage(chatId, timerMsgId);
+      // --- Button: Daily To-Do Done (Show Session To-Do Pick) ---
+      if (callbackData === "daily_todo_done") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
         }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+        await showSessionTodoPick(
+          chatId,
+          messageId,
+          taskId,
+          taskName || "Study/Work",
+          projectId || null,
+          projectName || null
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Daily To-Do Skip (Leave Blank and Start Timer) ---
+      if (callbackData === "daily_todo_skip") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+        await clearWizardSession(chatId);
+        await doStartActiveTimer(
+          chatId,
+          messageId,
+          taskId,
+          taskName || "Study/Work",
+          projectId || null,
+          projectName || null,
+          null,
+          null
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Add More To-Dos from Pick Menu ---
+      if (callbackData === "daily_todo_add_more") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+          taskId,
+          taskName,
+          projectId,
+          projectName,
+          promptMessageId: messageId,
+        });
+
+        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+        const kb: InlineKeyboard = [
+          [{ text: "🔙 Back to Task List", callback_data: "daily_todo_done" }],
+        ];
+
+        await respondUi(
+          chatId,
+          messageId,
+          `${projectTag}➕ <b>Add a task to today's plan:</b>\n\n` +
+            `Type your task description:\n` +
+            `<i>(e.g., "Read Snell's Law", "Numericals 1-10")</i>`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Pick To-Do for Active Session ---
+      if (callbackData.startsWith("pick_todo:")) {
+        const todoId = callbackData.split(":")[1];
+        const todo = await getProjectTodoById(todoId);
+        const session = await getWizardSession(chatId);
+
+        const taskId = session?.task_data.taskId || todo?.task_id;
+        const taskName = session?.task_data.taskName || "Study/Work";
+        const projectId = session?.task_data.projectId || todo?.project_id || null;
+        const projectName = session?.task_data.projectName || null;
+
+        if (!taskId) {
+          await respondUi(chatId, messageId, "⚠️ Task not found. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        await clearWizardSession(chatId);
+        await doStartActiveTimer(
+          chatId,
+          messageId,
+          taskId,
+          taskName,
+          projectId,
+          projectName,
+          todo?.id || null,
+          todo?.title || null
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Start Session with No Specific To-Do (General) ---
+      if (callbackData === "pick_todo_none") {
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName } = session.task_data;
+        await clearWizardSession(chatId);
+        await doStartActiveTimer(
+          chatId,
+          messageId,
+          taskId,
+          taskName || "Study/Work",
+          projectId || null,
+          projectName || null,
+          null,
+          null
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Mark Sub-task Done/Not Done after Session ---
+      if (callbackData.startsWith("todo_fin:")) {
+        const [, status, todoId] = callbackData.split(":");
+        const isDone = status === "y";
+        if (isDone && todoId) {
+          await setProjectTodoDone(todoId, true);
+        }
+
+        const session = await getWizardSession(chatId);
+        const logId = session?.task_data.sessionLogId;
+        const taskName = session?.task_data.taskName;
+        const task = taskName ? await findTaskByName(taskName) : null;
+        const todoTitle = session?.task_data.todoTitle;
+
+        const showReview = !!logId && !isSystemTask(task);
+        const replyKb: InlineKeyboard = showReview && logId
+          ? buildReviewKeyboard(logId)
+          : BACK_ONLY_KEYBOARD;
+
+        const statusIcon = isDone ? "✅" : "⏳";
+        const statusText = isDone
+          ? `${statusIcon} <b>"${todoTitle || "Task"}" marked as completed!</b> 🎉`
+          : `${statusIcon} <b>"${todoTitle || "Task"}" kept in progress for next session.</b>`;
+
+        const text =
+          `${statusText}\n\n` +
+          `Saved to your log!` +
+          (showReview ? FOCUS_QUESTION : "");
+
+        await respondUi(chatId, messageId, text, replyKb);
         return NextResponse.json({ ok: true });
       }
 
@@ -2837,6 +3128,39 @@ export async function POST(req: NextRequest) {
           if (openTask) {
             stopKb = [...stopKb, [{ text: `📂 Open ${openTask.name}`, callback_data: `open_task:${openTask.id}` }]];
           }
+        }
+
+        // If a specific sub-task was being worked on, ask if it was completed
+        if (result.todoId && result.todoTitle) {
+          await saveWizardSession(chatId, "awaiting_session_note", {
+            sessionLogId: result.logId || undefined,
+            promptMessageId: messageId,
+            projectId: result.projectId || undefined,
+            projectName: result.projectName || undefined,
+            todoId: result.todoId,
+            todoTitle: result.todoTitle,
+            taskName: result.taskName,
+          });
+
+          const todoKb: InlineKeyboard = [
+            [
+              { text: "✅ Yes, Completed", callback_data: `todo_fin:y:${result.todoId}` },
+              { text: "⏳ No, In Progress", callback_data: `todo_fin:n:${result.todoId}` },
+            ],
+          ];
+
+          const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
+          const text =
+            `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
+            projectLine +
+            `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
+            `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
+            `Saved to your log!` +
+            formatSplitSummary(result.split) +
+            `\n\n🎯 <b>Did you complete: "${result.todoTitle}"?</b>`;
+
+          await respondUi(chatId, messageId, text, todoKb);
+          return NextResponse.json({ ok: true });
         }
 
         const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
@@ -3451,26 +3775,60 @@ export async function POST(req: NextRequest) {
             } catch {}
           }
 
-          const active = await startActiveTimer(
-            chatId,
-            taskId,
-            taskName,
-            project?.id || null,
-            project?.name || projectName
-          );
-          await clearPauseState(chatId);
-          await clearNudgeState(chatId);
-          await setActiveTask(chatId, taskId);
+          await promptOrStartTimer(chatId, undefined, taskId, taskName, project?.id || null, project?.name || projectName);
+          return NextResponse.json({ ok: true });
+        }
 
-          const startedAt = active?.started_at || new Date().toISOString();
-          const progressStr = formatProjectProgress(0, targetMinutes);
-          const view = buildTimerView(taskName, startedAt, 0, 0, project?.name || projectName, progressStr);
-          await sendUiMessage(chatId, view.text, view.keyboard);
+        // --- State: User Adding Daily To-Dos for Project / Task ---
+        if (activeSession.step === "awaiting_daily_todo_input") {
+          const itemText = text.trim();
+          const taskData = activeSession.task_data;
+          const taskId = taskData.taskId!;
+          const projectId = taskData.projectId || null;
+          const promptId = taskData.promptMessageId;
 
-          const timerMsgId = await getTrackedUiMessage(chatId);
-          if (timerMsgId) {
-            await trackTimerMessage(chatId, timerMsgId);
+          if (itemText.length < 2) {
+            await sendTelegramMessage(chatId, "⚠️ Task name is too short. Please enter a valid task description:");
+            return NextResponse.json({ ok: true });
           }
+
+          // Add the to-do
+          await addProjectTodo(taskId, projectId, itemText);
+
+          // Get all to-dos added today
+          const today = localDateString();
+          const todos = projectId
+            ? await getDailyTodosForProject(projectId, today)
+            : await getDailyTodosForTask(taskId, today);
+
+          const listText = todos
+            .map((t, idx) => `${idx + 1}. ${t.title}${t.id === todos[todos.length - 1].id ? " <i>(just added)</i>" : ""}`)
+            .join("\n");
+          const projectLine = taskData.projectName ? `📦 Project: <b>${taskData.projectName}</b>\n` : "";
+
+          const kb: InlineKeyboard = [
+            [{ text: `▶️ Done / Start Timer (${todos.length} task${todos.length > 1 ? "s" : ""})`, callback_data: "daily_todo_done" }],
+            [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+          ];
+
+          if (promptId) {
+            try {
+              await removeInlineKeyboard(chatId, promptId);
+            } catch {}
+          }
+
+          const sentId = await sendUiMessage(
+            chatId,
+            `${projectLine}📋 <b>Today's Plan:</b>\n\n` +
+              `${listText}\n\n` +
+              `Send another task to add, or tap <b>Done / Start Timer</b> below:`,
+            kb
+          );
+
+          await saveWizardSession(chatId, "awaiting_daily_todo_input", {
+            ...taskData,
+            promptMessageId: sentId || undefined,
+          });
           return NextResponse.json({ ok: true });
         }
 

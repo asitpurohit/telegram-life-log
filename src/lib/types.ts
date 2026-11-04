@@ -25,6 +25,17 @@ export interface Project {
   completed_at?: string | null;
 }
 
+export interface ProjectTodo {
+  id: string;
+  task_id: string;
+  project_id?: string | null;
+  todo_date: string; // YYYY-MM-DD
+  title: string;
+  is_done: boolean;
+  done_at?: string | null;
+  created_at?: string;
+}
+
 export type FocusMood = "focused" | "casual" | "distracted";
 
 export interface Log {
@@ -42,6 +53,8 @@ export interface Log {
   focus?: FocusMood | null;
   started_at?: string | null; // exact timer-session start (null for non-session logs)
   project_id?: string | null; // link to projects table
+  todo_id?: string | null; // link to project_todos table
+  todo_title?: string | null;
   created_at?: string;
 }
 
@@ -61,6 +74,8 @@ export interface ActiveTimer {
   task_name: string;
   project_id?: string | null;
   project_name?: string | null;
+  todo_id?: string | null;
+  todo_title?: string | null;
   started_at: string;
 }
 
@@ -88,7 +103,9 @@ export interface WizardSession {
     | 'awaiting_session_note'
     | 'awaiting_project_name'
     | 'awaiting_project_target'
-    | 'awaiting_project_description';
+    | 'awaiting_project_description'
+    | 'awaiting_daily_todo_input'
+    | 'awaiting_session_todo_pick';
   task_data: {
     type?: TaskType;
     name?: string;
@@ -112,6 +129,7 @@ export interface WizardSession {
     taskName?: string;
     projectTargetMinutes?: number | null;
     projectDescription?: string | null;
+    todoId?: string;
   };
   updated_at?: string;
 }

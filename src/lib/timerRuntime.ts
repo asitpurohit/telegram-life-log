@@ -32,7 +32,8 @@ export function buildTimerView(
   pausedAtMs: number,
   pausedSeconds = 0,
   projectName?: string | null,
-  projectProgress?: string | null
+  projectProgress?: string | null,
+  todoTitle?: string | null
 ): { text: string; keyboard: InlineKeyboard } {
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
@@ -51,12 +52,17 @@ export function buildTimerView(
     }
   }
 
+  let taskLine = "";
+  if (todoTitle) {
+    taskLine = `\n🎯 Task: <b>${todoTitle}</b>`;
+  }
+
   const text = isPaused
-    ? `${emoji} <b>${taskName}</b> — Paused${projectLine}\n` +
+    ? `${emoji} <b>${taskName}</b> — Paused${projectLine}${taskLine}\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
       `<i>Paused time is excluded from the final log.</i>`
-    : `${emoji} <b>${taskName}</b> — Running${projectLine}\n` +
+    : `${emoji} <b>${taskName}</b> — Running${projectLine}${taskLine}\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
       `<i>Runs until you stop it.</i>`;
@@ -100,7 +106,10 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         timer.task_name,
         timer.started_at,
         pause.pausedAt ?? 0,
-        pause.pausedSeconds
+        pause.pausedSeconds,
+        timer.project_name,
+        null,
+        timer.todo_title
       );
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }
