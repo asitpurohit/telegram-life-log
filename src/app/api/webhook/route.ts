@@ -30,6 +30,10 @@ import {
   getUnfinishedPastTodosForTask,
   carryOverTodosToToday,
   dismissPastTodos,
+  getPendingTodosForProject,
+  markProjectTodosDone,
+  archiveProjectTodos,
+  transferTodosToProject,
   addProjectTodo,
   setProjectTodoDone,
   getProjectTodoById,
@@ -2786,9 +2790,40 @@ export async function POST(req: NextRequest) {
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
 
-        // When starting a new project, auto-complete previous active project
         const oldActive = await getActiveProjectForTask(taskId);
         if (oldActive) {
+          // Check if previous project has pending unfinished to-dos
+          const pendingTodos = await getPendingTodosForProject(oldActive.id);
+          if (pendingTodos.length > 0) {
+            await saveWizardSession(chatId, "awaiting_project_todos_resolution", {
+              taskId,
+              taskName,
+              projectId: oldActive.id,
+              projectName: oldActive.name,
+              pastTodoIds: pendingTodos.map((t) => t.id),
+              promptMessageId: messageId,
+            });
+
+            const taskList = pendingTodos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
+            const kb: InlineKeyboard = [
+              [{ text: `✅ Mark All Done (${pendingTodos.length})`, callback_data: `proj_todos_act:done` }],
+              [{ text: `📥 Move to New Project (${pendingTodos.length})`, callback_data: `proj_todos_act:move` }],
+              [{ text: `📦 Archive as Incomplete (${pendingTodos.length})`, callback_data: `proj_todos_act:archive` }],
+              [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+            ];
+
+            await respondUi(
+              chatId,
+              messageId,
+              `📦 Previous project <b>"${oldActive.name}"</b> has <b>${pendingTodos.length}</b> unfinished task${pendingTodos.length > 1 ? "s" : ""}:\n\n` +
+                `${taskList}\n\n` +
+                `What would you like to do with them before starting the new project?`,
+              kb
+            );
+            return NextResponse.json({ ok: true });
+          }
+
+          // No pending to-dos: auto-complete previous project
           await markProjectCompleted(oldActive.id);
         }
 
@@ -2803,6 +2838,56 @@ export async function POST(req: NextRequest) {
           messageId,
           `📦 <b>New Project for ${taskName}</b>\n\n` +
             (oldActive ? `<i>Previous project "${oldActive.name}" has been marked complete.</i>\n\n` : "") +
+            `What is the name of your new project?\n` +
+            `<i>(e.g., Making PPT for Optics, Chapter 4 Notes, Problem Set 3)</i>`,
+          [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Resolve Pending To-Dos from Previous Project ---
+      if (callbackData.startsWith("proj_todos_act:")) {
+        const action = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId || !session.task_data.projectId) {
+          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const { taskId, taskName, projectId, projectName, pastTodoIds } = session.task_data;
+        const todoIds = pastTodoIds || [];
+
+        let actionNotice = "";
+        let transferIds: string[] | undefined = undefined;
+
+        if (action === "done") {
+          await markProjectTodosDone(todoIds);
+          actionNotice = `<i>All ${todoIds.length} tasks from "${projectName}" marked completed.</i>\n\n`;
+        } else if (action === "archive") {
+          await archiveProjectTodos(todoIds);
+          actionNotice = `<i>All ${todoIds.length} tasks from "${projectName}" archived as incomplete.</i>\n\n`;
+        } else if (action === "move") {
+          transferIds = todoIds;
+          actionNotice = `<i>${todoIds.length} tasks will be transferred to your new project.</i>\n\n`;
+        }
+
+        // Mark old project completed
+        await markProjectCompleted(projectId);
+
+        // Transition to asking for new project name
+        await saveWizardSession(chatId, "awaiting_project_name", {
+          taskId,
+          taskName,
+          transferTodoIds: transferIds,
+          promptMessageId: messageId,
+        });
+
+        await respondUi(
+          chatId,
+          messageId,
+          `📦 <b>New Project for ${taskName || "Study/Work"}</b>\n\n` +
+            actionNotice +
+            `<i>Previous project "${projectName}" has been marked complete.</i>\n\n` +
             `What is the name of your new project?\n` +
             `<i>(e.g., Making PPT for Optics, Chapter 4 Notes, Problem Set 3)</i>`,
           [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
@@ -2859,6 +2944,10 @@ export async function POST(req: NextRequest) {
         const targetMinutes = taskData.projectTargetMinutes ?? null;
 
         const project = await createProject(taskId, projectName, targetMinutes, null);
+        if (project && taskData.transferTodoIds && taskData.transferTodoIds.length > 0) {
+          const today = localDateString();
+          await transferTodosToProject(taskData.transferTodoIds, project.id, today);
+        }
         await clearWizardSession(chatId);
 
         await promptOrStartTimer(chatId, messageId, taskId, taskName, project?.id || null, project?.name || projectName);
@@ -3998,6 +4087,10 @@ export async function POST(req: NextRequest) {
           const promptId = taskData.promptMessageId;
 
           const project = await createProject(taskId, projectName, targetMinutes, description);
+          if (project && taskData.transferTodoIds && taskData.transferTodoIds.length > 0) {
+            const today = localDateString();
+            await transferTodosToProject(taskData.transferTodoIds, project.id, today);
+          }
           await clearWizardSession(chatId);
 
           if (promptId) {
@@ -4007,6 +4100,27 @@ export async function POST(req: NextRequest) {
           }
 
           await promptOrStartTimer(chatId, undefined, taskId, taskName, project?.id || null, project?.name || projectName);
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: User In Project To-Dos Resolution Prompt ---
+        if (activeSession.step === "awaiting_project_todos_resolution") {
+          const taskData = activeSession.task_data;
+          const taskId = taskData.taskId!;
+          const pastIds = taskData.pastTodoIds || [];
+
+          const kb: InlineKeyboard = [
+            [{ text: `✅ Mark All Done (${pastIds.length})`, callback_data: `proj_todos_act:done` }],
+            [{ text: `📥 Move to New Project (${pastIds.length})`, callback_data: `proj_todos_act:move` }],
+            [{ text: `📦 Archive as Incomplete (${pastIds.length})`, callback_data: `proj_todos_act:archive` }],
+            [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+          ];
+
+          await sendTelegramMessage(
+            chatId,
+            "⚠️ Please tap an option below regarding the unfinished tasks from your previous project:",
+            kb
+          );
           return NextResponse.json({ ok: true });
         }
 

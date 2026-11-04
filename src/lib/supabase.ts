@@ -554,6 +554,7 @@ export async function getDailyTodosForProject(projectId: string, date: string): 
     .select("*")
     .eq("project_id", projectId)
     .eq("todo_date", date)
+    .eq("is_archived", false)
     .order("created_at", { ascending: true });
 
   if (error || !data) {
@@ -569,6 +570,7 @@ export async function getDailyTodosForTask(taskId: string, date: string): Promis
     .select("*")
     .eq("task_id", taskId)
     .eq("todo_date", date)
+    .eq("is_archived", false)
     .order("created_at", { ascending: true });
 
   if (error || !data) {
@@ -593,6 +595,7 @@ export async function addProjectTodo(
       title: title.trim(),
       todo_date: todoDate,
       is_done: false,
+      is_archived: false,
     })
     .select()
     .single();
@@ -641,6 +644,7 @@ export async function getUnfinishedPastTodosForProject(
     .eq("project_id", projectId)
     .lt("todo_date", today)
     .eq("is_done", false)
+    .eq("is_archived", false)
     .order("todo_date", { ascending: false })
     .order("created_at", { ascending: true })
     .limit(15);
@@ -660,6 +664,7 @@ export async function getUnfinishedPastTodosForTask(
     .is("project_id", null)
     .lt("todo_date", today)
     .eq("is_done", false)
+    .eq("is_archived", false)
     .order("todo_date", { ascending: false })
     .order("created_at", { ascending: true })
     .limit(15);
@@ -680,7 +685,57 @@ export async function dismissPastTodos(todoIds: string[]): Promise<void> {
   if (todoIds.length === 0) return;
   await supabase
     .from("project_todos")
+    .update({ is_archived: true, done_at: new Date().toISOString() })
+    .in("id", todoIds);
+}
+
+// Get all pending (unfinished, not archived) todos for a project across all dates
+export async function getPendingTodosForProject(projectId: string): Promise<ProjectTodo[]> {
+  const { data, error } = await supabase
+    .from("project_todos")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("is_done", false)
+    .eq("is_archived", false)
+    .order("created_at", { ascending: true });
+
+  if (error || !data) return [];
+  return data;
+}
+
+// Mark all specified project todos as completed
+export async function markProjectTodosDone(todoIds: string[]): Promise<void> {
+  if (todoIds.length === 0) return;
+  await supabase
+    .from("project_todos")
     .update({ is_done: true, done_at: new Date().toISOString() })
+    .in("id", todoIds);
+}
+
+// Archive specified project todos as incomplete
+export async function archiveProjectTodos(todoIds: string[]): Promise<void> {
+  if (todoIds.length === 0) return;
+  await supabase
+    .from("project_todos")
+    .update({ is_archived: true })
+    .in("id", todoIds);
+}
+
+// Transfer todos to a new project and set their date to today
+export async function transferTodosToProject(
+  todoIds: string[],
+  newProjectId: string,
+  newDate: string
+): Promise<void> {
+  if (todoIds.length === 0) return;
+  await supabase
+    .from("project_todos")
+    .update({
+      project_id: newProjectId,
+      todo_date: newDate,
+      is_done: false,
+      is_archived: false,
+    })
     .in("id", todoIds);
 }
 

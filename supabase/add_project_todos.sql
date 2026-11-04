@@ -10,9 +10,13 @@ CREATE TABLE IF NOT EXISTS project_todos (
     todo_date DATE NOT NULL DEFAULT CURRENT_DATE,
     title TEXT NOT NULL,
     is_done BOOLEAN DEFAULT false,
+    is_archived BOOLEAN DEFAULT false,
     done_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure is_archived column exists if table was created previously
+ALTER TABLE project_todos ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT false;
 
 -- Index for instant querying by project & date
 CREATE INDEX IF NOT EXISTS idx_project_todos_proj_date ON project_todos(project_id, todo_date);

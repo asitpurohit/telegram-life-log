@@ -32,6 +32,7 @@ export interface ProjectTodo {
   todo_date: string; // YYYY-MM-DD
   title: string;
   is_done: boolean;
+  is_archived?: boolean;
   done_at?: string | null;
   created_at?: string;
 }
@@ -106,6 +107,7 @@ export interface WizardSession {
     | 'awaiting_project_description'
     | 'awaiting_daily_todo_input'
     | 'awaiting_daily_todo_carryover'
+    | 'awaiting_project_todos_resolution'
     | 'awaiting_session_todo_pick';
   task_data: {
     type?: TaskType;
@@ -132,6 +134,7 @@ export interface WizardSession {
     projectDescription?: string | null;
     todoId?: string;
     pastTodoIds?: string[];
+    transferTodoIds?: string[];
   };
   updated_at?: string;
 }
