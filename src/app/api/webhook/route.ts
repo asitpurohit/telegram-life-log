@@ -141,7 +141,12 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("daily_todo_") ||
     data.startsWith("pick_todo") ||
     data.startsWith("todo_fin:") ||
-    data.startsWith("checkout_")
+    data.startsWith("checkout_") ||
+    data.startsWith("timer_open_pick:") ||
+    data.startsWith("timer_sel_todo:") ||
+    data.startsWith("timer_add_todo:") ||
+    data.startsWith("timer_new_proj:") ||
+    data.startsWith("timer_back_launch:")
   );
 }
 
@@ -376,8 +381,12 @@ async function getTimerProjectProgress(projectId?: string | null): Promise<strin
   return formatProjectProgress(totalMins, project.target_minutes);
 }
 
-// Task detail view (used by /tasks and as the reply target for typed amounts)
-async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: InlineKeyboard }> {
+// Task detail view (used by /tasks, quick launchpad, and as the reply target for typed amounts)
+async function buildTaskDetail(
+  task: Task,
+  selectedTodoId?: string | null,
+  mode: "main" | "pick_todo" = "main"
+): Promise<{ text: string; keyboard: InlineKeyboard }> {
   if (task.type === "timer") {
     const todayMins = await getTodayTaskTotal(task.name);
     const target = task.target_value || 60;
@@ -388,48 +397,124 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
       if (activeProject) {
         const totalProjMins = await getProjectTotalMinutes(activeProject.id);
         const progressStr = formatProjectProgress(totalProjMins, activeProject.target_minutes);
-        projectLine =
-          `📦 Active Project: <b>${activeProject.name}</b>\n` +
-          `📊 Project Total: <b>${progressStr}</b>\n` +
-          (activeProject.description ? `📝 Scope: <i>${activeProject.description}</i>\n` : "");
+        projectLine = `📦 Project: <b>${activeProject.name}</b> <i>(${progressStr})</i>\n`;
       } else {
-        projectLine = `📦 Project Mode: <b>ON</b> <i>(No active project)</i>\n`;
+        projectLine = `📦 Project: <i>None (tap below to add)</i>\n`;
       }
     }
     const today = localDateString();
-    const dailyTodos = activeProject
+    let dailyTodos = activeProject
       ? await getDailyTodosForProject(activeProject.id, today)
       : await getDailyTodosForTask(task.id, today);
 
-    let todosLine = "";
-    if (dailyTodos.length > 0) {
-      const completedCount = dailyTodos.filter((t) => t.is_done).length;
-      todosLine = `\n📋 Today's Tasks: <b>${completedCount}/${dailyTodos.length} done</b>\n`;
-      for (const td of dailyTodos) {
-        todosLine += `  ${td.is_done ? "✅" : "▫️"} ${td.title}\n`;
+    // Auto carry over past unfinished tasks if today has none yet
+    if (dailyTodos.length === 0) {
+      const pastTodos = activeProject
+        ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+        : await getUnfinishedPastTodosForTask(task.id, today);
+      if (pastTodos.length > 0) {
+        await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
+        dailyTodos = activeProject
+          ? await getDailyTodosForProject(activeProject.id, today)
+          : await getDailyTodosForTask(task.id, today);
       }
     }
 
+    let currentTodo: ProjectTodo | null = null;
+    if (selectedTodoId === "none") {
+      currentTodo = null;
+    } else if (selectedTodoId) {
+      currentTodo = dailyTodos.find((t) => t.id === selectedTodoId) || null;
+    } else {
+      // Default: automatically the next unfinished to-do!
+      currentTodo = dailyTodos.find((t) => !t.is_done) || null;
+    }
+
     const pomodoroLine = task.is_pomodoro
-      ? `\n🍅 Pomodoro: <b>${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break</b>`
+      ? `🍅 Pomodoro: <b>${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break</b>\n`
       : "";
 
-    return {
-      text:
-        `${taskEmoji(task)} <b>${task.name}</b>\n` +
-        `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
-        `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
-        projectLine +
-        pomodoroLine +
-        `\n📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n` +
-        todosLine +
-        `\nStart the stopwatch, or just type the minutes to log (e.g. <b>45</b>):`,
-      keyboard: [
-        [{ text: task.is_pomodoro ? `🍅 Start Pomodoro (${task.pomodoro_work_mins || 25}m/${task.pomodoro_break_mins || 5}m)` : `▶️ Start Live Stopwatch`, callback_data: `start_task:${task.id}` }],
-        ...(!task.is_system ? [[{ text: "❓ View Doubts", callback_data: `doubt_topics:${task.id}` }]] : []),
-        [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
-      ],
-    };
+    let todoStatusLine = "";
+    if (currentTodo) {
+      todoStatusLine = `🎯 Sub-Task: <b>${currentTodo.title}</b>\n`;
+    } else if (dailyTodos.length > 0 && dailyTodos.every((t) => t.is_done)) {
+      todoStatusLine = `🎯 Sub-Task: <i>All planned tasks done! 🎉</i>\n`;
+    } else {
+      todoStatusLine = `🎯 Sub-Task: <i>General / None</i>\n`;
+    }
+
+    let todosLine = "";
+    if (dailyTodos.length > 0) {
+      todosLine = `\n📋 <b>Today's Tasks:</b>\n`;
+      for (const td of dailyTodos) {
+        const isCurrent = currentTodo?.id === td.id;
+        const pointer = isCurrent ? "  👈" : "";
+        todosLine += `  ${td.is_done ? "✅" : "▫️"} ${td.title}${pointer}\n`;
+      }
+    }
+
+    const text =
+      `${taskEmoji(task)} <b>${task.name}</b>\n` +
+      `🎯 Daily Goal: <b>${formatGoalDisplay(target, "minutes")}</b>\n` +
+      `📅 Schedule: <b>${formatScheduleDisplay(getTaskSchedule(task))}</b>\n` +
+      projectLine +
+      pomodoroLine +
+      `\n📊 Today's Progress: <b>${formatTimerMinutes(todayMins)} / ${formatTimerMinutes(target)}</b> (${percent}%)\n` +
+      todoStatusLine +
+      todosLine +
+      `\nStart the stopwatch, or type minutes to log (e.g. <b>45</b>):`;
+
+    if (mode === "pick_todo") {
+      const kb: InlineKeyboard = [];
+      for (const td of dailyTodos) {
+        const isSelected = currentTodo?.id === td.id;
+        const mark = isSelected ? "✅ " : td.is_done ? "✔️ " : "▫️ ";
+        const title = td.title.length > 25 ? td.title.slice(0, 25) + "…" : td.title;
+        kb.push([
+          { text: `${mark}${title}`, callback_data: `timer_sel_todo:${td.id}` },
+        ]);
+      }
+      kb.push([
+        { text: `${!currentTodo ? "✅ " : ""}⏩ General / None`, callback_data: "timer_sel_todo:none" },
+        { text: "➕ Add Task", callback_data: `timer_add_todo:${task.id}` },
+      ]);
+      kb.push([
+        { text: "◀️ Back to Launchpad", callback_data: `timer_back_launch:${task.id}` },
+      ]);
+      return { text, keyboard: kb };
+    }
+
+    // mode === "main"
+    const startLabel = task.is_pomodoro ? "🍅 Start Pomodoro" : "▶️ Start Stopwatch";
+    const todoSuffix = currentTodo
+      ? ` (${currentTodo.title.length > 18 ? currentTodo.title.slice(0, 18) + "…" : currentTodo.title})`
+      : "";
+
+    const kb: InlineKeyboard = [
+      [{ text: `${startLabel}${todoSuffix}`, callback_data: `timer_launch:${task.id}` }],
+    ];
+
+    const taskRow = [];
+    if (dailyTodos.length > 0) {
+      taskRow.push({ text: "🎯 Switch Task", callback_data: `timer_open_pick:${task.id}` });
+    }
+    taskRow.push({ text: "➕ Add Task", callback_data: `timer_add_todo:${task.id}` });
+    kb.push(taskRow);
+
+    if (task.is_project_based) {
+      kb.push([
+        { text: activeProject ? "📦 ➕ New Project" : "📦 ➕ Add Project", callback_data: `timer_new_proj:${task.id}` },
+      ]);
+    }
+
+    const footerRow = [];
+    if (!task.is_system) {
+      footerRow.push({ text: "❓ View Doubts", callback_data: `doubt_topics:${task.id}` });
+    }
+    footerRow.push({ text: "📋 Back to Tasks", callback_data: "menu_tasks" });
+    kb.push(footerRow);
+
+    return { text, keyboard: kb };
   }
 
   if (task.type === "counter") {
@@ -474,6 +559,42 @@ async function buildTaskDetail(task: Task): Promise<{ text: string; keyboard: In
   };
 }
 
+async function initTimerPrestartSession(
+  chatId: string | number,
+  task: Task,
+  messageId?: number
+): Promise<void> {
+  const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+  const today = localDateString();
+  let dailyTodos = activeProject
+    ? await getDailyTodosForProject(activeProject.id, today)
+    : await getDailyTodosForTask(task.id, today);
+
+  if (dailyTodos.length === 0) {
+    const pastTodos = activeProject
+      ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+      : await getUnfinishedPastTodosForTask(task.id, today);
+    if (pastTodos.length > 0) {
+      await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
+      dailyTodos = activeProject
+        ? await getDailyTodosForProject(activeProject.id, today)
+        : await getDailyTodosForTask(task.id, today);
+    }
+  }
+
+  const nextTodo = dailyTodos.find((t) => !t.is_done);
+
+  await saveWizardSession(chatId, "timer_prestart", {
+    taskId: task.id,
+    taskName: task.name,
+    projectId: activeProject?.id,
+    projectName: activeProject?.name,
+    todoId: nextTodo?.id,
+    todoTitle: nextTodo?.title,
+    promptMessageId: messageId,
+  });
+}
+
 // Opens a task's detail screen. While another timer is running, opening a
 // timer task is blocked with a stop-first warning shown in the tapped message.
 async function openTaskScreen(
@@ -504,14 +625,19 @@ async function openTaskScreen(
   await setActiveTask(chatId, task.id);
   const detail = await buildTaskDetail(task);
 
+  let targetMsgId = messageId;
   if (opts.fresh) {
-    // Reminder "Open Task": fresh message at the bottom, retire the reminder button
-    await sendUiMessage(chatId, detail.text, detail.keyboard);
+    const res = await sendUiMessage(chatId, detail.text, detail.keyboard);
+    targetMsgId = res;
     if (messageId) {
       await removeInlineKeyboard(chatId, messageId);
     }
   } else {
     await respondUi(chatId, messageId, detail.text, detail.keyboard);
+  }
+
+  if (task.type === "timer") {
+    await initTimerPrestartSession(chatId, task, targetMsgId);
   }
 }
 
@@ -3345,9 +3471,24 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Start Timer (live stopwatch) ---
-      if (callbackData.startsWith("start_task:")) {
-        const taskId = callbackData.split(":")[1];
+      // --- Button: Start Timer (Instant Launch with Smart Defaults) ---
+      if (
+        callbackData.startsWith("timer_launch:") ||
+        callbackData.startsWith("start_task:") ||
+        callbackData.startsWith("start_proj:")
+      ) {
+        let taskId = "";
+        let forcedProjectId: string | undefined;
+
+        if (callbackData.startsWith("start_proj:")) {
+          const parts = callbackData.split(":");
+          forcedProjectId = parts.length === 3 ? parts[2] : parts[1];
+          const project = await getProjectById(forcedProjectId);
+          taskId = project?.task_id || (parts.length === 3 ? parts[1] : "");
+        } else {
+          taskId = callbackData.split(":")[1];
+        }
+
         const task = await getTaskById(taskId);
         const taskName = task ? task.name : "Study/Work";
 
@@ -3356,7 +3497,7 @@ export async function POST(req: NextRequest) {
         if (alreadyRunning) {
           const warnKb: InlineKeyboard = [
             [{ text: `⏹ Stop ${alreadyRunning.task_name}`, callback_data: "stop_active_timer" }],
-            [{ text: `▶️ Start ${taskName}`, callback_data: `start_task:${taskId}` }],
+            [{ text: `▶️ Start ${taskName}`, callback_data: `timer_launch:${taskId}` }],
           ];
           await respondUi(
             chatId,
@@ -3368,60 +3509,168 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // If the task is project-based, check for ongoing project or ask for new project
-        if (task?.is_project_based) {
-          const activeProject = await getActiveProjectForTask(taskId);
-          if (activeProject) {
-            const projLabel =
-              activeProject.name.length > 25 ? activeProject.name.slice(0, 25) + "…" : activeProject.name;
-            const kb: InlineKeyboard = [
-              [{ text: `▶️ Continue "${projLabel}"`, callback_data: `start_proj:${activeProject.id}` }],
-              [{ text: `➕ Start New Project`, callback_data: `new_proj:${taskId}` }],
-              [{ text: `📋 Back to Tasks`, callback_data: "menu_tasks" }],
-            ];
-            await respondUi(
-              chatId,
-              messageId,
-              `📦 <b>${taskName}</b> is a project-based task.\n\n` +
-                `Active Project: <b>${activeProject.name}</b>\n\n` +
-                `Would you like to continue this project or start a new one?`,
-              kb
-            );
-            return NextResponse.json({ ok: true });
+        const session = await getWizardSession(chatId);
+        let projectId = forcedProjectId || session?.task_data?.projectId;
+        let projectName = session?.task_data?.projectName;
+        let todoId = session?.task_data?.todoId;
+        let todoTitle = session?.task_data?.todoTitle;
+
+        // If session was missing or expired or taskId mismatched, calculate smart defaults
+        if (!session || session.task_data.taskId !== taskId) {
+          if (task?.is_project_based) {
+            const activeProj = await getActiveProjectForTask(taskId);
+            projectId = activeProj?.id;
+            projectName = activeProj?.name;
           }
 
-          // No active project: ask for project name
-          await saveWizardSession(chatId, "awaiting_project_name", {
-            taskId: task.id,
-            taskName: task.name,
-            promptMessageId: messageId,
-          });
-          await respondUi(
-            chatId,
-            messageId,
-            `📦 <b>${taskName}</b> is a project-based task.\n\n` +
-              `What project are you working on?\n` +
-              `<i>(e.g., Making PPT for Optics, Chapter 4 Notes, Problem Set 3)</i>`,
-            [[{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }]]
-          );
-          return NextResponse.json({ ok: true });
+          const today = localDateString();
+          let dailyTodos = projectId
+            ? await getDailyTodosForProject(projectId, today)
+            : await getDailyTodosForTask(taskId, today);
+
+          if (dailyTodos.length === 0) {
+            const pastTodos = projectId
+              ? await getUnfinishedPastTodosForProject(projectId, today)
+              : await getUnfinishedPastTodosForTask(taskId, today);
+            if (pastTodos.length > 0) {
+              await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
+              dailyTodos = projectId
+                ? await getDailyTodosForProject(projectId, today)
+                : await getDailyTodosForTask(taskId, today);
+            }
+          }
+
+          const nextTodo = dailyTodos.find((t) => !t.is_done);
+          todoId = nextTodo?.id;
+          todoTitle = nextTodo?.title;
         }
 
-        await promptOrStartTimer(chatId, messageId, taskId, taskName, null, null);
+        if (projectId && !projectName) {
+          const proj = await getProjectById(projectId);
+          projectName = proj?.name;
+        }
+        if (todoId && !todoTitle) {
+          const td = await getProjectTodoById(todoId);
+          todoTitle = td?.title;
+        }
+
+        await clearWizardSession(chatId);
+        await doStartActiveTimer(chatId, messageId, taskId, taskName, projectId, projectName, todoId, todoTitle);
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Start Timer with Existing Project ---
-      if (callbackData.startsWith("start_proj:") || callbackData.startsWith("start_task_project:")) {
-        const parts = callbackData.split(":");
-        const projectId = parts.length === 3 ? parts[2] : parts[1];
-        const project = await getProjectById(projectId);
-        const taskId = project?.task_id || (parts.length === 3 ? parts[1] : "");
+      // --- Button: Open Sub-Task Switcher on Launchpad ---
+      if (callbackData.startsWith("timer_open_pick:")) {
+        const taskId = callbackData.split(":")[1];
         const task = await getTaskById(taskId);
-        const taskName = task ? task.name : "Study/Work";
-        const projectName = project ? project.name : null;
+        if (!task) return NextResponse.json({ ok: true });
 
-        await promptOrStartTimer(chatId, messageId, taskId, taskName, projectId, projectName);
+        const session = await getWizardSession(chatId);
+        const detail = await buildTaskDetail(task, session?.task_data?.todoId, "pick_todo");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Select Sub-Task and Return to Main Launchpad ---
+      if (callbackData.startsWith("timer_sel_todo:")) {
+        const todoId = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        const taskId = session?.task_data?.taskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) return NextResponse.json({ ok: true });
+
+        const taskData = session?.task_data || { taskId: task.id, taskName: task.name };
+
+        if (todoId === "none") {
+          taskData.todoId = undefined;
+          taskData.todoTitle = undefined;
+        } else {
+          const todo = await getProjectTodoById(todoId);
+          if (todo) {
+            taskData.todoId = todo.id;
+            taskData.todoTitle = todo.title;
+          }
+        }
+        await saveWizardSession(chatId, "timer_prestart", taskData);
+
+        const detail = await buildTaskDetail(task, taskData.todoId, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Back to Main Launchpad from Sub-Task Picker ---
+      if (callbackData.startsWith("timer_back_launch:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) return NextResponse.json({ ok: true });
+
+        const session = await getWizardSession(chatId);
+        await saveWizardSession(chatId, "timer_prestart", {
+          ...session?.task_data,
+          taskId: task.id,
+          taskName: task.name,
+          promptMessageId: messageId,
+        });
+
+        const detail = await buildTaskDetail(task, session?.task_data?.todoId, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Quick Add Sub-Task from Launchpad ---
+      if (callbackData.startsWith("timer_add_todo:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) return NextResponse.json({ ok: true });
+
+        const session = await getWizardSession(chatId);
+        await saveWizardSession(chatId, "awaiting_quick_todo_title", {
+          ...session?.task_data,
+          taskId: task.id,
+          taskName: task.name,
+          promptMessageId: messageId,
+        });
+
+        const kb: InlineKeyboard = [
+          [{ text: "❌ Cancel", callback_data: `timer_back_launch:${task.id}` }],
+        ];
+        await respondUi(
+          chatId,
+          messageId,
+          `📝 <b>Add Sub-Task for ${task.name}</b>\n\n` +
+            `Send your new sub-task title in chat:\n` +
+            `<i>(e.g., "Read Snell's Law", "Numericals 1-10")</i>`,
+          kb
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Quick New Project from Launchpad ---
+      if (callbackData.startsWith("timer_new_proj:")) {
+        const taskId = callbackData.split(":")[1];
+        const task = await getTaskById(taskId);
+        if (!task) return NextResponse.json({ ok: true });
+
+        const session = await getWizardSession(chatId);
+        await saveWizardSession(chatId, "awaiting_quick_project_name", {
+          ...session?.task_data,
+          taskId: task.id,
+          taskName: task.name,
+          promptMessageId: messageId,
+        });
+
+        const kb: InlineKeyboard = [
+          [{ text: "❌ Cancel", callback_data: `timer_back_launch:${task.id}` }],
+        ];
+        await respondUi(
+          chatId,
+          messageId,
+          `📦 <b>New Project for ${task.name}</b>\n\n` +
+            `What is the project name?\n` +
+            `<i>(e.g., "Optics Notes", "Unit 4 Presentation")</i>\n\n` +
+            `<i>Starting a new project will mark your previous project complete.</i>`,
+          kb
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -4935,6 +5184,80 @@ export async function POST(req: NextRequest) {
             await respondUi(chatId, promptMessageId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
           } else {
             await sendUiMessage(chatId, finalText, [[{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }]]);
+          }
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Quick Add Sub-Task from Launchpad ---
+        if (activeSession.step === "awaiting_quick_todo_title") {
+          const taskId = activeSession.task_data.taskId!;
+          const promptMessageId = activeSession.task_data.promptMessageId;
+          const projectId = activeSession.task_data.projectId || null;
+          const task = await getTaskById(taskId);
+
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
+
+          let newTodoId: string | undefined;
+          let newTodoTitle: string | undefined;
+          const title = text.trim();
+
+          const created = await addProjectTodo(taskId, projectId, title);
+          if (created) {
+            newTodoId = created.id;
+            newTodoTitle = created.title;
+          }
+
+          await saveWizardSession(chatId, "timer_prestart", {
+            ...activeSession.task_data,
+            todoId: newTodoId,
+            todoTitle: newTodoTitle,
+            promptMessageId,
+          });
+
+          if (task) {
+            const detail = await buildTaskDetail(task, newTodoId, "main");
+            if (promptMessageId) {
+              await respondUi(chatId, promptMessageId, detail.text, detail.keyboard);
+            }
+          }
+          return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Quick New Project from Launchpad ---
+        if (activeSession.step === "awaiting_quick_project_name") {
+          const taskId = activeSession.task_data.taskId!;
+          const promptMessageId = activeSession.task_data.promptMessageId;
+          const task = await getTaskById(taskId);
+
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
+
+          // Complete previous active project if one existed
+          const oldActive = await getActiveProjectForTask(taskId);
+          if (oldActive) {
+            await markProjectCompleted(oldActive.id);
+          }
+
+          const projectName = text.trim();
+          const newProj = await createProject(taskId, projectName);
+
+          await saveWizardSession(chatId, "timer_prestart", {
+            ...activeSession.task_data,
+            projectId: newProj?.id,
+            projectName: newProj?.name,
+            todoId: undefined,
+            todoTitle: undefined,
+            promptMessageId,
+          });
+
+          if (task) {
+            const detail = await buildTaskDetail(task, undefined, "main");
+            if (promptMessageId) {
+              await respondUi(chatId, promptMessageId, detail.text, detail.keyboard);
+            }
           }
           return NextResponse.json({ ok: true });
         }

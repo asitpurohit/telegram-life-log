@@ -121,6 +121,9 @@ export interface WizardSession {
     | 'awaiting_project_todos_resolution'
     | 'awaiting_session_todo_pick'
     | 'checkout_review'
+    | 'timer_prestart'
+    | 'awaiting_quick_project_name'
+    | 'awaiting_quick_todo_title'
     | 'awaiting_settings_window'
     | 'awaiting_settings_interval'
     | 'awaiting_settings_email';
