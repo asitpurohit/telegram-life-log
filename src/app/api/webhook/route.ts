@@ -539,6 +539,8 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
     `• Recipient: <code>${emailRecipient || "None (tap Change Email below)"}</code>\n` +
     `• Provider: <b>${emailProviderLabel}</b>`;
 
+  const isDefaultWindow = settings.idle_window_start === "05:00" && settings.idle_window_end === "22:00";
+
   const keyboard: InlineKeyboard = [
     [
       {
@@ -553,20 +555,25 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
       { text: `⏱️ 30m${settings.idle_interval_mins === 30 ? " ✓" : ""}`, callback_data: "set_idle_interval:30" },
     ],
     [
-      { text: "⏰ Window: 5 AM – 10 PM", callback_data: "set_idle_window:05:00:22:00" },
-      { text: "⏰ 6 AM – 11 PM", callback_data: "set_idle_window:06:00:23:00" },
+      {
+        text: `⏰ Window: 5 AM – 10 PM${isDefaultWindow ? " ✓" : ""}`,
+        callback_data: "set_idle_window:05:00:22:00",
+      },
     ],
     [
       { text: "✏️ Custom Window", callback_data: "set_idle_window:custom" },
+    ],
+    [
       { text: "✏️ Custom Interval", callback_data: "set_idle_interval:custom" },
     ],
     [
       { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-      { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
       ...(settings.idle_snoozed_until ? [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }] : []),
     ],
     [
       { text: "✏️ Change Email", callback_data: "set_summary_email" },
+    ],
+    [
       { text: "📨 Send Email Now", callback_data: "send_test_email" },
     ],
     [{ text: "📋 Back to Tasks", callback_data: "menu_tasks" }],
