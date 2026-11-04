@@ -5,6 +5,7 @@ import {
   setPauseState,
   getNudgeState,
   setNudgeState,
+  clearNudgeState,
   updateActiveTimer,
 } from "./supabase";
 import {
@@ -231,6 +232,12 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       if (phase === "work" && !pause.pausedAt) {
         const workedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
         if (workedSec >= workMins * 60) {
+          const prevNudge = await getNudgeState(timer.chat_id);
+          if (prevNudge.messageId) {
+            await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
+          }
+          await clearNudgeState(timer.chat_id);
+
           await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: pause.pausedSeconds });
           await updateActiveTimer(timer.chat_id, {
             pomodoro_phase: "break",
@@ -272,6 +279,12 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         // 2) Break phase completed -> sound alarm & prompt for next round
         const breakElapsedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
         if (breakElapsedSec >= breakMins * 60) {
+          const prevNudge = await getNudgeState(timer.chat_id);
+          if (prevNudge.messageId) {
+            await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
+          }
+          await clearNudgeState(timer.chat_id);
+
           const newPausedSeconds = pause.pausedSeconds + breakElapsedSec;
           await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: newPausedSeconds });
           const nextRound = round + 1;
@@ -337,10 +350,10 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }
 
-    // 2) "Still running" nudge every 5 minutes (never while paused, and never for Sleep/Pomodoro).
+    // 2) 5-minute milestone buzz / nudge (never while paused, never for Sleep, never during Pomodoro break).
     if (/sleep/i.test(timer.task_name)) continue;
     if (pause.pausedAt) continue;
-    if (timer.is_pomodoro) continue;
+    if (timer.is_pomodoro && timer.pomodoro_phase === "break") continue;
 
     const nudge = await getNudgeState(timer.chat_id);
     const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;
@@ -351,14 +364,25 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       await deleteTelegramMessage(timer.chat_id, nudge.messageId);
     }
 
-    const elapsedSeconds = Math.max(
-      0,
-      Math.floor((now - new Date(timer.started_at).getTime()) / 1000) - pause.pausedSeconds
-    );
-    const sent = await sendTelegramMessage(
-      timer.chat_id,
-      `⏱️ <b>${timer.task_name}</b> is still running — <b>${formatDuration(elapsedSeconds)}</b> elapsed.`
-    );
+    let nudgeText = "";
+    if (timer.is_pomodoro) {
+      const phaseStartMs = new Date(timer.phase_started_at || timer.started_at).getTime();
+      const phaseElapsedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+      const targetWorkSec = (timer.pomodoro_work_mins || 25) * 60;
+      const remainingSec = Math.max(0, targetWorkSec - phaseElapsedSec);
+      const round = timer.pomodoro_round || 1;
+      nudgeText =
+        `🍅 <b>${timer.task_name}</b> (Round ${round})\n` +
+        `⏱️ <b>${formatDuration(phaseElapsedSec)}</b> elapsed — <b>${formatDuration(remainingSec)}</b> remaining in this focus round.`;
+    } else {
+      const elapsedSeconds = Math.max(
+        0,
+        Math.floor((now - new Date(timer.started_at).getTime()) / 1000) - pause.pausedSeconds
+      );
+      nudgeText = `⏱️ <b>${timer.task_name}</b> is still running — <b>${formatDuration(elapsedSeconds)}</b> elapsed.`;
+    }
+
+    const sent = await sendTelegramMessage(timer.chat_id, nudgeText);
 
     await setNudgeState(timer.chat_id, {
       messageId: sent?.result?.message_id ?? null,
