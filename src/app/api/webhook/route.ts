@@ -112,6 +112,7 @@ function isTimerCallback(data: string): boolean {
     data.startsWith("timer_resume:") ||
     data.startsWith("timer_refresh:") ||
     data.startsWith("timer_stop:") ||
+    data === "pomodoro_start_break" ||
     data === "pomodoro_skip_break" ||
     data === "pomodoro_next_round"
   );
@@ -529,7 +530,7 @@ function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | null {
     workMins: active.pomodoro_work_mins || 25,
     breakMins: active.pomodoro_break_mins || 5,
     round: active.pomodoro_round || 1,
-    phase: (active.pomodoro_phase as "work" | "break") || "work",
+    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break") || "work",
     phaseStartedAtIso: active.phase_started_at || active.started_at,
   };
 }
@@ -3574,6 +3575,60 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Pomodoro: Start Break (User manually clicks to begin the rest countdown) ---
+      if (callbackData === "pomodoro_start_break") {
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pause = await getPauseState(chatId);
+        const now = Date.now();
+
+        // Any time that passed between work finishing and user clicking Start Break
+        // is added to pausedSeconds so it is never counted as study time
+        let newPausedSeconds = pause.pausedSeconds;
+        if (pause.pausedAt && pause.pausedAt > 0) {
+          const waitSec = Math.max(0, Math.floor((now - pause.pausedAt) / 1000));
+          newPausedSeconds += waitSec;
+        }
+
+        const nowIso = new Date(now).toISOString();
+        // Keep pausedAt: now so study time continues to be paused during the break
+        await setPauseState(chatId, { pausedAt: now, pausedSeconds: newPausedSeconds });
+        await updateActiveTimer(chatId, {
+          pomodoro_phase: "break",
+          phase_started_at: nowIso,
+        });
+
+        const progressStr = await getTimerProjectProgress(active.project_id);
+        const pomodoroInfo: PomodoroInfo = {
+          isPomodoro: true,
+          workMins: active.pomodoro_work_mins || 25,
+          breakMins: active.pomodoro_break_mins || 5,
+          round: active.pomodoro_round || 1,
+          phase: "break",
+          phaseStartedAtIso: nowIso,
+        };
+
+        const view = buildTimerView(
+          active.task_name,
+          active.started_at,
+          now,
+          newPausedSeconds,
+          active.project_name,
+          progressStr,
+          active.todo_title,
+          pomodoroInfo
+        );
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Pomodoro: Skip Break & Start Next Round ---
       if (callbackData === "pomodoro_skip_break") {
         const active = await getActiveTimer(chatId);
@@ -3584,9 +3639,12 @@ export async function POST(req: NextRequest) {
 
         const pause = await getPauseState(chatId);
         const now = Date.now();
-        const phaseStartMs = new Date(active.phase_started_at || active.started_at).getTime();
-        const breakSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
-        const newPausedSeconds = pause.pausedSeconds + breakSec;
+
+        let newPausedSeconds = pause.pausedSeconds;
+        if (pause.pausedAt && pause.pausedAt > 0) {
+          const waitSec = Math.max(0, Math.floor((now - pause.pausedAt) / 1000));
+          newPausedSeconds += waitSec;
+        }
 
         const nextRound = (active.pomodoro_round || 1) + 1;
         const nowIso = new Date(now).toISOString();

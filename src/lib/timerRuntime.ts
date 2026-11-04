@@ -24,7 +24,7 @@ export interface PomodoroInfo {
   workMins: number;
   breakMins: number;
   round: number;
-  phase: "work" | "break";
+  phase: "work" | "awaiting_break" | "break";
   phaseStartedAtIso: string;
 }
 
@@ -60,7 +60,7 @@ export function buildTimerView(
   );
   const isPaused = pausedAtMs > 0;
   const startedTime = localTimeString(new Date(startedAtIso));
-  const emoji = /sleep/i.test(taskName) ? "😴" : pomodoro?.isPomodoro ? (pomodoro.phase === "break" ? "☕" : "🍅") : "⏱️";
+  const emoji = /sleep/i.test(taskName) ? "😴" : pomodoro?.isPomodoro ? (pomodoro.phase === "break" ? "☕" : pomodoro.phase === "awaiting_break" ? "🎉" : "🍅") : "⏱️";
 
   let projectLine = "";
   if (projectName) {
@@ -83,6 +83,24 @@ export function buildTimerView(
     const workMins = pomodoro.workMins || 25;
     const breakMins = pomodoro.breakMins || 5;
     const phaseStartMs = new Date(pomodoro.phaseStartedAtIso || startedAtIso).getTime();
+
+    // Awaiting Break Phase: Focus is completed & paused; waiting for user to start break
+    if (pomodoro.phase === "awaiting_break") {
+      const text =
+        `🎉 <b>${taskName}</b> — Focus Complete! (Round ${round} Done)${projectLine}${taskLine}\n\n` +
+        `⏳ Focus Time: <b>${workMins}m / ${workMins}m</b>  [■■■■■■■■■■] 100%\n` +
+        `🕐 Started: ${startedTime}\n\n` +
+        `✨ <b>Great focus!</b> Work is paused.\n` +
+        `Tap <b>Start Break</b> whenever you are ready to take your ${breakMins}-minute break:`;
+
+      const keyboard: InlineKeyboard = [
+        [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
+        [{ text: "▶️ Skip Break & Continue Work", callback_data: "pomodoro_skip_break" }],
+        [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
+      ];
+
+      return { text, keyboard };
+    }
 
     if (pomodoro.phase === "break") {
       const breakElapsedSec = Math.max(0, Math.floor((Date.now() - phaseStartMs) / 1000));
@@ -240,9 +258,16 @@ export async function refreshRunningTimerMessages(): Promise<void> {
 
           await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: pause.pausedSeconds });
           await updateActiveTimer(timer.chat_id, {
-            pomodoro_phase: "break",
+            pomodoro_phase: "awaiting_break",
             phase_started_at: new Date(now).toISOString(),
           });
+
+          const sessionEpoch = new Date(timer.started_at).getTime();
+          const breakKb: InlineKeyboard = [
+            [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
+            [{ text: "▶️ Skip Break & Continue Work", callback_data: "pomodoro_skip_break" }],
+            [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${now}:${sessionEpoch}` }],
+          ];
 
           await sendTripleChimeAlert(
             timer.chat_id,
@@ -250,13 +275,13 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
             `🔔 <b>Pomodoro Complete! (${workMins} mins)</b>\n\n` +
               `Great focus on <b>${timer.task_name}</b>! 🎉\n` +
-              `Time for a <b>${breakMins}-minute break</b> ☕\n` +
-              `<i>(Take a stretch, rest your eyes — alarm will ring in ${breakMins} mins)</i>`
+              `Work is paused. Tap below whenever you are ready to start your <b>${breakMins}-minute break</b>:`,
+            breakKb
           );
 
           pomodoroInfo = {
             ...pomodoroInfo,
-            phase: "break",
+            phase: "awaiting_break",
             phaseStartedAtIso: new Date(now).toISOString(),
           };
 
@@ -353,7 +378,7 @@ export async function refreshRunningTimerMessages(): Promise<void> {
     // 2) 5-minute milestone buzz / nudge (never while paused, never for Sleep, never during Pomodoro break).
     if (/sleep/i.test(timer.task_name)) continue;
     if (pause.pausedAt) continue;
-    if (timer.is_pomodoro && timer.pomodoro_phase === "break") continue;
+    if (timer.is_pomodoro && (timer.pomodoro_phase === "break" || timer.pomodoro_phase === "awaiting_break")) continue;
 
     const nudge = await getNudgeState(timer.chat_id);
     const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;
