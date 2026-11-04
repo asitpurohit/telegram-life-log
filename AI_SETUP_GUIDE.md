@@ -138,6 +138,20 @@ Only needed if they want the bot running when their computer is off.
    never both. Running polling deletes the webhook (and vice-versa), which is the usual
    cause of “the bot stopped responding”.
 
+## Step 7 (Optional) — Enable Daily Summary Emails (100% Free)
+
+The bot can email you an automated accountability debrief every morning at 5:00 AM (focus time, tasks & projects worked on, session notes, carried-over incomplete tasks, habits, and diary).
+
+1. **Option A (Resend - Recommended for Vercel):**
+   - Create a free account at https://resend.com (3,000 free emails/month, no credit card needed).
+   - Generate an API key under **API Keys** → set it as `RESEND_API_KEY`.
+   - Set `SUMMARY_EMAIL_TO="user@gmail.com"`.
+   - *Custom Domain (Optional):* Add your domain under Resend Domains, add the 3 DNS records, and set `SUMMARY_EMAIL_FROM="LifeLog <hello@yourdomain.com>"`.
+2. **Option B (Gmail SMTP):**
+   - Generate a 16-character App Password at https://myaccount.google.com/apppasswords.
+   - Set `SMTP_HOST="smtp.gmail.com"`, `SMTP_PORT="465"`, `SMTP_USER="user@gmail.com"`, `SMTP_PASS="xxxx xxxx xxxx xxxx"`, and `SUMMARY_EMAIL_TO="user@gmail.com"`.
+3. In Telegram, the user can type `/email` anytime to test delivery, or open `/settings` → `[✏️ Change Email]` to update their address directly in chat.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

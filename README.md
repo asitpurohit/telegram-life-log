@@ -150,6 +150,40 @@ timer message. Perfect for personal use at home.
 
 ---
 
+## Automated Daily Email Debrief (100% Free)
+
+Every morning at 5:00 AM (configured via `MORNING_BRIEFING_TIME`), the bot compiles yesterday's full accountability report (focus time, task & project breakdown, session notes, carried-over incomplete tasks, completed habits, 24h time audit, and diary reflection) and emails it to you with **zero third-party payment**.
+
+### Setup Options (Choose One):
+
+#### Option A: Resend API (Recommended for Vercel — 3,000 free emails/month)
+1. Sign up for free at [resend.com](https://resend.com) (no credit card required).
+2. Go to **API Keys** → **Create API Key** and copy it.
+3. In your Vercel Environment Variables (or `.env.local`), add:
+   ```env
+   RESEND_API_KEY="re_..."
+   SUMMARY_EMAIL_TO="your-email@gmail.com"
+   ```
+4. *Optional (Custom Domain):* If you own a domain (e.g. on Cloudflare), add it under Resend Domains, paste the 3 DNS records, and set `SUMMARY_EMAIL_FROM="LifeLog <hello@yourdomain.com>"`.
+
+#### Option B: Gmail SMTP (100% Free with standard Google App Password — 500 emails/day)
+1. In your Google Account, enable 2-Step Verification and go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+2. Create an App Password (16 letters).
+3. In your Vercel Environment Variables (or `.env.local`), add:
+   ```env
+   SMTP_HOST="smtp.gmail.com"
+   SMTP_PORT="465"
+   SMTP_USER="your-email@gmail.com"
+   SMTP_PASS="xxxx xxxx xxxx xxxx"
+   SUMMARY_EMAIL_TO="your-email@gmail.com"
+   ```
+
+### Managing Email in Telegram:
+- **Change Email On the Fly:** Type `/settings` and tap **`[✏️ Change Email]`** to update your recipient email directly in chat without touching Vercel!
+- **On-Demand Summary:** Send `/email` (or `/mail`) in Telegram anytime to deliver yesterday's summary immediately.
+
+---
+
 ## Project structure
 
 ```
