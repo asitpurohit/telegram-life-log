@@ -171,6 +171,33 @@ export function buildTimerView(
   return { text, keyboard };
 }
 
+// Triple-Ping alert sequence: sends 3 quick notifications spaced 1.2s apart
+// to trigger consecutive phone vibrations/chimes, then auto-cleans the temporary pings.
+async function sendTripleChimeAlert(
+  chatId: string | number,
+  ping1: string,
+  ping2: string,
+  finalText: string,
+  keyboard?: InlineKeyboard
+): Promise<void> {
+  const p1 = await sendTelegramMessage(chatId, ping1);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+
+  const p2 = await sendTelegramMessage(chatId, ping2);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+
+  await sendTelegramMessage(chatId, finalText, keyboard);
+
+  // Give the user's phone 3 seconds to complete the vibration alerts before cleaning up temporary pings
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  if (p1?.result?.message_id) {
+    await deleteTelegramMessage(chatId, p1.result.message_id);
+  }
+  if (p2?.result?.message_id) {
+    await deleteTelegramMessage(chatId, p2.result.message_id);
+  }
+}
+
 // Called periodically by the local polling runner (5s) and by the Vercel cron
 // (/api/tick, 1 min) to make running timers tick, manage Pomodoro intervals,
 // and send "still running" notifications every 5 minutes.
@@ -210,8 +237,10 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             phase_started_at: new Date(now).toISOString(),
           });
 
-          await sendTelegramMessage(
+          await sendTripleChimeAlert(
             timer.chat_id,
+            "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
+            "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
             `🔔 <b>Pomodoro Complete! (${workMins} mins)</b>\n\n` +
               `Great focus on <b>${timer.task_name}</b>! 🎉\n` +
               `Time for a <b>${breakMins}-minute break</b> ☕\n` +
@@ -258,11 +287,13 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             [{ text: `⏹ Stop & Log Session`, callback_data: `timer_stop:${now}:${sessionEpoch}` }],
           ];
 
-          await sendTelegramMessage(
+          await sendTripleChimeAlert(
             timer.chat_id,
-            `⏰ 🔔 <b>BEEP BEEP! Break is Over!</b>\n\n` +
-              `You finished ${workMins}m focus + ${breakMins}m break.\n` +
-              `Ready for Round ${nextRound}?`,
+            "⏰ <b>BEEP!</b> (Break Ending 1/3)",
+            "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
+            `🚨 ⏰ 🔔 <b>BEEP BEEP! Break is Over!</b> 🔔 ⏰ 🚨\n\n` +
+              `You finished <b>${workMins}m focus + ${breakMins}m break</b>.\n` +
+              `Ready for <b>Round ${nextRound}</b>?`,
             nextKb
           );
 
