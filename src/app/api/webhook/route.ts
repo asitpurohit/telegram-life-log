@@ -4153,7 +4153,7 @@ export async function POST(req: NextRequest) {
       // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
       const isWizardAnswer = activeSession && !text.startsWith("/");
-      const isAllowedDuringTimer = text === "/start" || text === "/help";
+      const isAllowedDuringTimer = text === "/start";
       if (!isWizardAnswer && !isAllowedDuringTimer) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
@@ -4171,8 +4171,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Command: /start or /help ---
-      if (text === "/start" || text === "/help") {
+      // --- Command: /start ---
+      if (text === "/start") {
         await clearWizardSessionAndRetirePrompt(chatId);
         await setActiveTask(chatId, null);
         await setBotCommands(BOT_COMMANDS);

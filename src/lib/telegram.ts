@@ -15,13 +15,11 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "log", description: "Daily diary & mood reflection" },
   { command: "today", description: "Today's scorecard & progress" },
   { command: "email", description: "Email summary (/email [date])" },
-  { command: "settings", description: "Anti-slacking guard & email preferences" },
-  { command: "help", description: "Command list & usage tips" },
   { command: "ask", description: "Ask AI about your data & progress" },
   { command: "doubt", description: "Log or view study/coding doubts" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },
-  { command: "settings", description: "Anti-slacking idle guard & preferences" },
+  { command: "settings", description: "Anti-slacking guard & email preferences" },
 ];
 
 export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {
