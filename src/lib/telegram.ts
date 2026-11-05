@@ -109,7 +109,11 @@ export async function editTelegramMessage(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    return await res.json();
+    const data = await res.json();
+    if (!data.ok && data.description?.includes("message is not modified")) {
+      return { ok: true, result: { message_id: messageId } };
+    }
+    return data;
   } catch (err: any) {
     console.error("editTelegramMessage network error:", err.message);
     return null;
