@@ -138,6 +138,7 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("todo_add:") ||
     data.startsWith("todo_date:") ||
     data.startsWith("todo_time:") ||
+    data.startsWith("carryover_") ||
     data.startsWith("daily_todo_") ||
     data.startsWith("pick_todo") ||
     data.startsWith("todo_fin:") ||
@@ -407,22 +408,9 @@ async function buildTaskDetail(
       }
     }
     const today = localDateString();
-    let dailyTodos = activeProject
+    const dailyTodos = activeProject
       ? await getDailyTodosForProject(activeProject.id, today)
       : await getDailyTodosForTask(task.id, today);
-
-    // Auto carry over past unfinished tasks if today has none yet
-    if (dailyTodos.length === 0) {
-      const pastTodos = activeProject
-        ? await getUnfinishedPastTodosForProject(activeProject.id, today)
-        : await getUnfinishedPastTodosForTask(task.id, today);
-      if (pastTodos.length > 0) {
-        await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
-        dailyTodos = activeProject
-          ? await getDailyTodosForProject(activeProject.id, today)
-          : await getDailyTodosForTask(task.id, today);
-      }
-    }
 
     let currentTodo: ProjectTodo | null = null;
     if (selectedTodoId === "none") {
@@ -570,21 +558,9 @@ async function initTimerPrestartSession(
 ): Promise<void> {
   const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
   const today = localDateString();
-  let dailyTodos = activeProject
+  const dailyTodos = activeProject
     ? await getDailyTodosForProject(activeProject.id, today)
     : await getDailyTodosForTask(task.id, today);
-
-  if (dailyTodos.length === 0) {
-    const pastTodos = activeProject
-      ? await getUnfinishedPastTodosForProject(activeProject.id, today)
-      : await getUnfinishedPastTodosForTask(task.id, today);
-    if (pastTodos.length > 0) {
-      await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
-      dailyTodos = activeProject
-        ? await getDailyTodosForProject(activeProject.id, today)
-        : await getDailyTodosForTask(task.id, today);
-    }
-  }
 
   const nextTodo = dailyTodos.find((t) => !t.is_done);
 
@@ -623,6 +599,54 @@ async function openTaskScreen(
         warnKb
       );
       return;
+    }
+
+    // First time running today: check if there are leftover tasks from previous sessions
+    const today = localDateString();
+    const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+    const dailyTodos = activeProject
+      ? await getDailyTodosForProject(activeProject.id, today)
+      : await getDailyTodosForTask(task.id, today);
+
+    if (dailyTodos.length === 0) {
+      const pastTodos = activeProject
+        ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+        : await getUnfinishedPastTodosForTask(task.id, today);
+
+      if (pastTodos.length > 0) {
+        await saveWizardSession(chatId, "awaiting_daily_todo_carryover", {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: activeProject?.id,
+          projectName: activeProject?.name,
+          promptMessageId: messageId,
+          pastTodoIds: pastTodos.map((t) => t.id),
+        });
+
+        const projectTag = activeProject?.name ? `📦 Project: <b>${activeProject.name}</b>\n\n` : "";
+        const pastList = pastTodos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
+
+        const carryoverKb: InlineKeyboard = [
+          [{ text: `📥 Carry Over to Today (${pastTodos.length})`, callback_data: `carryover_apply:${task.id}` }],
+          [{ text: "✨ Start Fresh / New Tasks", callback_data: `carryover_fresh:${task.id}` }],
+          [{ text: "🗑️ Dismiss Past Tasks", callback_data: `carryover_dismiss:${task.id}` }],
+        ];
+
+        const promptText =
+          `${projectTag}⏳ <b>You have ${pastTodos.length} unfinished task${pastTodos.length > 1 ? "s" : ""} from previous sessions:</b>\n\n` +
+          `${pastList}\n\n` +
+          `What would you like to do?`;
+
+        if (opts.fresh) {
+          await sendUiMessage(chatId, promptText, carryoverKb);
+          if (messageId) {
+            await removeInlineKeyboard(chatId, messageId);
+          }
+        } else {
+          await respondUi(chatId, messageId, promptText, carryoverKb);
+        }
+        return;
+      }
     }
   }
 
@@ -892,11 +916,9 @@ async function promptOrStartTimer(
       const pastList = pastTodos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
 
       const kb: InlineKeyboard = [
-        [{ text: `📥 Carry Over to Today (${pastTodos.length})`, callback_data: "carryover_apply" }],
-        [{ text: "✨ Start Fresh / New Tasks", callback_data: "carryover_fresh" }],
-        [{ text: "🗑️ Dismiss Past Tasks", callback_data: "carryover_dismiss" }],
-        [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
-        [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+        [{ text: `📥 Carry Over to Today (${pastTodos.length})`, callback_data: `carryover_apply:${taskId}` }],
+        [{ text: "✨ Start Fresh / New Tasks", callback_data: `carryover_fresh:${taskId}` }],
+        [{ text: "🗑️ Dismiss Past Tasks", callback_data: `carryover_dismiss:${taskId}` }],
       ];
 
       const promptText =
@@ -3528,21 +3550,9 @@ export async function POST(req: NextRequest) {
           }
 
           const today = localDateString();
-          let dailyTodos = projectId
+          const dailyTodos = projectId
             ? await getDailyTodosForProject(projectId, today)
             : await getDailyTodosForTask(taskId, today);
-
-          if (dailyTodos.length === 0) {
-            const pastTodos = projectId
-              ? await getUnfinishedPastTodosForProject(projectId, today)
-              : await getUnfinishedPastTodosForTask(taskId, today);
-            if (pastTodos.length > 0) {
-              await carryOverTodosToToday(pastTodos.map((t) => t.id), today);
-              dailyTodos = projectId
-                ? await getDailyTodosForProject(projectId, today)
-                : await getDailyTodosForTask(taskId, today);
-            }
-          }
 
           const nextTodo = dailyTodos.find((t) => !t.is_done);
           todoId = nextTodo?.id;
@@ -3849,130 +3859,111 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Button: Apply Carry-Over of Past Incomplete To-Dos ---
-      if (callbackData === "carryover_apply") {
+      if (callbackData.startsWith("carryover_apply")) {
+        const parts = callbackData.split(":");
+        const taskIdParam = parts[1];
         const session = await getWizardSession(chatId);
-        if (!session || !session.task_data.taskId) {
-          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+        const taskId = taskIdParam || session?.task_data?.taskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found. Please open the task again.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const { taskId, taskName, projectId, projectName, pastTodoIds } = session.task_data;
+        const pastTodoIds = session?.task_data?.pastTodoIds || [];
         const today = localDateString();
 
-        if (pastTodoIds && pastTodoIds.length > 0) {
+        if (pastTodoIds.length > 0) {
           await carryOverTodosToToday(pastTodoIds, today);
         }
 
-        const todos = projectId
-          ? await getDailyTodosForProject(projectId, today)
-          : await getDailyTodosForTask(taskId, today);
+        const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+        const dailyTodos = activeProject
+          ? await getDailyTodosForProject(activeProject.id, today)
+          : await getDailyTodosForTask(task.id, today);
 
-        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
-          taskId,
-          taskName,
-          projectId,
-          projectName,
+        const nextTodo = dailyTodos.find((t) => !t.is_done);
+
+        await saveWizardSession(chatId, "timer_prestart", {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: activeProject?.id,
+          projectName: activeProject?.name,
+          todoId: nextTodo?.id,
+          todoTitle: nextTodo?.title,
           promptMessageId: messageId,
         });
 
-        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n` : "";
-        const listText = todos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
-
-        const startLabel =
-          todos.length === 1
-            ? `▶️ Start Timer (1 task)`
-            : `▶️ Done / Start Timer (${todos.length} tasks)`;
-
-        const kb: InlineKeyboard = [
-          [{ text: startLabel, callback_data: "daily_todo_done" }],
-          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
-        ];
-
-        await respondUi(
-          chatId,
-          messageId,
-          `${projectTag}📋 <b>Today's Plan (Carried Over):</b>\n\n` +
-            `${listText}\n\n` +
-            `Send more tasks to add (one by one or comma-separated), or tap <b>Done / Start Timer</b> below:`,
-          kb
-        );
+        const detail = await buildTaskDetail(task, nextTodo?.id, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Start Fresh / New Tasks (Leave Past To-Dos untouched) ---
-      if (callbackData === "carryover_fresh") {
+      // --- Button: Start Fresh / New Tasks ---
+      if (callbackData.startsWith("carryover_fresh")) {
+        const parts = callbackData.split(":");
+        const taskIdParam = parts[1];
         const session = await getWizardSession(chatId);
-        if (!session || !session.task_data.taskId) {
-          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
+        const taskId = taskIdParam || session?.task_data?.taskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found. Please open the task again.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const { taskId, taskName, projectId, projectName } = session.task_data;
-
-        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
-          taskId,
-          taskName,
-          projectId,
-          projectName,
-          promptMessageId: messageId,
-        });
-
-        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
-        const kb: InlineKeyboard = [
-          [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
-          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
-        ];
-
-        await respondUi(
-          chatId,
-          messageId,
-          `${projectTag}📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
-            `Send your tasks one by one or separated by commas:\n` +
-            `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>\n\n` +
-            `Tap <b>Start Timer</b> below if you prefer to leave it blank:`,
-          kb
-        );
-        return NextResponse.json({ ok: true });
-      }
-
-      // --- Button: Dismiss Past To-Dos (Mark Completed / Inactive) ---
-      if (callbackData === "carryover_dismiss") {
-        const session = await getWizardSession(chatId);
-        if (!session || !session.task_data.taskId) {
-          await respondUi(chatId, messageId, "⚠️ Session expired. Please open the task again.", []);
-          return NextResponse.json({ ok: true });
-        }
-
-        const { taskId, taskName, projectId, projectName, pastTodoIds } = session.task_data;
-
-        if (pastTodoIds && pastTodoIds.length > 0) {
+        const pastTodoIds = session?.task_data?.pastTodoIds || [];
+        if (pastTodoIds.length > 0) {
           await dismissPastTodos(pastTodoIds);
         }
 
-        await saveWizardSession(chatId, "awaiting_daily_todo_input", {
-          taskId,
-          taskName,
-          projectId,
-          projectName,
+        const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+
+        await saveWizardSession(chatId, "timer_prestart", {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: activeProject?.id,
+          projectName: activeProject?.name,
+          todoId: undefined,
+          todoTitle: undefined,
           promptMessageId: messageId,
         });
 
-        const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
-        const kb: InlineKeyboard = [
-          [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
-          [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
-        ];
+        const detail = await buildTaskDetail(task, undefined, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        return NextResponse.json({ ok: true });
+      }
 
-        await respondUi(
-          chatId,
-          messageId,
-          `${projectTag}🗑️ <i>Past unfinished tasks dismissed.</i>\n\n` +
-            `📋 <b>What tasks/work will you do today for ${projectName || taskName}?</b>\n\n` +
-            `Send your tasks one by one or separated by commas:\n` +
-            `<i>(e.g., "Read Snell's Law, Numericals 1-10, Formulas")</i>\n\n` +
-            `Tap <b>Start Timer</b> below if you prefer to leave it blank:`,
-          kb
-        );
+      // --- Button: Dismiss Past To-Dos ---
+      if (callbackData.startsWith("carryover_dismiss")) {
+        const parts = callbackData.split(":");
+        const taskIdParam = parts[1];
+        const session = await getWizardSession(chatId);
+        const taskId = taskIdParam || session?.task_data?.taskId;
+        const task = taskId ? await getTaskById(taskId) : null;
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pastTodoIds = session?.task_data?.pastTodoIds || [];
+        if (pastTodoIds.length > 0) {
+          await dismissPastTodos(pastTodoIds);
+        }
+
+        const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+
+        await saveWizardSession(chatId, "timer_prestart", {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: activeProject?.id,
+          projectName: activeProject?.name,
+          todoId: undefined,
+          todoTitle: undefined,
+          promptMessageId: messageId,
+        });
+
+        const detail = await buildTaskDetail(task, undefined, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
         return NextResponse.json({ ok: true });
       }
 
@@ -5495,11 +5486,9 @@ export async function POST(req: NextRequest) {
           const pastIds = taskData.pastTodoIds || [];
 
           const kb: InlineKeyboard = [
-            [{ text: `📥 Carry Over to Today (${pastIds.length})`, callback_data: "carryover_apply" }],
-            [{ text: "✨ Start Fresh / New Tasks", callback_data: "carryover_fresh" }],
-            [{ text: "🗑️ Dismiss Past Tasks", callback_data: "carryover_dismiss" }],
-            [{ text: "▶️ Start Timer (Leave Blank)", callback_data: "daily_todo_skip" }],
-            [{ text: "❌ Cancel", callback_data: `open_task:${taskId}` }],
+            [{ text: `📥 Carry Over to Today (${pastIds.length})`, callback_data: `carryover_apply:${taskId}` }],
+            [{ text: "✨ Start Fresh / New Tasks", callback_data: `carryover_fresh:${taskId}` }],
+            [{ text: "🗑️ Dismiss Past Tasks", callback_data: `carryover_dismiss:${taskId}` }],
           ];
 
           await sendTelegramMessage(
