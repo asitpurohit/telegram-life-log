@@ -5,13 +5,16 @@ import {
   trackIdleAlertMessage,
   getIdleAlertMessage,
   clearIdleAlertState,
+  getTodayLogs,
+  getActiveTasks,
 } from "./supabase";
 import {
   sendTelegramMessage,
   deleteTelegramMessage,
   InlineKeyboard,
 } from "./telegram";
-import { localHHMMSS } from "./time";
+import { localDateString, localTimeString, localHHMMSS, zonedDateTimeToUtc } from "./time";
+import { computeWastedDays, formatTimerMinutes } from "./timeAudit";
 
 export async function clearIdleAlertCard(
   chatId: string | number,
@@ -108,7 +111,50 @@ export async function checkAndSendIdleNudges(): Promise<void> {
       continue;
     }
 
-    // 5. Send the 4-beep idle alert (replaces any previous idle card so only 1 exists)
+    // 5. Compute dynamic idle metrics:
+    //    a) Current continuous idle streak (since last timer ended or active window opened)
+    //    b) Total wasted / unaccounted time today across active hours
+    const today = localDateString();
+    const todayLogs = await getTodayLogs();
+    const allTasks = await getActiveTasks();
+
+    const windowStartUtc = zonedDateTimeToUtc(today, `${start}:00`);
+    const windowStartMs = windowStartUtc.getTime();
+
+    // Find the latest completed timer session today
+    const timerTasks = new Set(allTasks.filter((t) => t.type === "timer").map((t) => t.name));
+    const timerLogs = todayLogs.filter((l) => timerTasks.has(l.task_name) && (l.value || 0) > 0);
+
+    let latestSessionEndMs = 0;
+    for (const l of timerLogs) {
+      let sessionEnd = 0;
+      if (l.started_at && l.value) {
+        sessionEnd = new Date(l.started_at).getTime() + l.value * 60 * 1000;
+      } else if (l.created_at) {
+        sessionEnd = new Date(l.created_at).getTime();
+      }
+      if (sessionEnd > latestSessionEndMs) {
+        latestSessionEndMs = sessionEnd;
+      }
+    }
+
+    // Idle streak started at the end of the last session, or at active window start if no session completed yet today
+    const idleStreakStartMs = latestSessionEndMs > windowStartMs ? latestSessionEndMs : windowStartMs;
+    const rawStreakMins = Math.floor((now - idleStreakStartMs) / 60000);
+    const currentIdleStreakMins = Math.max(intervalMins, rawStreakMins);
+    const streakStartTimeStr = localTimeString(new Date(idleStreakStartMs));
+
+    // Total wasted / unaccounted time today via canonical time audit
+    const [day] = computeWastedDays({
+      dates: [today],
+      logs: todayLogs,
+      tasks: allTasks,
+      nowMs: now,
+      running: null,
+    });
+    const totalWastedTodayMins = Math.max(currentIdleStreakMins, day?.wastedMin ?? currentIdleStreakMins);
+
+    // 6. Send the 4-beep idle alert (replaces any previous idle card so only 1 exists)
     await clearIdleAlertCard(settings.chat_id);
 
     const alertKb: InlineKeyboard = [
@@ -126,7 +172,9 @@ export async function checkAndSendIdleNudges(): Promise<void> {
       "⏰ <b>BEEP!</b> (Idle Alert 2/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 3/4)",
       `🚨 ⏰ 🔔 <b>IDLE ALERT! No timer is running!</b> 🔔 ⏰ 🚨\n\n` +
-        `You have been idle for <b>${intervalMins} minutes</b> during your active hours (${start} – ${end}).\n\n` +
+        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
         `Don't let procrastination win today — ready to get back to work?`,
       alertKb
     );
