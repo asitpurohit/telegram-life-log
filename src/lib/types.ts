@@ -168,6 +168,7 @@ export interface WizardSession {
     durationSeconds?: number;
     splitStr?: string;
     freshDate?: string;
+    carryoverDecisions?: Record<string, 'carry' | 'done' | 'del'>;
   };
   updated_at?: string;
 }

@@ -139,6 +139,8 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("todo_date:") ||
     data.startsWith("todo_time:") ||
     data.startsWith("carryover_") ||
+    data.startsWith("co_act:") ||
+    data.startsWith("co_next:") ||
     data.startsWith("daily_todo_") ||
     data.startsWith("pick_todo") ||
     data.startsWith("todo_fin:") ||
@@ -575,6 +577,57 @@ async function initTimerPrestartSession(
   });
 }
 
+function buildCarryoverReviewView(
+  task: Task,
+  pastTodos: ProjectTodo[],
+  decisions: Record<string, "carry" | "done" | "del"> = {},
+  projectName?: string
+): { text: string; keyboard: InlineKeyboard } {
+  const projectTag = projectName ? `📦 Project: <b>${projectName}</b>\n\n` : "";
+
+  let listText = "";
+  for (let i = 0; i < pastTodos.length; i++) {
+    const td = pastTodos[i];
+    const dec = decisions[td.id] || "carry";
+    const statusLabel =
+      dec === "done" ? "✅ Completed" : dec === "del" ? "🗑️ Discard" : "📥 Carry Over";
+    listText += `  ${i + 1}. ${td.title} — <i>${statusLabel}</i>\n`;
+  }
+
+  const text =
+    `${projectTag}⏳ <b>You have ${pastTodos.length} unfinished task${pastTodos.length > 1 ? "s" : ""} from previous sessions:</b>\n\n` +
+    `${listText}\n` +
+    `Choose an action for each task below, then tap <b>Next</b>:`;
+
+  const kb: InlineKeyboard = [];
+
+  for (let i = 0; i < pastTodos.length; i++) {
+    const td = pastTodos[i];
+    const dec = decisions[td.id] || "carry";
+    const shortTitle = td.title.length > 25 ? td.title.slice(0, 25) + "…" : td.title;
+
+    kb.push([{ text: `📌 ${i + 1}. ${shortTitle}`, callback_data: `co_act:${td.id}:carry` }]);
+    kb.push([
+      {
+        text: dec === "carry" ? "✅ 📥 Carry" : "📥 Carry",
+        callback_data: `co_act:${td.id}:carry`,
+      },
+      {
+        text: dec === "done" ? "✅ Done" : "Done",
+        callback_data: `co_act:${td.id}:done`,
+      },
+      {
+        text: dec === "del" ? "✅ 🗑️ Discard" : "🗑️ Discard",
+        callback_data: `co_act:${td.id}:del`,
+      },
+    ]);
+  }
+
+  kb.push([{ text: "➡️ Next / Continue to Timer", callback_data: `co_next:${task.id}` }]);
+
+  return { text, keyboard: kb };
+}
+
 // Opens a task's detail screen. While another timer is running, opening a
 // timer task is blocked with a stop-first warning shown in the tapped message.
 async function openTaskScreen(
@@ -603,15 +656,12 @@ async function openTaskScreen(
 
     // First time running today: check if there are leftover tasks from previous sessions
     const today = localDateString();
-    const currentSession = await getWizardSession(chatId);
-    const alreadyChoseFreshToday = currentSession?.task_data?.freshDate === today && currentSession?.task_data?.taskId === task.id;
-
     const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
     const dailyTodos = activeProject
       ? await getDailyTodosForProject(activeProject.id, today)
       : await getDailyTodosForTask(task.id, today);
 
-    if (dailyTodos.length === 0 && !alreadyChoseFreshToday) {
+    if (dailyTodos.length === 0) {
       const pastTodos = activeProject
         ? await getUnfinishedPastTodosForProject(activeProject.id, today)
         : await getUnfinishedPastTodosForTask(task.id, today);
@@ -624,29 +674,18 @@ async function openTaskScreen(
           projectName: activeProject?.name,
           promptMessageId: messageId,
           pastTodoIds: pastTodos.map((t) => t.id),
+          carryoverDecisions: {},
         });
 
-        const projectTag = activeProject?.name ? `📦 Project: <b>${activeProject.name}</b>\n\n` : "";
-        const pastList = pastTodos.map((t, idx) => `${idx + 1}. ${t.title}`).join("\n");
-
-        const carryoverKb: InlineKeyboard = [
-          [{ text: `📥 Carry Over to Today (${pastTodos.length})`, callback_data: `carryover_apply:${task.id}` }],
-          [{ text: "✨ Start Fresh / New Tasks", callback_data: `carryover_fresh:${task.id}` }],
-          [{ text: "🗑️ Dismiss Past Tasks", callback_data: `carryover_dismiss:${task.id}` }],
-        ];
-
-        const promptText =
-          `${projectTag}⏳ <b>You have ${pastTodos.length} unfinished task${pastTodos.length > 1 ? "s" : ""} from previous sessions:</b>\n\n` +
-          `${pastList}\n\n` +
-          `What would you like to do?`;
+        const view = buildCarryoverReviewView(task, pastTodos, {}, activeProject?.name);
 
         if (opts.fresh) {
-          await sendUiMessage(chatId, promptText, carryoverKb);
+          const res = await sendUiMessage(chatId, view.text, view.keyboard);
           if (messageId) {
             await removeInlineKeyboard(chatId, messageId);
           }
         } else {
-          await respondUi(chatId, messageId, promptText, carryoverKb);
+          await respondUi(chatId, messageId, view.text, view.keyboard);
         }
         return;
       }
@@ -3861,6 +3900,106 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      // --- Button: Toggle Individual Past Task Action (Carry / Done / Discard) ---
+      if (callbackData.startsWith("co_act:")) {
+        const parts = callbackData.split(":");
+        const todoId = parts[1];
+        const action = parts[2] as "carry" | "done" | "del";
+
+        const session = await getWizardSession(chatId);
+        if (!session || !session.task_data.taskId) {
+          await answerCallbackQuery(callbackQuery.id, "Session expired");
+          return NextResponse.json({ ok: true });
+        }
+
+        const taskData = session.task_data;
+        const taskId = taskData.taskId!;
+        const task = await getTaskById(taskId);
+        if (!task) return NextResponse.json({ ok: true });
+
+        const decisions = taskData.carryoverDecisions || {};
+        decisions[todoId] = action;
+        taskData.carryoverDecisions = decisions;
+
+        await saveWizardSession(chatId, session.step, taskData);
+
+        const today = localDateString();
+        const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+        const pastTodos = activeProject
+          ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+          : await getUnfinishedPastTodosForTask(task.id, today);
+
+        const view = buildCarryoverReviewView(task, pastTodos, decisions, activeProject?.name);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Apply Individual Carry-Over Decisions and Continue to Launchpad ---
+      if (callbackData.startsWith("co_next:")) {
+        const taskId = callbackData.split(":")[1];
+        const session = await getWizardSession(chatId);
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found. Please open the task again.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const today = localDateString();
+        const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+        const pastTodos = activeProject
+          ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+          : await getUnfinishedPastTodosForTask(task.id, today);
+
+        const decisions = session?.task_data?.carryoverDecisions || {};
+
+        const carryIds: string[] = [];
+        const doneIds: string[] = [];
+        const delIds: string[] = [];
+
+        for (const td of pastTodos) {
+          const dec = decisions[td.id] || "carry";
+          if (dec === "done") {
+            doneIds.push(td.id);
+          } else if (dec === "del") {
+            delIds.push(td.id);
+          } else {
+            carryIds.push(td.id);
+          }
+        }
+
+        // Apply decisions in database
+        if (doneIds.length > 0) {
+          await markProjectTodosDone(doneIds);
+        }
+        if (delIds.length > 0) {
+          await dismissPastTodos(delIds);
+        }
+        if (carryIds.length > 0) {
+          await carryOverTodosToToday(carryIds, today);
+        }
+
+        // Fetch today's active tasks for this routine/project
+        const dailyTodos = activeProject
+          ? await getDailyTodosForProject(activeProject.id, today)
+          : await getDailyTodosForTask(task.id, today);
+
+        const nextTodo = dailyTodos.find((t) => !t.is_done);
+
+        await saveWizardSession(chatId, "timer_prestart", {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: activeProject?.id,
+          projectName: activeProject?.name,
+          todoId: nextTodo?.id,
+          todoTitle: nextTodo?.title,
+          promptMessageId: messageId,
+        });
+
+        const detail = await buildTaskDetail(task, nextTodo?.id, "main");
+        await respondUi(chatId, messageId, detail.text, detail.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
       // --- Button: Apply Carry-Over of Past Incomplete To-Dos ---
       if (callbackData.startsWith("carryover_apply")) {
         const parts = callbackData.split(":");
@@ -5484,19 +5623,16 @@ export async function POST(req: NextRequest) {
         if (activeSession.step === "awaiting_daily_todo_carryover") {
           const taskData = activeSession.task_data;
           const taskId = taskData.taskId!;
-          const pastIds = taskData.pastTodoIds || [];
-
-          const kb: InlineKeyboard = [
-            [{ text: `📥 Carry Over to Today (${pastIds.length})`, callback_data: `carryover_apply:${taskId}` }],
-            [{ text: "✨ Start Fresh / New Tasks", callback_data: `carryover_fresh:${taskId}` }],
-            [{ text: "🗑️ Dismiss Past Tasks", callback_data: `carryover_dismiss:${taskId}` }],
-          ];
-
-          await sendTelegramMessage(
-            chatId,
-            "⚠️ Please tap an option below regarding your unfinished tasks from previous sessions:",
-            kb
-          );
+          const task = await getTaskById(taskId);
+          if (task) {
+            const today = localDateString();
+            const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
+            const pastTodos = activeProject
+              ? await getUnfinishedPastTodosForProject(activeProject.id, today)
+              : await getUnfinishedPastTodosForTask(task.id, today);
+            const view = buildCarryoverReviewView(task, pastTodos, taskData.carryoverDecisions || {}, activeProject?.name);
+            await sendTelegramMessage(chatId, view.text, view.keyboard);
+          }
           return NextResponse.json({ ok: true });
         }
 
