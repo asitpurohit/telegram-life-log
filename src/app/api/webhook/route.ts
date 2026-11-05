@@ -214,7 +214,11 @@ async function editUiMessage(
   text: string,
   keyboard?: InlineKeyboard
 ): Promise<void> {
-  await editTelegramMessage(chatId, messageId, text, keyboard ?? []);
+  const res = await editTelegramMessage(chatId, messageId, text, keyboard ?? []);
+  if (!res?.ok) {
+    await sendUiMessage(chatId, text, keyboard);
+    return;
+  }
   await retireTrackedUi(chatId, messageId);
   await trackUiMessage(chatId, messageId);
 }
@@ -768,7 +772,7 @@ async function doStartActiveTimer(
   const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName, todoId, todoTitle);
   await clearPauseState(chatId);
   await clearNudgeState(chatId);
-  await clearIdleAlertCard(chatId);
+  await clearIdleAlertCard(chatId, messageId);
   await setActiveTask(chatId, taskId);
 
   const startedAt = active?.started_at || new Date().toISOString();
@@ -1490,7 +1494,7 @@ async function buildTaskListButtons(
 async function renderTodayTaskList(chatId: string | number, messageId?: number): Promise<void> {
   await clearWizardSession(chatId);
   await setActiveTask(chatId, null);
-  await clearIdleAlertCard(chatId);
+  await clearIdleAlertCard(chatId, messageId);
   const tasks = await getActiveTasks();
   if (tasks.length === 0) {
     await sendTelegramMessage(
@@ -3134,7 +3138,7 @@ export async function POST(req: NextRequest) {
       if (callbackData === "menu_settings" || callbackData === "menu_settings_idle") {
         await clearWizardSession(chatId);
         await setActiveTask(chatId, null);
-        await clearIdleAlertCard(chatId);
+        await clearIdleAlertCard(chatId, messageId);
         const view = await buildSettingsView(chatId);
         await respondUi(chatId, messageId, view.text, view.keyboard);
         return NextResponse.json({ ok: true });
@@ -3215,7 +3219,7 @@ export async function POST(req: NextRequest) {
         const mins = parseInt(callbackData.split(":")[1], 10) || 30;
         const snoozeUntil = new Date(Date.now() + mins * 60 * 1000).toISOString();
         await updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil });
-        await clearIdleAlertCard(chatId);
+        await clearIdleAlertCard(chatId, messageId);
         await respondUi(
           chatId,
           messageId,

@@ -13,9 +13,12 @@ import {
 } from "./telegram";
 import { localHHMMSS } from "./time";
 
-export async function clearIdleAlertCard(chatId: string | number): Promise<void> {
+export async function clearIdleAlertCard(
+  chatId: string | number,
+  exceptMessageId?: number
+): Promise<void> {
   const prevId = await getIdleAlertMessage(chatId);
-  if (prevId) {
+  if (prevId && prevId !== exceptMessageId) {
     await deleteTelegramMessage(chatId, prevId);
   }
   await clearIdleAlertState(chatId);
