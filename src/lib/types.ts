@@ -167,6 +167,7 @@ export interface WizardSession {
     percent?: number;
     durationSeconds?: number;
     splitStr?: string;
+    freshDate?: string;
   };
   updated_at?: string;
 }

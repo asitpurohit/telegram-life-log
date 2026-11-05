@@ -603,12 +603,15 @@ async function openTaskScreen(
 
     // First time running today: check if there are leftover tasks from previous sessions
     const today = localDateString();
+    const currentSession = await getWizardSession(chatId);
+    const alreadyChoseFreshToday = currentSession?.task_data?.freshDate === today && currentSession?.task_data?.taskId === task.id;
+
     const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
     const dailyTodos = activeProject
       ? await getDailyTodosForProject(activeProject.id, today)
       : await getDailyTodosForTask(task.id, today);
 
-    if (dailyTodos.length === 0) {
+    if (dailyTodos.length === 0 && !alreadyChoseFreshToday) {
       const pastTodos = activeProject
         ? await getUnfinishedPastTodosForProject(activeProject.id, today)
         : await getUnfinishedPastTodosForTask(task.id, today);
@@ -3899,7 +3902,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Start Fresh / New Tasks ---
+      // --- Button: Start Fresh / New Tasks (Leave Past Tasks in Backlog for Tomorrow) ---
       if (callbackData.startsWith("carryover_fresh")) {
         const parts = callbackData.split(":");
         const taskIdParam = parts[1];
@@ -3911,13 +3914,10 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        const pastTodoIds = session?.task_data?.pastTodoIds || [];
-        if (pastTodoIds.length > 0) {
-          await dismissPastTodos(pastTodoIds);
-        }
-
+        const today = localDateString();
         const activeProject = task.is_project_based ? await getActiveProjectForTask(task.id) : null;
 
+        // Leave past tasks untouched in backlog so they will ask again tomorrow!
         await saveWizardSession(chatId, "timer_prestart", {
           taskId: task.id,
           taskName: task.name,
@@ -3925,6 +3925,7 @@ export async function POST(req: NextRequest) {
           projectName: activeProject?.name,
           todoId: undefined,
           todoTitle: undefined,
+          freshDate: today,
           promptMessageId: messageId,
         });
 
