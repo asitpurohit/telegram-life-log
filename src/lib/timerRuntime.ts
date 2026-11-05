@@ -1,6 +1,7 @@
 import {
   getAllActiveTimers,
   getTimerMessage,
+  trackTimerMessage,
   getPauseState,
   setPauseState,
   getNudgeState,
@@ -25,7 +26,7 @@ export interface PomodoroInfo {
   workMins: number;
   breakMins: number;
   round: number;
-  phase: "work" | "awaiting_break" | "break";
+  phase: "work" | "awaiting_break" | "break" | "awaiting_round";
   phaseStartedAtIso: string;
 }
 
@@ -36,7 +37,7 @@ export function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | 
     workMins: active.pomodoro_work_mins || 25,
     breakMins: active.pomodoro_break_mins || 5,
     round: active.pomodoro_round || 1,
-    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break") || "work",
+    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break" | "awaiting_round") || "work",
     phaseStartedAtIso: active.phase_started_at || active.started_at,
   };
 }
@@ -73,7 +74,17 @@ export function buildTimerView(
   );
   const isPaused = pausedAtMs > 0;
   const startedTime = localTimeString(new Date(startedAtIso));
-  const emoji = /sleep/i.test(taskName) ? "😴" : pomodoro?.isPomodoro ? (pomodoro.phase === "break" ? "☕" : pomodoro.phase === "awaiting_break" ? "🎉" : "🍅") : "⏱️";
+  const emoji = /sleep/i.test(taskName)
+    ? "😴"
+    : pomodoro?.isPomodoro
+    ? pomodoro.phase === "break"
+      ? "☕"
+      : pomodoro.phase === "awaiting_break"
+      ? "🎉"
+      : pomodoro.phase === "awaiting_round"
+      ? "🚨"
+      : "🍅"
+    : "⏱️";
 
   let projectLine = "";
   if (projectName) {
@@ -132,6 +143,22 @@ export function buildTimerView(
         [{ text: "▶️ Skip Break & Resume Work", callback_data: "pomodoro_skip_break" }],
         [{ text: "⏹ Stop & Log", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
         [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
+      ];
+
+      return { text, keyboard };
+    }
+
+    // Awaiting Round Phase: Break finished; waiting for user to start next focus round
+    if (pomodoro.phase === "awaiting_round") {
+      const text =
+        `🚨 ⏰ 🔔 <b>BEEP BEEP! Break is Over!</b> 🔔 ⏰ 🚨\n\n` +
+        `🍅 <b>${taskName}</b>${projectLine}${taskLine}\n\n` +
+        `You finished <b>${workMins}m focus + ${breakMins}m break</b>.\n\n` +
+        `Ready for <b>Round ${round}</b>?`;
+
+      const keyboard: InlineKeyboard = [
+        [{ text: `▶️ Start Round ${round} (${workMins}m)`, callback_data: "pomodoro_next_round" }],
+        [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
       ];
 
       return { text, keyboard };
@@ -261,7 +288,7 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         phaseStartedAtIso: timer.phase_started_at || timer.started_at,
       };
 
-      // 1) Work phase completed -> auto-pause & start break
+      // 1) Work phase completed -> auto-pause & prompt to start break
       if (phase === "work" && !pause.pausedAt) {
         const workedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
         if (workedSec >= workMins * 60) {
@@ -277,41 +304,37 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             phase_started_at: new Date(now).toISOString(),
           });
 
-          const sessionEpoch = new Date(timer.started_at).getTime();
-          const breakKb: InlineKeyboard = [
-            [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
-            [{ text: "▶️ Skip Break & Continue Work", callback_data: "pomodoro_skip_break" }],
-            [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${now}:${sessionEpoch}` }],
-          ];
-
-          await sendTripleChimeAlert(
-            timer.chat_id,
-            "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
-            "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
-            `🔔 <b>Pomodoro Complete! (${workMins} mins)</b>\n\n` +
-              `Great focus on <b>${timer.task_name}</b>! 🎉\n` +
-              `Work is paused. Tap below whenever you are ready to start your <b>${breakMins}-minute break</b>:`,
-            breakKb
-          );
-
           pomodoroInfo = {
             ...pomodoroInfo,
             phase: "awaiting_break",
             phaseStartedAtIso: new Date(now).toISOString(),
           };
 
+          const updatedView = buildTimerView(
+            timer.task_name,
+            timer.started_at,
+            now,
+            pause.pausedSeconds,
+            timer.project_name,
+            null,
+            timer.todo_title,
+            pomodoroInfo
+          );
+
           if (messageId) {
-            const updatedView = buildTimerView(
-              timer.task_name,
-              timer.started_at,
-              now,
-              pause.pausedSeconds,
-              timer.project_name,
-              null,
-              timer.todo_title,
-              pomodoroInfo
-            );
-            await editTelegramMessage(timer.chat_id, messageId, updatedView.text, updatedView.keyboard);
+            await deleteTelegramMessage(timer.chat_id, messageId);
+          }
+
+          const finalMsgId = await sendTripleChimeAlert(
+            timer.chat_id,
+            "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
+            "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
+            updatedView.text,
+            updatedView.keyboard
+          );
+
+          if (finalMsgId) {
+            await trackTimerMessage(timer.chat_id, finalMsgId);
           }
           continue;
         }
@@ -329,46 +352,43 @@ export async function refreshRunningTimerMessages(): Promise<void> {
           await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: newPausedSeconds });
           const nextRound = round + 1;
           await updateActiveTimer(timer.chat_id, {
-            pomodoro_phase: "work",
+            pomodoro_phase: "awaiting_round",
             pomodoro_round: nextRound,
             phase_started_at: new Date(now).toISOString(),
           });
 
-          const sessionEpoch = new Date(timer.started_at).getTime();
-          const nextKb: InlineKeyboard = [
-            [{ text: `▶️ Start Round ${nextRound} (${workMins}m)`, callback_data: `pomodoro_next_round` }],
-            [{ text: `⏹ Stop & Log Session`, callback_data: `timer_stop:${now}:${sessionEpoch}` }],
-          ];
-
-          await sendTripleChimeAlert(
-            timer.chat_id,
-            "⏰ <b>BEEP!</b> (Break Ending 1/3)",
-            "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
-            `🚨 ⏰ 🔔 <b>BEEP BEEP! Break is Over!</b> 🔔 ⏰ 🚨\n\n` +
-              `You finished <b>${workMins}m focus + ${breakMins}m break</b>.\n` +
-              `Ready for <b>Round ${nextRound}</b>?`,
-            nextKb
-          );
-
           pomodoroInfo = {
             ...pomodoroInfo,
             round: nextRound,
-            phase: "work",
+            phase: "awaiting_round",
             phaseStartedAtIso: new Date(now).toISOString(),
           };
 
+          const updatedView = buildTimerView(
+            timer.task_name,
+            timer.started_at,
+            now,
+            newPausedSeconds,
+            timer.project_name,
+            null,
+            timer.todo_title,
+            pomodoroInfo
+          );
+
           if (messageId) {
-            const updatedView = buildTimerView(
-              timer.task_name,
-              timer.started_at,
-              now,
-              newPausedSeconds,
-              timer.project_name,
-              null,
-              timer.todo_title,
-              pomodoroInfo
-            );
-            await editTelegramMessage(timer.chat_id, messageId, updatedView.text, updatedView.keyboard);
+            await deleteTelegramMessage(timer.chat_id, messageId);
+          }
+
+          const finalMsgId = await sendTripleChimeAlert(
+            timer.chat_id,
+            "⏰ <b>BEEP!</b> (Break Ending 1/3)",
+            "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
+            updatedView.text,
+            updatedView.keyboard
+          );
+
+          if (finalMsgId) {
+            await trackTimerMessage(timer.chat_id, finalMsgId);
           }
           continue;
         }
@@ -393,7 +413,14 @@ export async function refreshRunningTimerMessages(): Promise<void> {
     // 2) 5-minute milestone buzz / nudge (never while paused, never for Sleep, never during Pomodoro break).
     if (/sleep/i.test(timer.task_name)) continue;
     if (pause.pausedAt) continue;
-    if (timer.is_pomodoro && (timer.pomodoro_phase === "break" || timer.pomodoro_phase === "awaiting_break")) continue;
+    if (
+      timer.is_pomodoro &&
+      (timer.pomodoro_phase === "break" ||
+        timer.pomodoro_phase === "awaiting_break" ||
+        timer.pomodoro_phase === "awaiting_round")
+    ) {
+      continue;
+    }
 
     const nudge = await getNudgeState(timer.chat_id);
     const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;

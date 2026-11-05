@@ -819,7 +819,7 @@ function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | null {
     workMins: active.pomodoro_work_mins || 25,
     breakMins: active.pomodoro_break_mins || 5,
     round: active.pomodoro_round || 1,
-    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break") || "work",
+    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break" | "awaiting_round") || "work",
     phaseStartedAtIso: active.phase_started_at || active.started_at,
   };
 }

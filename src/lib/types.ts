@@ -85,7 +85,7 @@ export interface ActiveTimer {
   pomodoro_work_mins?: number | null;
   pomodoro_break_mins?: number | null;
   pomodoro_round?: number;
-  pomodoro_phase?: 'work' | 'awaiting_break' | 'break';
+  pomodoro_phase?: 'work' | 'awaiting_break' | 'break' | 'awaiting_round';
   phase_started_at?: string;
 }
 
