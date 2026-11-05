@@ -4654,7 +4654,7 @@ export async function POST(req: NextRequest) {
       // Pause / Stop / Refresh buttons are the only active surface.
       const activeSession = await getWizardSession(chatId);
       const isWizardAnswer = activeSession && !text.startsWith("/");
-      const isAllowedDuringTimer = text === "/start";
+      const isAllowedDuringTimer = text === "/start" || text === "/stop";
       if (!isWizardAnswer && !isAllowedDuringTimer) {
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
@@ -4663,6 +4663,81 @@ export async function POST(req: NextRequest) {
           }
           return NextResponse.json({ ok: true });
         }
+      }
+
+      // --- Command: /stop (Stop active timer immediately) ---
+      if (text === "/stop") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
+
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await sendUiMessage(chatId, "⏱️ No active timer was running.", BACK_ONLY_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        }
+
+        const pause = await getPauseState(chatId);
+        const result = await stopActiveTimer(chatId, undefined, pause.pausedSeconds);
+        await clearPauseState(chatId);
+        await clearNudgeState(chatId);
+
+        if (!result) {
+          await sendUiMessage(chatId, "⏱️ No active timer was running.", BACK_ONLY_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        }
+
+        const task = await findTaskByName(result.taskName);
+        const totalToday = await getTodayTaskTotal(result.taskName);
+        const target = task?.target_value || 60;
+        const percent = Math.round((totalToday / target) * 100);
+
+        const showReview = !!result.logId && (result.durationSeconds >= 300 || !!result.projectId || !!result.todoId) && !isSystemTask(task);
+
+        if (showReview && result.logId) {
+          await updateLogFocus(result.logId, "casual");
+
+          const taskData: WizardSession["task_data"] = {
+            sessionLogId: result.logId,
+            projectId: result.projectId || undefined,
+            projectName: result.projectName || undefined,
+            todoId: result.todoId || undefined,
+            todoTitle: result.todoTitle || undefined,
+            taskName: result.taskName,
+            focus: "casual",
+            todoStatus: "in_progress",
+            projectStatus: "in_progress",
+            durationSeconds: result.durationSeconds,
+            totalToday,
+            target,
+            percent,
+            splitStr: formatSplitSummary(result.split),
+          };
+
+          const promptText = buildCheckoutViewText(taskData);
+          const stopKb = buildCheckoutKeyboard(taskData);
+
+          const sentId = await sendUiMessage(chatId, promptText, stopKb);
+          if (sentId) {
+            taskData.promptMessageId = sentId;
+            await saveWizardSession(chatId, "checkout_review", taskData);
+          }
+          return NextResponse.json({ ok: true });
+        }
+
+        const projectLine = result.projectName ? `📦 Project: <b>${result.projectName}</b>\n` : "";
+        const todoLine = result.todoTitle ? `🎯 Task: <b>${result.todoTitle}</b>\n` : "";
+        const textResp =
+          `🎉 <b>${result.taskName} Session Completed!</b>\n\n` +
+          projectLine +
+          todoLine +
+          `⏱️ This Session: <b>${formatDuration(result.durationSeconds)}</b>\n` +
+          `📊 Today's Total: <b>${formatTimerMinutes(totalToday)} / ${formatTimerMinutes(target)}</b> (${percent}% of daily goal)\n\n` +
+          `Saved to your log!` +
+          formatSplitSummary(result.split);
+
+        await sendUiMessage(chatId, textResp, BACK_ONLY_KEYBOARD);
+        return NextResponse.json({ ok: true });
       }
 
       // --- Command: /cancel ---

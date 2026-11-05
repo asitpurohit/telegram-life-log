@@ -573,6 +573,24 @@ export async function getProjectById(projectId: string): Promise<Project | null>
   return data;
 }
 
+export async function getTimerProjectProgress(projectId?: string | null): Promise<string | null> {
+  if (!projectId) return null;
+  const project = await getProjectById(projectId);
+  if (!project) return null;
+  const totalMins = await getProjectTotalMinutes(projectId);
+  const targetMinutes = project.target_minutes;
+  const formatMins = (m: number) => {
+    const h = Math.floor(m / 60);
+    const mn = m % 60;
+    return h > 0 ? `${h}h ${mn}m` : `${mn}m`;
+  };
+  if (!targetMinutes || targetMinutes <= 0) {
+    return formatMins(totalMins);
+  }
+  const percent = Math.round((totalMins / targetMinutes) * 100);
+  return `${formatMins(totalMins)} / ${formatMins(targetMinutes)} (${percent}%)`;
+}
+
 // ==========================================
 // PROJECT TODOS (Daily sub-tasks for projects/timers)
 // ==========================================

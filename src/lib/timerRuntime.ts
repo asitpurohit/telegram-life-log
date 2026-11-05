@@ -15,6 +15,7 @@ import {
   InlineKeyboard,
 } from "./telegram";
 import { localTimeString } from "./time";
+import { ActiveTimer } from "./types";
 
 // "Still running" notification interval
 export const NUDGE_INTERVAL_MS = 5 * 60 * 1000;
@@ -26,6 +27,18 @@ export interface PomodoroInfo {
   round: number;
   phase: "work" | "awaiting_break" | "break";
   phaseStartedAtIso: string;
+}
+
+export function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | null {
+  if (!active || !active.is_pomodoro) return null;
+  return {
+    isPomodoro: true,
+    workMins: active.pomodoro_work_mins || 25,
+    breakMins: active.pomodoro_break_mins || 5,
+    round: active.pomodoro_round || 1,
+    phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break") || "work",
+    phaseStartedAtIso: active.phase_started_at || active.started_at,
+  };
 }
 
 export function formatDuration(totalSeconds: number): string {

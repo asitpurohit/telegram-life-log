@@ -7,12 +7,18 @@ import {
   trackDailyReminderMessage,
   getStaleDailyReminderMessages,
   getTrackedUiMessage,
+  getActiveTimer,
+  getTimerMessage,
+  trackTimerMessage,
+  getPauseState,
+  getTimerProjectProgress,
 } from "./supabase";
 import { sendTelegramMessage, deleteTelegramMessage, InlineKeyboard } from "./telegram";
 import { localDateString, localHHMMSS, todoDueLabel } from "./time";
 import { buildTodayScorecard } from "./scorecard";
 import { sendDailySummaryEmail } from "./dailyEmailSummary";
 import { clearIdleAlertCard } from "./idleGuardian";
+import { buildTimerView, extractPomodoroInfo } from "./timerRuntime";
 
 const MORNING_BRIEFING_TIME = process.env.MORNING_BRIEFING_TIME || "05:00:00";
 
@@ -84,9 +90,13 @@ export async function sendDueReminders(
         // 2. Clear any lingering idle alert card from yesterday
         await clearIdleAlertCard(targetChatId);
 
-        // 3. Clear any stale UI menu card from yesterday
+        // Check if an active timer is running across 5 AM (e.g. Sleep timer)
+        const activeTimer = await getActiveTimer(targetChatId);
+        const timerMsgId = await getTimerMessage(targetChatId);
+
+        // 3. Clear any stale UI menu card from yesterday (PROTECT active running timer!)
         const staleUiMsgId = await getTrackedUiMessage(targetChatId);
-        if (staleUiMsgId) {
+        if (staleUiMsgId && staleUiMsgId !== timerMsgId && !activeTimer) {
           await deleteTelegramMessage(targetChatId, staleUiMsgId);
         }
 
@@ -97,6 +107,38 @@ export async function sendDueReminders(
         if (morningRes?.result?.message_id) {
           await trackDailyReminderMessage(targetChatId, morningRes.result.message_id, localDateString());
         }
+
+        // 5. If an active timer is running (like Sleep), re-post its live card at the bottom below the morning scorecard!
+        if (activeTimer) {
+          if (timerMsgId) {
+            await deleteTelegramMessage(targetChatId, timerMsgId);
+          } else if (staleUiMsgId) {
+            await deleteTelegramMessage(targetChatId, staleUiMsgId);
+          }
+
+          const pause = await getPauseState(targetChatId);
+          let progressStr: string | null = null;
+          if (activeTimer.project_id) {
+            progressStr = await getTimerProjectProgress(activeTimer.project_id);
+          }
+          const pomodoroInfo = extractPomodoroInfo(activeTimer);
+          const view = buildTimerView(
+            activeTimer.task_name,
+            activeTimer.started_at,
+            pause.pausedAt || 0,
+            pause.pausedSeconds,
+            activeTimer.project_name,
+            progressStr,
+            activeTimer.todo_title,
+            pomodoroInfo
+          );
+
+          const newTimerRes = await sendTelegramMessage(targetChatId, view.text, view.keyboard);
+          if (newTimerRes?.result?.message_id) {
+            await trackTimerMessage(targetChatId, newTimerRes.result.message_id);
+          }
+        }
+
         sentTasks.push("Morning 5 AM Briefing (Fresh Canvas)");
       } catch (err: any) {
         console.error("Error sending 5 AM morning briefing:", err);
