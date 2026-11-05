@@ -1298,6 +1298,17 @@ export async function recordCronHeartbeat(source: string): Promise<void> {
   if (error) console.error("Error recording cron heartbeat:", error);
 }
 
+export async function getCronLastHeartbeat(source: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("updated_at")
+    .eq("chat_id", `__cron__:${source}`)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data.updated_at ?? null;
+}
+
 const ACTIVE_TASK_PREFIX = "__task__:";
 
 export async function setActiveTask(chatId: string | number, taskId: string | null): Promise<void> {

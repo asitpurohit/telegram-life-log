@@ -90,10 +90,17 @@ import {
   updateUserSettings,
   setUserSummaryEmail,
   trackDailyReminderMessage,
+  getCronLastHeartbeat,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
-import { buildTimerView, formatDuration, NUDGE_INTERVAL_MS, PomodoroInfo } from "@/lib/timerRuntime";
+import {
+  buildTimerView,
+  formatDuration,
+  NUDGE_INTERVAL_MS,
+  PomodoroInfo,
+  refreshRunningTimerMessages,
+} from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
 import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings, FocusMood } from "@/lib/types";
@@ -733,6 +740,18 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
   const emailProviderLabel = resendKey ? "Resend (Free)" : smtpHost ? "Gmail / SMTP" : "None";
   const emailConfigured = Boolean(emailRecipient && (resendKey || smtpHost));
 
+  const lastTickIso = await getCronLastHeartbeat("tick");
+  let cronStatus = "⚪ Not detected yet";
+  if (lastTickIso) {
+    const diffSec = Math.floor((now - new Date(lastTickIso).getTime()) / 1000);
+    if (diffSec < 120) {
+      cronStatus = `🟢 Active (${diffSec}s ago)`;
+    } else {
+      const diffMins = Math.floor(diffSec / 60);
+      cronStatus = `🔴 Delayed (${diffMins}m ago — check cron-job.org)`;
+    }
+  }
+
   const text =
     `⚙️ <b>Settings & Preferences</b>\n\n` +
     `🛡️ <b>Anti-Slacking Idle Guardian:</b>\n` +
@@ -741,6 +760,9 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
     `• Alert Interval: <b>Every ${settings.idle_interval_mins} minutes</b>\n` +
     snoozeStatus +
     `\n<i>When active and no timer is running during your active hours, the bot sends 4 quick beeps to keep you focused.</i>\n\n` +
+    `⏱️ <b>Background Cron Runner:</b>\n` +
+    `• Health: <b>${cronStatus}</b>\n` +
+    `<i>Pings /api/tick every minute for Pomodoro alarms & idle checks.</i>\n\n` +
     `📧 <b>Daily Summary Email:</b>\n` +
     `• Status: <b>${emailConfigured ? "🟢 Active" : "⚪ Not configured"}</b>\n` +
     `• Recipient: <code>${emailRecipient || "None (tap Change Email below)"}</code>\n` +
@@ -4408,9 +4430,19 @@ export async function POST(req: NextRequest) {
 
       // --- Timer: Refresh Elapsed Time ---
       if (callbackData.startsWith("timer_refresh:")) {
+        // Run full timer check so if 25m focus or 5m break completed, it triggers immediately!
+        await refreshRunningTimerMessages();
+
         const active = await getActiveTimer(chatId);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        // If refreshRunningTimerMessages handled the completion (transitioned phase & sent chime),
+        // the old message was already replaced by the alert card.
+        const currentMsgId = await getTimerMessage(chatId);
+        if (currentMsgId && currentMsgId !== messageId) {
           return NextResponse.json({ ok: true });
         }
 
@@ -5204,6 +5236,36 @@ export async function POST(req: NextRequest) {
         const taskNames = (await getActiveTasks()).map((t) => t.name);
         const answer = await askAboutData(question, taskNames);
         await sendUiMessage(chatId, answer);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /cron or /health (Verify 1-minute background runner) ---
+      if (text === "/cron" || text === "/health") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
+        await setActiveTask(chatId, null);
+        const now = Date.now();
+        const lastTickIso = await getCronLastHeartbeat("tick");
+        let cronStatus = "⚪ Not detected yet";
+        let detail = "No heartbeat recorded yet. Make sure your cron (e.g. cron-job.org) is hitting <code>/api/tick?key=...</code>.";
+        if (lastTickIso) {
+          const diffSec = Math.floor((now - new Date(lastTickIso).getTime()) / 1000);
+          if (diffSec < 120) {
+            cronStatus = `🟢 Healthy (${diffSec}s ago)`;
+            detail = "Background runner is actively ticking every minute. Pomodoro alarms, milestone nudges, and anti-slacking alerts are running on schedule.";
+          } else {
+            const diffMins = Math.floor(diffSec / 60);
+            cronStatus = `🔴 Late / Inactive (${diffMins}m ago)`;
+            detail = `Last tick was ${diffMins} minutes ago. Check <a href="https://cron-job.org">cron-job.org</a> or your cron service to ensure it is hitting <code>/api/tick?key=...</code> every 1 minute.`;
+          }
+        }
+        await sendUiMessage(
+          chatId,
+          `⏱️ <b>Background Cron Status</b>\n\n` +
+          `• Status: <b>${cronStatus}</b>\n\n` +
+          `${detail}`
+        );
         return NextResponse.json({ ok: true });
       }
 

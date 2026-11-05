@@ -6,6 +6,7 @@ import { recordCronHeartbeat, ensureSystemTasks } from "@/lib/supabase";
 import { isCronAuthorized } from "@/lib/cronAuth";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // ONE cron URL that does both jobs every minute:
 //  - refreshes running stopwatch messages (1-minute ticking on Vercel)
