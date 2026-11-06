@@ -28,6 +28,40 @@ export async function clearIdleAlertCard(
   await clearIdleAlertState(chatId);
 }
 
+// Audio-only 4-Beep Idle Alert sequence spaced 2.5s apart.
+// Triggers 4 distinct sound and vibration notifications on the user's phone,
+// and deletes all pings so no duplicate card is created in the chat.
+export async function sendAudioOnlyQuadChime(
+  chatId: string | number,
+  label: string
+): Promise<void> {
+  const r1 = await sendTelegramMessage(chatId, `⏰ <b>BEEP!</b> (${label} 1/4)`);
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  const r2 = await sendTelegramMessage(chatId, `⏰ <b>BEEP!</b> (${label} 2/4)`);
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  const r3 = await sendTelegramMessage(chatId, `⏰ <b>BEEP!</b> (${label} 3/4)`);
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  const r4 = await sendTelegramMessage(chatId, `⏰ <b>BEEP!</b> (${label} 4/4)`);
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  // Clean up all audio pings so chat stays clean with only the original timer card
+  if (r1?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r1.result.message_id);
+  }
+  if (r2?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r2.result.message_id);
+  }
+  if (r3?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r3.result.message_id);
+  }
+  if (r4?.result?.message_id) {
+    await deleteTelegramMessage(chatId, r4.result.message_id);
+  }
+}
+
 // 4-Beep Idle Alert sequence spaced 2.5s apart to trigger multiple physical phone vibrations.
 // After the final actionable card lands, preliminary audio pings are cleanly deleted.
 export async function sendQuadChimeAlert(
@@ -193,98 +227,51 @@ export async function checkAndSendIdleNudges(): Promise<void> {
     });
     const totalWastedTodayMins = Math.max(currentIdleStreakMins, day?.wastedMin ?? currentIdleStreakMins);
 
-    let alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! No timer is running!</b> 🔔 ⏰ 🚨";
-    let alertBody = "";
-    let alertKb: InlineKeyboard = [];
+    // If a timer is already active (manually paused, awaiting break, or awaiting round):
+    // The user already has the timer card in chat. We only play the 4-beep alarm (sound & vibration),
+    // and do NOT send an extra card, keeping the chat clean with just the existing timer card.
+    if (idleState !== "no_timer") {
+      await clearIdleAlertCard(settings.chat_id);
 
-    const sessionEpoch = running ? new Date(running.started_at).getTime() : 0;
-    const workMins = running?.pomodoro_work_mins || 25;
-    const breakMins = running?.pomodoro_break_mins || 5;
-    const round = running?.pomodoro_round || 1;
+      const label =
+        idleState === "manually_paused"
+          ? "Timer is Paused!"
+          : idleState === "awaiting_break"
+          ? "Waiting for Break!"
+          : "Break is Over!";
 
-    if (idleState === "manually_paused" && running) {
-      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Timer is Paused!</b> 🔔 ⏰ 🚨";
-      alertBody =
-        `🍅 <b>${running.task_name}</b> has been paused.\n` +
-        `⏳ <b>Paused for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
-        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
-        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
-        `Ready to resume your focus session?`;
+      await sendAudioOnlyQuadChime(settings.chat_id, label);
 
-      alertKb = [
-        [
-          { text: "▶️ Resume Focus", callback_data: `timer_resume:${pause.pausedAt || 0}:${sessionEpoch}` },
-          { text: "⏹ Stop Timer", callback_data: `timer_stop:${pause.pausedAt || 0}:${sessionEpoch}` },
-        ],
-        [
-          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-          { text: "⚙️ Settings", callback_data: "menu_settings" },
-        ],
-      ];
-    } else if (idleState === "awaiting_break" && running) {
-      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Waiting for Break!</b> 🔔 ⏰ 🚨";
-      alertBody =
-        `🎉 <b>${running.task_name}</b> focus round completed!\n` +
-        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
-        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
-        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
-        `Take your ${breakMins}-minute break now to stay fresh!`;
-
-      alertKb = [
-        [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
-        [
-          { text: "▶️ Skip Break & Continue", callback_data: "pomodoro_skip_break" },
-          { text: "⏹ Stop Session", callback_data: `timer_stop:${now}:${sessionEpoch}` },
-        ],
-        [
-          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-          { text: "⚙️ Settings", callback_data: "menu_settings" },
-        ],
-      ];
-    } else if (idleState === "awaiting_round" && running) {
-      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Break is Over!</b> 🔔 ⏰ 🚨";
-      alertBody =
-        `🍅 <b>${running.task_name}</b> break has ended!\n` +
-        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
-        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
-        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
-        `Ready for <b>Round ${round}</b>? Don't let procrastination win!`;
-
-      alertKb = [
-        [{ text: `▶️ Start Round ${round} (${workMins}m)`, callback_data: "pomodoro_next_round" }],
-        [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${now}:${sessionEpoch}` }],
-        [
-          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-          { text: "⚙️ Settings", callback_data: "menu_settings" },
-        ],
-      ];
-    } else {
-      // Default: No timer running at all
-      alertBody =
-        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
-        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
-        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
-        `Don't let procrastination win today — ready to get back to work?`;
-
-      alertKb = [
-        [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
-        [
-          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-          { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
-        ],
-        [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
-      ];
+      await updateUserSettings(settings.chat_id, {
+        last_idle_nudge_at: new Date(now).toISOString(),
+      });
+      continue;
     }
 
-    // 6. Send the 4-beep idle alert (replaces any previous idle card so only 1 exists)
+    // Default: No timer running at all — send the 4-beep sequence with the actionable Idle Alert card
     await clearIdleAlertCard(settings.chat_id);
+
+    const alertBody =
+      `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+      `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+      `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
+      `Don't let procrastination win today — ready to get back to work?`;
+
+    const alertKb: InlineKeyboard = [
+      [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
+      [
+        { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+        { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
+      ],
+      [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
+    ];
 
     const finalMsgId = await sendQuadChimeAlert(
       settings.chat_id,
       "⏰ <b>BEEP!</b> (Idle Alert 1/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 2/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 3/4)",
-      `${alertTitle}\n\n${alertBody}`,
+      `🚨 ⏰ 🔔 <b>IDLE ALERT! No timer is running!</b> 🔔 ⏰ 🚨\n\n${alertBody}`,
       alertKb
     );
 
