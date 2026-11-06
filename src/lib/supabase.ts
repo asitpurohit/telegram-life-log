@@ -467,16 +467,16 @@ export async function stopActiveTimer(
     todo_title: active.todo_title || null,
   }));
 
-  const { data, error } = await supabase.from("logs").insert(rows).select();
+  const [{ data, error }] = await Promise.all([
+    supabase.from("logs").insert(rows).select(),
+    supabase.from("active_timers").delete().eq("chat_id", String(chatId)),
+  ]);
   if (error) console.error("Error logging timer session:", error);
 
   const lastPart = parts[parts.length - 1];
   const lastRow =
     (data || []).find((r: any) => r.log_date === lastPart.date && r.value === lastPart.minutes) ||
     (data && data.length > 0 ? data[data.length - 1] : null);
-
-  // Remove from active timers
-  await supabase.from("active_timers").delete().eq("chat_id", String(chatId));
 
   // Anchor idle guardian countdown from the moment the session stops
   await updateUserSettings(chatId, { last_idle_nudge_at: new Date().toISOString() });

@@ -869,28 +869,26 @@ async function doStartActiveTimer(
   todoId?: string | null,
   todoTitle?: string | null
 ): Promise<void> {
-  const active = await startActiveTimer(chatId, taskId, taskName, projectId, projectName, todoId, todoTitle);
-  await clearPauseState(chatId);
-  await clearNudgeState(chatId);
-  await clearIdleAlertCard(chatId, messageId);
-  await setActiveTask(chatId, taskId);
+  const [active, progressStr] = await Promise.all([
+    startActiveTimer(chatId, taskId, taskName, projectId, projectName, todoId, todoTitle),
+    projectId ? getTimerProjectProgress(projectId) : Promise.resolve(null),
+    clearPauseState(chatId),
+    clearNudgeState(chatId),
+    clearIdleAlertCard(chatId, messageId),
+    setActiveTask(chatId, taskId),
+  ]);
 
   const startedAt = active?.started_at || new Date().toISOString();
-  let progressStr: string | null = null;
-  if (projectId) {
-    progressStr = await getTimerProjectProgress(projectId);
-  }
   const pomodoroInfo = extractPomodoroInfo(active);
   const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo);
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
+    await trackTimerMessage(chatId, messageId);
   } else {
-    await sendUiMessage(chatId, view.text, view.keyboard);
-  }
-
-  const timerMsgId = messageId ?? (await getTrackedUiMessage(chatId));
-  if (timerMsgId) {
-    await trackTimerMessage(chatId, timerMsgId);
+    const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
+    if (sentId) {
+      await trackTimerMessage(chatId, sentId);
+    }
   }
 }
 
@@ -1713,8 +1711,8 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Acknowledge receipt to remove button loading spinner on phone
-      await answerCallbackQuery(callbackQuery.id);
+      // Acknowledge receipt to remove button loading spinner on phone immediately (non-blocking)
+      void answerCallbackQuery(callbackQuery.id);
 
       // --- WIZARD: Cancel Active Action ---
       if (callbackData === "wizard_cancel") {
@@ -3613,11 +3611,14 @@ export async function POST(req: NextRequest) {
           taskId = callbackData.split(":")[1];
         }
 
-        const task = await getTaskById(taskId);
+        const [task, alreadyRunning, session] = await Promise.all([
+          getTaskById(taskId),
+          getActiveTimer(chatId),
+          getWizardSession(chatId),
+        ]);
         const taskName = task ? task.name : "Study/Work";
 
         // Never silently discard a running session — ask to stop it first
-        const alreadyRunning = await getActiveTimer(chatId);
         if (alreadyRunning) {
           const warnKb: InlineKeyboard = [
             [{ text: `⏹ Stop ${alreadyRunning.task_name}`, callback_data: "stop_active_timer" }],
@@ -3632,8 +3633,6 @@ export async function POST(req: NextRequest) {
           );
           return NextResponse.json({ ok: true });
         }
-
-        const session = await getWizardSession(chatId);
         let projectId = forcedProjectId || session?.task_data?.projectId;
         let projectName = session?.task_data?.projectName;
         let todoId = session?.task_data?.todoId;
@@ -4387,31 +4386,35 @@ export async function POST(req: NextRequest) {
 
       // --- Timer: Pause (paused time is tracked in the DB, started_at untouched) ---
       if (callbackData === "timer_pause" || callbackData.startsWith("timer_pause:")) {
-        const active = await getActiveTimer(chatId);
+        const [active, prevTimerId, pause] = await Promise.all([
+          getActiveTimer(chatId),
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const prevTimerId = await getTimerMessage(chatId);
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
-        await clearIdleAlertCard(chatId, messageId);
 
-        const pause = await getPauseState(chatId);
         // Double-tap: keep the first pause moment
         const pausedAt = pause.pausedAt ?? Date.now();
-        await setPauseState(chatId, { pausedAt, pausedSeconds: pause.pausedSeconds });
 
-        // Pausing removes the pending "still running" nudge
-        const nudge = await getNudgeState(chatId);
-        if (nudge.messageId) {
-          await deleteTelegramMessage(chatId, nudge.messageId);
-        }
-        await clearNudgeState(chatId);
+        const [progressStr] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          setPauseState(chatId, { pausedAt, pausedSeconds: pause.pausedSeconds }),
+          clearIdleAlertCard(chatId, messageId),
+          getNudgeState(chatId).then(async (nudge) => {
+            if (nudge.messageId) {
+              await deleteTelegramMessage(chatId, nudge.messageId);
+            }
+            await clearNudgeState(chatId);
+          }),
+        ]);
 
-        const progressStr = await getTimerProjectProgress(active.project_id);
         const pomodoroInfo = extractPomodoroInfo(active);
         const view = buildTimerView(active.task_name, active.started_at, pausedAt, pause.pausedSeconds, active.project_name, progressStr, active.todo_title, pomodoroInfo);
         await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -4424,19 +4427,20 @@ export async function POST(req: NextRequest) {
 
       // --- Timer: Resume (paused time accumulates; started_at is never changed) ---
       if (callbackData.startsWith("timer_resume:")) {
-        const active = await getActiveTimer(chatId);
+        const [active, prevTimerId, pause] = await Promise.all([
+          getActiveTimer(chatId),
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const prevTimerId = await getTimerMessage(chatId);
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
-        await clearIdleAlertCard(chatId, messageId);
 
-        const pause = await getPauseState(chatId);
         const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
         const pausedAt = pause.pausedAt ?? fallbackPausedAt;
 
@@ -4446,24 +4450,30 @@ export async function POST(req: NextRequest) {
           pauseDurationMs = Math.max(0, Date.now() - pausedAt);
           pausedSeconds += Math.round(pauseDurationMs / 1000);
         }
-        await setPauseState(chatId, { pausedAt: null, pausedSeconds });
 
+        let newPhaseStartedAtIso: string | undefined;
         // If in Pomodoro work phase, shift phase_started_at forward by pause duration
         if (active.is_pomodoro && active.pomodoro_phase === "work" && pauseDurationMs > 0 && active.phase_started_at) {
           const newPhaseStartMs = new Date(active.phase_started_at).getTime() + pauseDurationMs;
-          const newPhaseStartedAtIso = new Date(newPhaseStartMs).toISOString();
-          await updateActiveTimer(chatId, { phase_started_at: newPhaseStartedAtIso });
+          newPhaseStartedAtIso = new Date(newPhaseStartMs).toISOString();
           active.phase_started_at = newPhaseStartedAtIso;
         }
 
-        // Nudge interval restarts from the resume moment
-        const nudge = await getNudgeState(chatId);
-        if (nudge.messageId) {
-          await deleteTelegramMessage(chatId, nudge.messageId);
-        }
-        await setNudgeState(chatId, { messageId: null, nextNudgeAt: Date.now() + NUDGE_INTERVAL_MS });
+        const [progressStr] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          setPauseState(chatId, { pausedAt: null, pausedSeconds }),
+          newPhaseStartedAtIso
+            ? updateActiveTimer(chatId, { phase_started_at: newPhaseStartedAtIso })
+            : Promise.resolve(),
+          clearIdleAlertCard(chatId, messageId),
+          getNudgeState(chatId).then(async (nudge) => {
+            if (nudge.messageId) {
+              await deleteTelegramMessage(chatId, nudge.messageId);
+            }
+            await setNudgeState(chatId, { messageId: null, nextNudgeAt: Date.now() + NUDGE_INTERVAL_MS });
+          }),
+        ]);
 
-        const progressStr = await getTimerProjectProgress(active.project_id);
         const pomodoroInfo = extractPomodoroInfo(active);
         const view = buildTimerView(active.task_name, active.started_at, 0, pausedSeconds, active.project_name, progressStr, active.todo_title, pomodoroInfo);
         await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -4523,19 +4533,20 @@ export async function POST(req: NextRequest) {
 
       // --- Pomodoro: Start Break (User manually clicks to begin the rest countdown) ---
       if (callbackData === "pomodoro_start_break") {
-        const active = await getActiveTimer(chatId);
+        const [active, prevTimerId, pause] = await Promise.all([
+          getActiveTimer(chatId),
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const prevTimerId = await getTimerMessage(chatId);
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
-        await clearIdleAlertCard(chatId, messageId);
 
-        const pause = await getPauseState(chatId);
         const now = Date.now();
 
         // Any time that passed between work finishing and user clicking Start Break
@@ -4547,14 +4558,16 @@ export async function POST(req: NextRequest) {
         }
 
         const nowIso = new Date(now).toISOString();
-        // Keep pausedAt: now so study time continues to be paused during the break
-        await setPauseState(chatId, { pausedAt: now, pausedSeconds: newPausedSeconds });
-        await updateActiveTimer(chatId, {
-          pomodoro_phase: "break",
-          phase_started_at: nowIso,
-        });
+        const [progressStr] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          setPauseState(chatId, { pausedAt: now, pausedSeconds: newPausedSeconds }),
+          updateActiveTimer(chatId, {
+            pomodoro_phase: "break",
+            phase_started_at: nowIso,
+          }),
+          clearIdleAlertCard(chatId, messageId),
+        ]);
 
-        const progressStr = await getTimerProjectProgress(active.project_id);
         const pomodoroInfo: PomodoroInfo = {
           isPomodoro: true,
           workMins: active.pomodoro_work_mins || 25,
@@ -4583,19 +4596,20 @@ export async function POST(req: NextRequest) {
 
       // --- Pomodoro: Skip Break & Start Next Round ---
       if (callbackData === "pomodoro_skip_break") {
-        const active = await getActiveTimer(chatId);
+        const [active, prevTimerId, pause] = await Promise.all([
+          getActiveTimer(chatId),
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const prevTimerId = await getTimerMessage(chatId);
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
-        await clearIdleAlertCard(chatId, messageId);
 
-        const pause = await getPauseState(chatId);
         const now = Date.now();
 
         let newPausedSeconds = pause.pausedSeconds;
@@ -4607,14 +4621,17 @@ export async function POST(req: NextRequest) {
         const nextRound = (active.pomodoro_round || 1) + 1;
         const nowIso = new Date(now).toISOString();
 
-        await setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds });
-        await updateActiveTimer(chatId, {
-          pomodoro_phase: "work",
-          pomodoro_round: nextRound,
-          phase_started_at: nowIso,
-        });
+        const [progressStr] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds }),
+          updateActiveTimer(chatId, {
+            pomodoro_phase: "work",
+            pomodoro_round: nextRound,
+            phase_started_at: nowIso,
+          }),
+          clearIdleAlertCard(chatId, messageId),
+        ]);
 
-        const progressStr = await getTimerProjectProgress(active.project_id);
         const pomodoroInfo: PomodoroInfo = {
           isPomodoro: true,
           workMins: active.pomodoro_work_mins || 25,
@@ -4643,19 +4660,20 @@ export async function POST(req: NextRequest) {
 
       // --- Pomodoro: Start Next Round (from break alarm) ---
       if (callbackData === "pomodoro_next_round") {
-        const active = await getActiveTimer(chatId);
+        const [active, prevTimerId, pause] = await Promise.all([
+          getActiveTimer(chatId),
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
         if (!active) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const prevTimerId = await getTimerMessage(chatId);
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
-        await clearIdleAlertCard(chatId, messageId);
 
-        const pause = await getPauseState(chatId);
         const now = Date.now();
 
         let newPausedSeconds = pause.pausedSeconds;
@@ -4665,13 +4683,15 @@ export async function POST(req: NextRequest) {
         }
 
         const nowIso = new Date(now).toISOString();
-        await setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds });
-        await updateActiveTimer(chatId, {
-          pomodoro_phase: "work",
-          phase_started_at: nowIso,
-        });
-
-        const progressStr = await getTimerProjectProgress(active.project_id);
+        const [progressStr] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds }),
+          updateActiveTimer(chatId, {
+            pomodoro_phase: "work",
+            phase_started_at: nowIso,
+          }),
+          clearIdleAlertCard(chatId, messageId),
+        ]);
         const pomodoroInfo: PomodoroInfo = {
           isPomodoro: true,
           workMins: active.pomodoro_work_mins || 25,
@@ -4704,35 +4724,45 @@ export async function POST(req: NextRequest) {
         callbackData === "stop_active_timer" ||
         callbackData.startsWith("stop_then_open:")
       ) {
-        const prevTimerId = await getTimerMessage(chatId);
+        const [prevTimerId, pause] = await Promise.all([
+          getTimerMessage(chatId),
+          getPauseState(chatId),
+        ]);
+
         if (prevTimerId && messageId && prevTimerId !== messageId) {
-          await deleteTelegramMessage(chatId, prevTimerId);
+          void deleteTelegramMessage(chatId, prevTimerId);
         }
 
-        const pause = await getPauseState(chatId);
         const fallbackPausedAt = callbackData.startsWith("timer_stop:")
           ? parseInt(callbackData.split(":")[1], 10) || 0
           : 0;
         const endMs = pause.pausedAt ?? fallbackPausedAt ?? 0;
 
         const result = await stopActiveTimer(chatId, endMs > 0 ? endMs : undefined, pause.pausedSeconds);
-        await clearPauseState(chatId);
-
-        // Stop removes the pending "still running" nudge and any idle alert card
-        const nudge = await getNudgeState(chatId);
-        if (nudge.messageId) {
-          await deleteTelegramMessage(chatId, nudge.messageId);
-        }
-        await clearNudgeState(chatId);
-        await clearIdleAlertCard(chatId, messageId);
 
         if (!result) {
+          await Promise.all([
+            clearPauseState(chatId),
+            clearNudgeState(chatId),
+            clearIdleAlertCard(chatId, messageId),
+          ]);
           await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);
           return NextResponse.json({ ok: true });
         }
 
-        const task = await findTaskByName(result.taskName);
-        const totalToday = await getTodayTaskTotal(result.taskName);
+        // Run post-stop cleanup & analytics queries in parallel!
+        const [task, totalToday] = await Promise.all([
+          findTaskByName(result.taskName),
+          getTodayTaskTotal(result.taskName),
+          clearPauseState(chatId),
+          clearIdleAlertCard(chatId, messageId),
+          getNudgeState(chatId).then(async (nudge) => {
+            if (nudge.messageId) {
+              await deleteTelegramMessage(chatId, nudge.messageId);
+            }
+            await clearNudgeState(chatId);
+          }),
+        ]);
         const target = task?.target_value || 60;
         const percent = Math.round((totalToday / target) * 100);
 
