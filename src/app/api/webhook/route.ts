@@ -4393,6 +4393,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+        await clearIdleAlertCard(chatId, messageId);
+
         const pause = await getPauseState(chatId);
         // Double-tap: keep the first pause moment
         const pausedAt = pause.pausedAt ?? Date.now();
@@ -4423,6 +4429,12 @@ export async function POST(req: NextRequest) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
+
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+        await clearIdleAlertCard(chatId, messageId);
 
         const pause = await getPauseState(chatId);
         const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
@@ -4517,6 +4529,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+        await clearIdleAlertCard(chatId, messageId);
+
         const pause = await getPauseState(chatId);
         const now = Date.now();
 
@@ -4570,6 +4588,12 @@ export async function POST(req: NextRequest) {
           await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
           return NextResponse.json({ ok: true });
         }
+
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+        await clearIdleAlertCard(chatId, messageId);
 
         const pause = await getPauseState(chatId);
         const now = Date.now();
@@ -4625,6 +4649,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+        await clearIdleAlertCard(chatId, messageId);
+
         const pause = await getPauseState(chatId);
         const now = Date.now();
 
@@ -4674,6 +4704,11 @@ export async function POST(req: NextRequest) {
         callbackData === "stop_active_timer" ||
         callbackData.startsWith("stop_then_open:")
       ) {
+        const prevTimerId = await getTimerMessage(chatId);
+        if (prevTimerId && messageId && prevTimerId !== messageId) {
+          await deleteTelegramMessage(chatId, prevTimerId);
+        }
+
         const pause = await getPauseState(chatId);
         const fallbackPausedAt = callbackData.startsWith("timer_stop:")
           ? parseInt(callbackData.split(":")[1], 10) || 0
@@ -4683,12 +4718,13 @@ export async function POST(req: NextRequest) {
         const result = await stopActiveTimer(chatId, endMs > 0 ? endMs : undefined, pause.pausedSeconds);
         await clearPauseState(chatId);
 
-        // Stop removes the pending "still running" nudge
+        // Stop removes the pending "still running" nudge and any idle alert card
         const nudge = await getNudgeState(chatId);
         if (nudge.messageId) {
           await deleteTelegramMessage(chatId, nudge.messageId);
         }
         await clearNudgeState(chatId);
+        await clearIdleAlertCard(chatId, messageId);
 
         if (!result) {
           await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);

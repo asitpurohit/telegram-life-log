@@ -2,6 +2,7 @@ import {
   getAllUserSettings,
   updateUserSettings,
   getActiveTimer,
+  getPauseState,
   trackIdleAlertMessage,
   getIdleAlertMessage,
   clearIdleAlertState,
@@ -94,52 +95,90 @@ export async function checkAndSendIdleNudges(): Promise<void> {
       continue;
     }
 
-    // 3. Check if any timer is currently running (Study, Sleep, Project, etc.)
+    // 3. Check active timer and paused / transition states
     const running = await getActiveTimer(settings.chat_id);
-    if (running) {
-      // User has started working; clean any lingering idle alert card
+    const pause = await getPauseState(settings.chat_id);
+    const isPaused = Boolean(pause.pausedAt && pause.pausedAt > 0);
+    const isSleep = Boolean(running && /sleep/i.test(running.task_name));
+
+    // Never alert for Sleep sessions
+    if (isSleep) {
       await clearIdleAlertCard(settings.chat_id);
       continue;
     }
 
-    // 4. Check if the idle interval has elapsed since last nudge/session stop
+    // If timer is on break, legitimate rest countdown is running — stay peaceful
+    const phase = running?.pomodoro_phase || "work";
+    if (running?.is_pomodoro && phase === "break") {
+      await clearIdleAlertCard(settings.chat_id);
+      continue;
+    }
+
+    // If timer is actively working (not paused, not in transition)
+    const isActivelyWorking = running && !isPaused && (!running.is_pomodoro || phase === "work");
+    if (isActivelyWorking) {
+      await clearIdleAlertCard(settings.chat_id);
+      continue;
+    }
+
+    // User is in an idle state:
+    // a) No timer running at all
+    // b) Timer manually paused (isPaused === true)
+    // c) Pomodoro focus finished, awaiting break (phase === 'awaiting_break')
+    // d) Pomodoro break finished, awaiting round (phase === 'awaiting_round')
+    let idleState: "no_timer" | "manually_paused" | "awaiting_break" | "awaiting_round" = "no_timer";
+    let idleStreakStartMs = 0;
+
     const intervalMins = settings.idle_interval_mins || 3;
     const intervalMs = intervalMins * 60 * 1000;
     const lastNudgeMs = settings.last_idle_nudge_at ? new Date(settings.last_idle_nudge_at).getTime() : 0;
 
-    if (now - lastNudgeMs < intervalMs) {
-      continue;
-    }
-
-    // 5. Compute dynamic idle metrics:
-    //    a) Current continuous idle streak (since last timer ended or active window opened)
-    //    b) Total wasted / unaccounted time today across active hours
     const today = localDateString();
     const todayLogs = await getTodayLogs();
     const allTasks = await getActiveTasks();
-
     const windowStartUtc = zonedDateTimeToUtc(today, `${start}:00`);
     const windowStartMs = windowStartUtc.getTime();
 
-    // Find the latest completed timer session today
-    const timerTasks = new Set(allTasks.filter((t) => t.type === "timer").map((t) => t.name));
-    const timerLogs = todayLogs.filter((l) => timerTasks.has(l.task_name) && (l.value || 0) > 0);
+    if (running) {
+      if (running.is_pomodoro && phase === "awaiting_break") {
+        idleState = "awaiting_break";
+        idleStreakStartMs = new Date(running.phase_started_at || running.started_at).getTime();
+      } else if (running.is_pomodoro && phase === "awaiting_round") {
+        idleState = "awaiting_round";
+        idleStreakStartMs = new Date(running.phase_started_at || running.started_at).getTime();
+      } else if (isPaused) {
+        idleState = "manually_paused";
+        idleStreakStartMs = pause.pausedAt || new Date(running.started_at).getTime();
+      }
+    } else {
+      // Find the latest completed timer session today
+      const timerTasks = new Set(allTasks.filter((t) => t.type === "timer").map((t) => t.name));
+      const timerLogs = todayLogs.filter((l) => timerTasks.has(l.task_name) && (l.value || 0) > 0);
 
-    let latestSessionEndMs = 0;
-    for (const l of timerLogs) {
-      let sessionEnd = 0;
-      if (l.started_at && l.value) {
-        sessionEnd = new Date(l.started_at).getTime() + l.value * 60 * 1000;
-      } else if (l.created_at) {
-        sessionEnd = new Date(l.created_at).getTime();
+      let latestSessionEndMs = 0;
+      for (const l of timerLogs) {
+        let sessionEnd = 0;
+        if (l.started_at && l.value) {
+          sessionEnd = new Date(l.started_at).getTime() + l.value * 60 * 1000;
+        } else if (l.created_at) {
+          sessionEnd = new Date(l.created_at).getTime();
+        }
+        if (sessionEnd > latestSessionEndMs) {
+          latestSessionEndMs = sessionEnd;
+        }
       }
-      if (sessionEnd > latestSessionEndMs) {
-        latestSessionEndMs = sessionEnd;
-      }
+      idleStreakStartMs = latestSessionEndMs > windowStartMs ? latestSessionEndMs : windowStartMs;
     }
 
-    // Idle streak started at the end of the last session, or at active window start if no session completed yet today
-    const idleStreakStartMs = latestSessionEndMs > windowStartMs ? latestSessionEndMs : windowStartMs;
+    // 4. Check if the idle interval has elapsed since idle started AND since last nudge
+    const elapsedSinceIdleStart = now - idleStreakStartMs;
+    const elapsedSinceLastNudge = now - lastNudgeMs;
+
+    if (elapsedSinceIdleStart < intervalMs || elapsedSinceLastNudge < intervalMs) {
+      continue;
+    }
+
+    // 5. Compute dynamic idle metrics
     const rawStreakMins = Math.floor((now - idleStreakStartMs) / 60000);
     const currentIdleStreakMins = Math.max(intervalMins, rawStreakMins);
     const streakStartTimeStr = localTimeString(new Date(idleStreakStartMs));
@@ -154,28 +193,98 @@ export async function checkAndSendIdleNudges(): Promise<void> {
     });
     const totalWastedTodayMins = Math.max(currentIdleStreakMins, day?.wastedMin ?? currentIdleStreakMins);
 
+    let alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! No timer is running!</b> 🔔 ⏰ 🚨";
+    let alertBody = "";
+    let alertKb: InlineKeyboard = [];
+
+    const sessionEpoch = running ? new Date(running.started_at).getTime() : 0;
+    const workMins = running?.pomodoro_work_mins || 25;
+    const breakMins = running?.pomodoro_break_mins || 5;
+    const round = running?.pomodoro_round || 1;
+
+    if (idleState === "manually_paused" && running) {
+      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Timer is Paused!</b> 🔔 ⏰ 🚨";
+      alertBody =
+        `🍅 <b>${running.task_name}</b> has been paused.\n` +
+        `⏳ <b>Paused for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
+        `Ready to resume your focus session?`;
+
+      alertKb = [
+        [
+          { text: "▶️ Resume Focus", callback_data: `timer_resume:${pause.pausedAt || 0}:${sessionEpoch}` },
+          { text: "⏹ Stop Timer", callback_data: `timer_stop:${pause.pausedAt || 0}:${sessionEpoch}` },
+        ],
+        [
+          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+          { text: "⚙️ Settings", callback_data: "menu_settings" },
+        ],
+      ];
+    } else if (idleState === "awaiting_break" && running) {
+      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Waiting for Break!</b> 🔔 ⏰ 🚨";
+      alertBody =
+        `🎉 <b>${running.task_name}</b> focus round completed!\n` +
+        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
+        `Take your ${breakMins}-minute break now to stay fresh!`;
+
+      alertKb = [
+        [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
+        [
+          { text: "▶️ Skip Break & Continue", callback_data: "pomodoro_skip_break" },
+          { text: "⏹ Stop Session", callback_data: `timer_stop:${now}:${sessionEpoch}` },
+        ],
+        [
+          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+          { text: "⚙️ Settings", callback_data: "menu_settings" },
+        ],
+      ];
+    } else if (idleState === "awaiting_round" && running) {
+      alertTitle = "🚨 ⏰ 🔔 <b>IDLE ALERT! Break is Over!</b> 🔔 ⏰ 🚨";
+      alertBody =
+        `🍅 <b>${running.task_name}</b> break has ended!\n` +
+        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
+        `Ready for <b>Round ${round}</b>? Don't let procrastination win!`;
+
+      alertKb = [
+        [{ text: `▶️ Start Round ${round} (${workMins}m)`, callback_data: "pomodoro_next_round" }],
+        [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${now}:${sessionEpoch}` }],
+        [
+          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+          { text: "⚙️ Settings", callback_data: "menu_settings" },
+        ],
+      ];
+    } else {
+      // Default: No timer running at all
+      alertBody =
+        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
+        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
+        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
+        `Don't let procrastination win today — ready to get back to work?`;
+
+      alertKb = [
+        [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
+        [
+          { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
+          { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
+        ],
+        [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
+      ];
+    }
+
     // 6. Send the 4-beep idle alert (replaces any previous idle card so only 1 exists)
     await clearIdleAlertCard(settings.chat_id);
-
-    const alertKb: InlineKeyboard = [
-      [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
-      [
-        { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-        { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
-      ],
-      [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
-    ];
 
     const finalMsgId = await sendQuadChimeAlert(
       settings.chat_id,
       "⏰ <b>BEEP!</b> (Idle Alert 1/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 2/4)",
       "⏰ <b>BEEP!</b> (Idle Alert 3/4)",
-      `🚨 ⏰ 🔔 <b>IDLE ALERT! No timer is running!</b> 🔔 ⏰ 🚨\n\n` +
-        `⏳ <b>Idle for:</b> <b>${formatTimerMinutes(currentIdleStreakMins)}</b> <i>(since ${streakStartTimeStr})</i>\n` +
-        `📊 <b>Total Idle / Wasted Today:</b> <b>${formatTimerMinutes(totalWastedTodayMins)}</b>\n` +
-        `🕒 <i>Active Window: ${start} – ${end}</i>\n\n` +
-        `Don't let procrastination win today — ready to get back to work?`,
+      `${alertTitle}\n\n${alertBody}`,
       alertKb
     );
 
