@@ -124,6 +124,7 @@ export interface WizardSession {
     | 'timer_prestart'
     | 'awaiting_quick_project_name'
     | 'awaiting_quick_todo_title'
+    | 'awaiting_sleep_target'
     | 'awaiting_settings_window'
     | 'awaiting_settings_interval'
     | 'awaiting_settings_email';

@@ -1284,6 +1284,51 @@ export async function getTimerMessage(chatId: string | number): Promise<number |
   return getTrackedMessage(TIMER_MSG_PREFIX, chatId);
 }
 
+// ==========================================
+// SLEEP WAKE-UP ALARM STATE
+// ==========================================
+const SLEEP_ALARM_PREFIX = "__sleep_alarm__:";
+
+export interface SleepAlarmState {
+  targetMinutes: number; // 0 if open-ended
+  targetTimeIso?: string | null;
+  lastAlarmAtMs?: number | null;
+  alarmCount?: number;
+}
+
+export async function getSleepAlarmState(chatId: string | number): Promise<SleepAlarmState | null> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${SLEEP_ALARM_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return (data.task_data as SleepAlarmState) || null;
+}
+
+export async function setSleepAlarmState(chatId: string | number, state: SleepAlarmState): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `${SLEEP_ALARM_PREFIX}${chatId}`,
+      step: "ui_sleep_alarm",
+      task_data: state,
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error setting sleep alarm state:", error);
+}
+
+export async function clearSleepAlarmState(chatId: string | number): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .delete()
+    .eq("chat_id", `${SLEEP_ALARM_PREFIX}${chatId}`);
+
+  if (error) console.error("Error clearing sleep alarm state:", error);
+}
+
 // Heartbeat so we can verify the external cron is actually reaching the app
 export async function recordCronHeartbeat(source: string): Promise<void> {
   const { error } = await supabase

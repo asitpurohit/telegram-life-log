@@ -91,6 +91,9 @@ import {
   setUserSummaryEmail,
   trackDailyReminderMessage,
   getCronLastHeartbeat,
+  getSleepAlarmState,
+  setSleepAlarmState,
+  clearSleepAlarmState,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -102,7 +105,7 @@ import {
   refreshRunningTimerMessages,
 } from "@/lib/timerRuntime";
 import { computeWastedDays, formatTimerMinutes, shiftDateString } from "@/lib/timeAudit";
-import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel } from "@/lib/time";
+import { localDateLabel, localTimeString, localDateString, localDateShort, localWeekday, zonedDateTimeToUtc, todoDueLabel, parseSleepDuration } from "@/lib/time";
 import { TaskType, Task, WizardSession, Todo, ProjectTodo, ActiveTimer, UserSettings, FocusMood } from "@/lib/types";
 import { buildTodayScorecard, formatReminderTime, formatGoalDisplay, formatFocusBadge } from "@/lib/scorecard";
 import { sendDailySummaryEmail } from "@/lib/dailyEmailSummary";
@@ -156,6 +159,7 @@ function isWizardCallback(data: string): boolean {
     data.startsWith("timer_sel_todo:") ||
     data.startsWith("timer_add_todo:") ||
     data.startsWith("timer_new_proj:") ||
+    data.startsWith("sleep_target:") ||
     data.startsWith("timer_back_launch:")
   );
 }
@@ -880,7 +884,12 @@ async function doStartActiveTimer(
 
   const startedAt = active?.started_at || new Date().toISOString();
   const pomodoroInfo = extractPomodoroInfo(active);
-  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo);
+  let sleepTargetMins: number | null = null;
+  if (/sleep/i.test(taskName)) {
+    const sleepAlarm = await getSleepAlarmState(chatId);
+    sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
+  }
+  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo, sleepTargetMins);
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
     await trackTimerMessage(chatId, messageId);
@@ -3633,6 +3642,46 @@ export async function POST(req: NextRequest) {
           );
           return NextResponse.json({ ok: true });
         }
+
+        // Sleep Task: prompt for wake-up alarm target duration before launching!
+        if (/sleep/i.test(taskName)) {
+          await saveWizardSession(chatId, "awaiting_sleep_target", {
+            taskId,
+            taskName,
+            promptMessageId: messageId,
+          });
+
+          const sleepKb: InlineKeyboard = [
+            [
+              { text: "6h", callback_data: `sleep_target:${taskId}:360` },
+              { text: "6.5h", callback_data: `sleep_target:${taskId}:390` },
+              { text: "7h", callback_data: `sleep_target:${taskId}:420` },
+              { text: "7.5h", callback_data: `sleep_target:${taskId}:450` },
+            ],
+            [
+              { text: "8h", callback_data: `sleep_target:${taskId}:480` },
+              { text: "8.5h", callback_data: `sleep_target:${taskId}:510` },
+              { text: "9h", callback_data: `sleep_target:${taskId}:540` },
+            ],
+            [
+              { text: "⏱️ Open-Ended (No Alarm)", callback_data: `sleep_target:${taskId}:0` },
+            ],
+            [
+              { text: "◀️ Cancel", callback_data: "menu_tasks" },
+            ],
+          ];
+
+          await respondUi(
+            chatId,
+            messageId,
+            `😴 <b>Sleep Timer — Set Wake-Up Alarm</b>\n\n` +
+              `How long do you plan to sleep?\n\n` +
+              `<i>Tap an option below, or type custom hours in chat (e.g. <code>7.5</code> or <code>7h 15m</code>):</i>`,
+            sleepKb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
         let projectId = forcedProjectId || session?.task_data?.projectId;
         let projectName = session?.task_data?.projectName;
         let todoId = session?.task_data?.todoId;
@@ -3667,6 +3716,28 @@ export async function POST(req: NextRequest) {
 
         await clearWizardSession(chatId);
         await doStartActiveTimer(chatId, messageId, taskId, taskName, projectId, projectName, todoId, todoTitle);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Set Sleep Wake-Up Target & Start Sleep Timer ---
+      if (callbackData.startsWith("sleep_target:")) {
+        const [, taskId, targetMinsStr] = callbackData.split(":");
+        const targetMins = parseInt(targetMinsStr, 10) || 0;
+        const task = await getTaskById(taskId);
+        const taskName = task ? task.name : "Sleep";
+
+        if (targetMins > 0) {
+          await setSleepAlarmState(chatId, {
+            targetMinutes: targetMins,
+            lastAlarmAtMs: null,
+            alarmCount: 0,
+          });
+        } else {
+          await clearSleepAlarmState(chatId);
+        }
+
+        await clearWizardSession(chatId);
+        await doStartActiveTimer(chatId, messageId, taskId, taskName);
         return NextResponse.json({ ok: true });
       }
 
@@ -4506,6 +4577,11 @@ export async function POST(req: NextRequest) {
         const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
         const progressStr = await getTimerProjectProgress(active.project_id);
         const pomodoroInfo = extractPomodoroInfo(active);
+        let sleepTargetMins: number | null = null;
+        if (/sleep/i.test(active.task_name)) {
+          const sleepAlarm = await getSleepAlarmState(chatId);
+          sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
+        }
         const view = buildTimerView(
           active.task_name,
           active.started_at,
@@ -4514,7 +4590,8 @@ export async function POST(req: NextRequest) {
           active.project_name,
           progressStr,
           active.todo_title,
-          pomodoroInfo
+          pomodoroInfo,
+          sleepTargetMins
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -4745,6 +4822,7 @@ export async function POST(req: NextRequest) {
             clearPauseState(chatId),
             clearNudgeState(chatId),
             clearIdleAlertCard(chatId, messageId),
+            clearSleepAlarmState(chatId),
           ]);
           await respondUi(chatId, messageId, "⏱️ No active timer was running.", []);
           return NextResponse.json({ ok: true });
@@ -4756,6 +4834,7 @@ export async function POST(req: NextRequest) {
           getTodayTaskTotal(result.taskName),
           clearPauseState(chatId),
           clearIdleAlertCard(chatId, messageId),
+          clearSleepAlarmState(chatId),
           getNudgeState(chatId).then(async (nudge) => {
             if (nudge.messageId) {
               await deleteTelegramMessage(chatId, nudge.messageId);
@@ -4946,8 +5025,11 @@ export async function POST(req: NextRequest) {
 
         const pause = await getPauseState(chatId);
         const result = await stopActiveTimer(chatId, undefined, pause.pausedSeconds);
-        await clearPauseState(chatId);
-        await clearNudgeState(chatId);
+        await Promise.all([
+          clearPauseState(chatId),
+          clearNudgeState(chatId),
+          clearSleepAlarmState(chatId),
+        ]);
 
         if (!result) {
           await sendUiMessage(chatId, "⏱️ No active timer was running.", BACK_ONLY_KEYBOARD);
@@ -5004,6 +5086,68 @@ export async function POST(req: NextRequest) {
           formatSplitSummary(result.split);
 
         await sendUiMessage(chatId, textResp, BACK_ONLY_KEYBOARD);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Command: /sleep (Set wake-up alarm & start sleep timer) ---
+      if (text === "/sleep") {
+        if (messageId) {
+          await deleteTelegramMessage(chatId, messageId);
+        }
+
+        const alreadyRunning = await getActiveTimer(chatId);
+        if (alreadyRunning) {
+          const warnKb: InlineKeyboard = [
+            [{ text: `⏹ Stop ${alreadyRunning.task_name}`, callback_data: "stop_active_timer" }],
+          ];
+          await sendUiMessage(
+            chatId,
+            `⚠️ <b>${alreadyRunning.task_name}</b> is already running.\n\n` +
+              `Stop & log it first before starting your sleep timer.`,
+            warnKb
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        const tasks = await getActiveTasks();
+        const sleepTask = tasks.find((t) => /sleep/i.test(t.name));
+        if (!sleepTask) {
+          await sendUiMessage(chatId, "⚠️ Sleep task not found in your task list.", BACK_ONLY_KEYBOARD);
+          return NextResponse.json({ ok: true });
+        }
+
+        await saveWizardSession(chatId, "awaiting_sleep_target", {
+          taskId: sleepTask.id,
+          taskName: sleepTask.name,
+        });
+
+        const sleepKb: InlineKeyboard = [
+          [
+            { text: "6h", callback_data: `sleep_target:${sleepTask.id}:360` },
+            { text: "6.5h", callback_data: `sleep_target:${sleepTask.id}:390` },
+            { text: "7h", callback_data: `sleep_target:${sleepTask.id}:420` },
+            { text: "7.5h", callback_data: `sleep_target:${sleepTask.id}:450` },
+          ],
+          [
+            { text: "8h", callback_data: `sleep_target:${sleepTask.id}:480` },
+            { text: "8.5h", callback_data: `sleep_target:${sleepTask.id}:510` },
+            { text: "9h", callback_data: `sleep_target:${sleepTask.id}:540` },
+          ],
+          [
+            { text: "⏱️ Open-Ended (No Alarm)", callback_data: `sleep_target:${sleepTask.id}:0` },
+          ],
+          [
+            { text: "◀️ Cancel", callback_data: "menu_tasks" },
+          ],
+        ];
+
+        await sendUiMessage(
+          chatId,
+          `😴 <b>Sleep Timer — Set Wake-Up Alarm</b>\n\n` +
+            `How long do you plan to sleep?\n\n` +
+            `<i>Tap an option below, or type custom hours in chat (e.g. <code>7.5</code> or <code>7h 15m</code>):</i>`,
+          sleepKb
+        );
         return NextResponse.json({ ok: true });
       }
 
@@ -5514,6 +5658,36 @@ export async function POST(req: NextRequest) {
             await sendUiMessage(chatId, cardText, cardKb);
           }
           return NextResponse.json({ ok: true });
+        }
+
+        // --- State: Set Sleep Wake-Up Target (Text Input) ---
+        if (activeSession.step === "awaiting_sleep_target") {
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
+
+          const parsedMins = parseSleepDuration(text);
+          const taskId = activeSession.task_data.taskId!;
+          const taskName = activeSession.task_data.taskName || "Sleep";
+          const promptMsgId = activeSession.task_data.promptMessageId;
+
+          if (parsedMins !== null && parsedMins > 0) {
+            await setSleepAlarmState(chatId, {
+              targetMinutes: parsedMins,
+              lastAlarmAtMs: null,
+              alarmCount: 0,
+            });
+            await clearWizardSession(chatId);
+            await doStartActiveTimer(chatId, promptMsgId, taskId, taskName);
+            return NextResponse.json({ ok: true });
+          } else {
+            await sendTelegramMessage(
+              chatId,
+              `⚠️ Could not understand that sleep duration: "<b>${text}</b>"\n\n` +
+              `Please tap an option above or type e.g. <code>7.5</code>, <code>7h</code>, <code>7h 30m</code>, or <code>8 hours</code>.`
+            );
+            return NextResponse.json({ ok: true });
+          }
         }
 
         // --- State: Quick Add Sub-Task from Launchpad ---

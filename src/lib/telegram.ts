@@ -20,6 +20,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "doubt", description: "Log or view study/coding doubts" },
   { command: "addtask", description: "Create a new habit / routine" },
   { command: "edit", description: "Edit or delete tasks" },
+  { command: "sleep", description: "Set wake-up alarm & start sleep timer" },
   { command: "settings", description: "Anti-slacking guard & email preferences" },
   { command: "cron", description: "Check background runner & alarm health" },
 ];

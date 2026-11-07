@@ -8,6 +8,8 @@ import {
   setNudgeState,
   clearNudgeState,
   updateActiveTimer,
+  getSleepAlarmState,
+  setSleepAlarmState,
 } from "./supabase";
 import {
   editTelegramMessage,
@@ -16,6 +18,7 @@ import {
   InlineKeyboard,
 } from "./telegram";
 import { localTimeString } from "./time";
+import { formatMinutes } from "./timeAudit";
 import { ActiveTimer } from "./types";
 
 // "Still running" notification interval
@@ -65,7 +68,8 @@ export function buildTimerView(
   projectName?: string | null,
   projectProgress?: string | null,
   todoTitle?: string | null,
-  pomodoro?: PomodoroInfo | null
+  pomodoro?: PomodoroInfo | null,
+  sleepTargetMins?: number | null
 ): { text: string; keyboard: InlineKeyboard } {
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
@@ -200,6 +204,41 @@ export function buildTimerView(
     return { text, keyboard };
   }
 
+  // --- Sleep Timer View ---
+  if (/sleep/i.test(taskName)) {
+    let durationLine = `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n`;
+    let alarmLine = "";
+
+    if (sleepTargetMins && sleepTargetMins > 0) {
+      const targetSec = sleepTargetMins * 60;
+      const targetPercent = Math.min(100, Math.round((elapsedSeconds / targetSec) * 100));
+      const bar = miniProgressBar(targetPercent, 10);
+      const startMs = new Date(startedAtIso).getTime();
+      const wakeUpTimeStr = localTimeString(new Date(startMs + targetSec * 1000));
+      const remainingSec = targetSec - elapsedSeconds;
+
+      durationLine = `⏳ Sleep Time: <b>${formatDuration(elapsedSeconds)} / ${formatDuration(targetSec)}</b>  [${bar}] ${targetPercent}%\n`;
+      alarmLine =
+        remainingSec > 0
+          ? `⏰ Wake-Up Alarm: <b>${wakeUpTimeStr}</b> <i>(in ${formatDuration(remainingSec)})</i>\n\n`
+          : `⏰ <b>Wake-Up Alarm Triggered!</b> <i>(bursts every 5m until stopped)</i>\n\n`;
+    }
+
+    const text =
+      `😴 <b>${taskName}</b> — ${isPaused ? "Paused" : "Running"}${projectLine}${taskLine}\n` +
+      durationLine +
+      `🕐 Started: ${startedTime}\n` +
+      alarmLine +
+      `<i>Sleep peacefully. Wake-up alarm will burst 10 times once target is reached, repeating every 5 minutes until you stop it.</i>`;
+
+    const keyboard: InlineKeyboard = [
+      [{ text: "⏹ Stop Sleep Timer & Log", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
+      [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
+    ];
+
+    return { text, keyboard };
+  }
+
   // --- Standard Stopwatch View ---
   const text = isPaused
     ? `${emoji} <b>${taskName}</b> — Paused${projectLine}${taskLine}\n` +
@@ -228,6 +267,41 @@ export function buildTimerView(
       ];
 
   return { text, keyboard };
+}
+
+// Burst of 10 rapid wake-up notifications spaced ~1.2s apart to ensure the user's phone rings/vibrates loudly.
+// Preliminary audio pings are cleanly deleted after triggering sounds on phone, leaving only the actionable wake-up card.
+export async function sendSleepAlarmBurst(
+  chatId: string | number,
+  totalSleptStr: string,
+  targetStr: string,
+  keyboard: InlineKeyboard
+): Promise<number | undefined> {
+  const pings: (number | undefined)[] = [];
+
+  for (let i = 1; i <= 9; i++) {
+    const res = await sendTelegramMessage(chatId, `⏰ 🔔 <b>WAKE UP!</b> (${i}/10)`);
+    pings.push(res?.result?.message_id);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+
+  const finalRes = await sendTelegramMessage(
+    chatId,
+    `🚨 ⏰ 🔔 <b>WAKE UP! Sleep Target (${targetStr}) Reached!</b> 🔔 ⏰ 🚨\n\n` +
+      `😴 <b>Good morning! Time to wake up.</b>\n` +
+      `⏳ <b>Total Sleep:</b> <b>${totalSleptStr}</b>\n\n` +
+      `<i>Tap below to stop the timer and save your sleep log.\n(This wake-up alarm will repeat every 5 minutes until you stop it).</i>`,
+    keyboard
+  );
+
+  // Clean up the 9 preliminary audio pings so the chat isn't cluttered
+  for (const pingId of pings) {
+    if (pingId) {
+      await deleteTelegramMessage(chatId, pingId);
+    }
+  }
+
+  return finalRes?.result?.message_id;
 }
 
 // Triple-Ping alert sequence: sends 3 distinct notifications spaced 2.5s apart
@@ -397,6 +471,11 @@ export async function refreshRunningTimerMessages(): Promise<void> {
 
     // 1) Keep the live timer view fresh
     if (messageId) {
+      let sleepTargetMins: number | null = null;
+      if (/sleep/i.test(timer.task_name)) {
+        const sleepAlarm = await getSleepAlarmState(timer.chat_id);
+        sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
+      }
       const view = buildTimerView(
         timer.task_name,
         timer.started_at,
@@ -405,13 +484,58 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         timer.project_name,
         null,
         timer.todo_title,
-        pomodoroInfo
+        pomodoroInfo,
+        sleepTargetMins
       );
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }
 
-    // 2) 5-minute milestone buzz / nudge (never while paused, never for Sleep, never during Pomodoro break).
-    if (/sleep/i.test(timer.task_name)) continue;
+    // 2) Sleep Wake-Up Alarm: check if target duration reached, then burst 10 notifications every 5 minutes until stopped
+    if (/sleep/i.test(timer.task_name)) {
+      const sleepAlarm = await getSleepAlarmState(timer.chat_id);
+      if (sleepAlarm && sleepAlarm.targetMinutes > 0) {
+        const sleepStartMs = new Date(timer.started_at).getTime();
+        const targetMs = sleepStartMs + sleepAlarm.targetMinutes * 60 * 1000;
+
+        if (now >= targetMs) {
+          const SLEEP_BURST_INTERVAL_MS = 5 * 60 * 1000; // 5-minute gap
+          const lastAlarmMs = sleepAlarm.lastAlarmAtMs || 0;
+
+          if (now - lastAlarmMs >= SLEEP_BURST_INTERVAL_MS) {
+            const totalSleptSeconds = Math.max(0, Math.floor((now - sleepStartMs) / 1000));
+            const totalSleptStr = formatDuration(totalSleptSeconds);
+            const targetStr = formatMinutes(sleepAlarm.targetMinutes);
+            const sessionEpoch = sleepStartMs;
+
+            const alarmKb: InlineKeyboard = [
+              [{ text: "⏹ Stop Sleep Timer & Log", callback_data: `timer_stop:${now}:${sessionEpoch}` }],
+            ];
+
+            if (messageId) {
+              await deleteTelegramMessage(timer.chat_id, messageId);
+            }
+
+            const finalCardMsgId = await sendSleepAlarmBurst(
+              timer.chat_id,
+              totalSleptStr,
+              targetStr,
+              alarmKb
+            );
+
+            if (finalCardMsgId) {
+              await trackTimerMessage(timer.chat_id, finalCardMsgId);
+            }
+
+            await setSleepAlarmState(timer.chat_id, {
+              ...sleepAlarm,
+              lastAlarmAtMs: now,
+              alarmCount: (sleepAlarm.alarmCount || 0) + 1,
+            });
+          }
+        }
+      }
+      continue;
+    }
     if (pause.pausedAt) continue;
     if (
       timer.is_pomodoro &&

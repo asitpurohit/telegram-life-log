@@ -163,3 +163,27 @@ export function splitSessionMinutes(
   }
   return parts;
 }
+
+// Parse user sleep input like "7h", "7.5", "7.5h", "7h 30m", "8 hours", "420m" into total minutes
+export function parseSleepDuration(text: string): number | null {
+  const clean = text.trim().toLowerCase();
+
+  // Purely minutes e.g. "450m", "450 mins"
+  const mMatch = clean.match(/^(\d+)\s*(?:m|mins?|minutes?)$/i);
+  if (mMatch) {
+    const mins = parseInt(mMatch[1], 10);
+    return mins > 0 ? mins : null;
+  }
+
+  // Matches e.g. "7", "7.5", "7.5h", "7h 30m", "7 hours 30 mins", "8h"
+  const hmMatch = clean.match(/^(\d+(?:\.\d+)?)\s*(?:h|hrs?|hours?)?(?:\s*(\d+)\s*(?:m|mins?|minutes?))?$/i);
+  if (hmMatch) {
+    const hours = parseFloat(hmMatch[1]);
+    const mins = hmMatch[2] ? parseInt(hmMatch[2], 10) : 0;
+    if (!isNaN(hours) && hours > 0) {
+      return Math.round(hours * 60) + mins;
+    }
+  }
+
+  return null;
+}
