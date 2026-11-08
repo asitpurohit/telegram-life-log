@@ -4760,6 +4760,8 @@ export async function POST(req: NextRequest) {
             phase_started_at: nowIso,
           }),
           clearIdleAlertCard(chatId, messageId),
+          finalizeIdleSnooze(chatId),
+          updateUserSettings(chatId, { idle_snoozed_until: null }),
         ]);
 
         const pomodoroInfo: PomodoroInfo = {
@@ -4824,6 +4826,8 @@ export async function POST(req: NextRequest) {
             phase_started_at: nowIso,
           }),
           clearIdleAlertCard(chatId, messageId),
+          finalizeIdleSnooze(chatId),
+          updateUserSettings(chatId, { idle_snoozed_until: null }),
         ]);
 
         const pomodoroInfo: PomodoroInfo = {
@@ -4885,6 +4889,8 @@ export async function POST(req: NextRequest) {
             phase_started_at: nowIso,
           }),
           clearIdleAlertCard(chatId, messageId),
+          finalizeIdleSnooze(chatId),
+          updateUserSettings(chatId, { idle_snoozed_until: null }),
         ]);
         const pomodoroInfo: PomodoroInfo = {
           isPomodoro: true,
