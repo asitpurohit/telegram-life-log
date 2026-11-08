@@ -8,6 +8,8 @@ import {
   clearIdleAlertState,
   getTodayLogs,
   getActiveTasks,
+  getIdleSnoozeState,
+  finalizeIdleSnooze,
 } from "./supabase";
 import {
   sendTelegramMessage,
@@ -120,6 +122,12 @@ export async function checkAndSendIdleNudges(): Promise<void> {
     if (settings.idle_snoozed_until) {
       const snoozeEnd = new Date(settings.idle_snoozed_until).getTime();
       if (now < snoozeEnd) continue;
+      // Snooze expired — log the offline break into logs and reset snooze state
+      await finalizeIdleSnooze(settings.chat_id);
+      await updateUserSettings(settings.chat_id, {
+        idle_snoozed_until: null,
+        last_idle_nudge_at: new Date(now).toISOString(),
+      });
     }
 
     // 2. Check if user is currently inside their active hours window
@@ -260,8 +268,9 @@ export async function checkAndSendIdleNudges(): Promise<void> {
     const alertKb: InlineKeyboard = [
       [{ text: "📋 View Tasks / Start Timer", callback_data: "menu_tasks" }],
       [
-        { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-        { text: "⏸ Snooze 1h", callback_data: "idle_snooze:60" },
+        { text: "⏸ Snooze 30m", callback_data: "idle_snooze_pick:30" },
+        { text: "⏸ Snooze 1h", callback_data: "idle_snooze_pick:60" },
+        { text: "⏸ Snooze 2h", callback_data: "idle_snooze_pick:120" },
       ],
       [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
     ];

@@ -16,6 +16,7 @@ export interface WastedDay {
   elapsedMin: number; // 1440 for past days, now - midnight for today
   sleepMin: number; // Sleep-task minutes (real sessions + running share only)
   taskMin: number; // every other timer task's minutes
+  breakMin?: number; // Offline break / snooze minutes
   wastedMin: number; // elapsed - tracked, clamped at 0
   tracked: boolean; // true when the Sleep system task exists
   isToday: boolean;
@@ -34,6 +35,7 @@ export function computeWastedDays(opts: {
   tasks: Task[];
   nowMs?: number;
   running?: RunningSession | null;
+  snoozeMin?: number;
 }): WastedDay[] {
   const nowMs = opts.nowMs ?? Date.now();
   const today = localDateString(new Date(nowMs));
@@ -56,11 +58,17 @@ export function computeWastedDays(opts: {
     // Completed timer rows + manual timer logs are already attributed per day.
     let otherTimerMin = 0;
     let sleepActualMin = 0;
+    let breakActualMin = 0;
     for (const l of opts.logs) {
-      if (l.log_date !== date || !timerNames.has(l.task_name)) continue;
+      if (l.log_date !== date) continue;
       const v = l.value || 0;
-      if (sleepTask && l.task_name === sleepTask.name) sleepActualMin += v;
-      else otherTimerMin += v;
+      if (sleepTask && l.task_name === sleepTask.name) {
+        sleepActualMin += v;
+      } else if (l.task_name === "Offline Break") {
+        breakActualMin += v;
+      } else if (timerNames.has(l.task_name)) {
+        otherTimerMin += v;
+      }
     }
 
     // The running session's live share of this day.
@@ -84,9 +92,10 @@ export function computeWastedDays(opts: {
 
     const sleepMin = Math.max(0, sleepActualMin + runningSleepMin);
     const taskMin = Math.max(0, otherTimerMin);
-    const wastedMin = Math.max(0, elapsedMin - sleepMin - taskMin);
+    const breakMin = Math.max(0, breakActualMin + (isToday ? Math.max(0, opts.snoozeMin || 0) : 0));
+    const wastedMin = Math.max(0, elapsedMin - sleepMin - taskMin - breakMin);
 
-    days.push({ date, elapsedMin, sleepMin, taskMin, wastedMin, tracked, isToday });
+    days.push({ date, elapsedMin, sleepMin, taskMin, breakMin, wastedMin, tracked, isToday });
   }
 
   return days;

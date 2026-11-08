@@ -127,11 +127,13 @@ export interface WizardSession {
     | 'awaiting_sleep_target'
     | 'awaiting_settings_window'
     | 'awaiting_settings_interval'
-    | 'awaiting_settings_email';
+    | 'awaiting_settings_email'
+    | 'idle_snooze_custom_note';
   task_data: {
     type?: TaskType;
     name?: string;
     taskId?: string;
+    durationMins?: number;
     target_days?: string | null;
     reminder_time?: string | null;
     target_value?: number | null;
@@ -187,4 +189,12 @@ export interface UserSettings {
   summary_email_to?: string | null;
   updated_at?: string;
 }
+
+export interface IdleSnoozeState {
+  snoozedAt: string;
+  snoozedUntil: string;
+  durationMins: number;
+  reason?: string | null;
+}
+
 

@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { Task, Log, ActiveTimer, WizardSession, Todo, Project, ProjectTodo, UserSettings } from "./types";
+import { Task, Log, ActiveTimer, WizardSession, Todo, Project, ProjectTodo, UserSettings, IdleSnoozeState } from "./types";
 import { localDateString, localTimeString, localWeekday, splitSessionMinutes } from "./time";
 import { formatMinutes } from "./timeAudit";
 
@@ -1850,6 +1850,83 @@ export async function clearDailyReminderMessages(
   const rowKey = `${DAILY_REMINDER_PREFIX}${chatId}:${date}`;
   await supabase.from("wizard_sessions").delete().eq("chat_id", rowKey);
 }
+
+// ==========================================
+// IDLE SNOOZE WITH NOTES
+// ==========================================
+const IDLE_SNOOZE_PREFIX = "__idle_snooze__:";
+
+export async function getIdleSnoozeState(chatId: string | number): Promise<IdleSnoozeState | null> {
+  const { data, error } = await supabase
+    .from("wizard_sessions")
+    .select("task_data")
+    .eq("chat_id", `${IDLE_SNOOZE_PREFIX}${chatId}`)
+    .maybeSingle();
+
+  if (error || !data?.task_data) return null;
+  return data.task_data as IdleSnoozeState;
+}
+
+export async function setIdleSnoozeState(
+  chatId: string | number,
+  state: IdleSnoozeState
+): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .upsert({
+      chat_id: `${IDLE_SNOOZE_PREFIX}${chatId}`,
+      step: "idle_snooze",
+      task_data: state,
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) console.error("Error setting idle snooze state:", error);
+}
+
+export async function clearIdleSnoozeState(chatId: string | number): Promise<void> {
+  const { error } = await supabase
+    .from("wizard_sessions")
+    .delete()
+    .eq("chat_id", `${IDLE_SNOOZE_PREFIX}${chatId}`);
+
+  if (error) console.error("Error clearing idle snooze state:", error);
+}
+
+/**
+ * Finalizes an active snooze:
+ * - Calculates elapsed minutes since snooze started (capped at durationMins).
+ * - If elapsed >= 5 minutes, writes a permanent "Offline Break" entry to `logs` with the note/reason,
+ *   so the time is permanently recognized in the daily time audit and diary history!
+ * - Clears the active snooze state.
+ */
+export async function finalizeIdleSnooze(chatId: string | number): Promise<Log | null> {
+  const state = await getIdleSnoozeState(chatId);
+  await clearIdleSnoozeState(chatId);
+
+  if (!state || !state.snoozedAt) return null;
+
+  const now = Date.now();
+  const startMs = new Date(state.snoozedAt).getTime();
+  const elapsedMs = Math.max(0, now - startMs);
+  const elapsedMins = Math.min(state.durationMins, Math.round(elapsedMs / 60000));
+
+  // Only record meaningful offline breaks of at least 5 minutes
+  if (elapsedMins < 5) return null;
+
+  const reason = state.reason ? state.reason.trim() : "";
+  const noteText = reason ? `Planned Snooze: ${reason}` : "Idle Guardian Snooze";
+  const summaryText = reason ? `Break: ${reason}` : "Offline Break";
+
+  return logActivity({
+    task_name: "Offline Break",
+    value: elapsedMins,
+    log_date: localDateString(new Date(startMs)),
+    notes: noteText,
+    summary: summaryText,
+    started_at: state.snoozedAt,
+  });
+}
+
 
 
 

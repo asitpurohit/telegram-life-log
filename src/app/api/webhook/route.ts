@@ -94,6 +94,10 @@ import {
   getSleepAlarmState,
   setSleepAlarmState,
   clearSleepAlarmState,
+  getIdleSnoozeState,
+  setIdleSnoozeState,
+  clearIdleSnoozeState,
+  finalizeIdleSnooze,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -734,6 +738,49 @@ async function openTaskScreen(
   }
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const SNOOZE_PRESETS: Record<string, string> = {
+  traveling: "Traveling",
+  festival: "Festival / Event",
+  meal: "Meal / Lunch",
+  health: "Health / Doctor",
+  none: "",
+};
+
+function buildSnoozeReasonView(mins: number): { text: string; keyboard: InlineKeyboard } {
+  const durationStr = formatTimerMinutes(mins);
+  const targetTime = localTimeString(new Date(Date.now() + mins * 60 * 1000));
+
+  const text =
+    `⏸️ <b>Snooze Idle Alerts for ${durationStr}</b> <i>(until ${targetTime})</i>\n\n` +
+    `Why are you taking a break? Tap a quick reason below or send a custom text note:`;
+
+  const keyboard: InlineKeyboard = [
+    [
+      { text: "🚗 Traveling", callback_data: `idle_snooze_apply:${mins}:traveling` },
+      { text: "🎉 Festival / Event", callback_data: `idle_snooze_apply:${mins}:festival` },
+    ],
+    [
+      { text: "🍽️ Meal / Lunch", callback_data: `idle_snooze_apply:${mins}:meal` },
+      { text: "🏥 Health / Doctor", callback_data: `idle_snooze_apply:${mins}:health` },
+    ],
+    [
+      { text: "💬 Type Custom Note", callback_data: `idle_snooze_prompt_note:${mins}` },
+      { text: "⏩ Skip Note", callback_data: `idle_snooze_apply:${mins}:none` },
+    ],
+    [{ text: "◀️ Back", callback_data: "idle_snooze_cancel" }],
+  ];
+
+  return { text, keyboard };
+}
+
 async function buildSettingsView(chatId: string | number): Promise<{ text: string; keyboard: InlineKeyboard }> {
   const settings = await getUserSettings(chatId);
   const now = Date.now();
@@ -743,7 +790,9 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
     const snoozeEnd = new Date(settings.idle_snoozed_until).getTime();
     if (now < snoozeEnd) {
       const remainingMins = Math.ceil((snoozeEnd - now) / 60000);
-      snoozeStatus = `\n⏸️ <i>Snoozed for next ${remainingMins} minutes</i>\n`;
+      const snoozeState = await getIdleSnoozeState(chatId);
+      const reasonTag = snoozeState?.reason ? ` (${escapeHtml(snoozeState.reason)})` : "";
+      snoozeStatus = `\n⏸️ <i>Snoozed for next ${remainingMins} minutes${reasonTag}</i>\n`;
     }
   }
 
@@ -812,9 +861,11 @@ async function buildSettingsView(chatId: string | number): Promise<{ text: strin
       { text: "✏️ Custom Interval", callback_data: "set_idle_interval:custom" },
     ],
     [
-      { text: "⏸ Snooze 30m", callback_data: "idle_snooze:30" },
-      ...(settings.idle_snoozed_until ? [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }] : []),
+      { text: "⏸ Snooze 30m", callback_data: "idle_snooze_pick:30" },
+      { text: "⏸ 1h", callback_data: "idle_snooze_pick:60" },
+      { text: "⏸ 2h", callback_data: "idle_snooze_pick:120" },
     ],
+    ...(settings.idle_snoozed_until ? [[{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }]] : []),
     [
       { text: "✏️ Change Email", callback_data: "set_summary_email" },
     ],
@@ -880,6 +931,8 @@ async function doStartActiveTimer(
     clearNudgeState(chatId),
     clearIdleAlertCard(chatId, messageId),
     setActiveTask(chatId, taskId),
+    finalizeIdleSnooze(chatId),
+    updateUserSettings(chatId, { idle_snoozed_until: null }),
   ]);
 
   const startedAt = active?.started_at || new Date().toISOString();
@@ -3341,17 +3394,67 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // --- Button: Idle Snooze ---
-      if (callbackData.startsWith("idle_snooze:")) {
+      // --- Button: Idle Snooze Picker (30m, 1h, 2h or custom) ---
+      if (callbackData.startsWith("idle_snooze_pick:") || callbackData.startsWith("idle_snooze:")) {
         const mins = parseInt(callbackData.split(":")[1], 10) || 30;
-        const snoozeUntil = new Date(Date.now() + mins * 60 * 1000).toISOString();
-        await updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil });
-        await clearIdleAlertCard(chatId, messageId);
+        const view = buildSnoozeReasonView(mins);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Idle Snooze Prompt for Custom Note ---
+      if (callbackData.startsWith("idle_snooze_prompt_note:")) {
+        const mins = parseInt(callbackData.split(":")[1], 10) || 30;
+        await saveWizardSession(chatId, "idle_snooze_custom_note", {
+          durationMins: mins,
+          promptMessageId: messageId,
+        });
+
         await respondUi(
           chatId,
           messageId,
-          `⏸️ <b>Idle Guardian Snoozed for ${mins} minutes!</b>\n\n` +
-            `Take your time for lunch/break. No idle alerts will ring until then.`,
+          `✍️ <b>Please send a text message</b> with your reason for snoozing for ${formatTimerMinutes(mins)} (e.g. <i>"Family function"</i>, <i>"Grocery shopping"</i>, <i>"Doctor visit"</i>):\n\n` +
+            `Or tap below to skip adding a note:`,
+          [
+            [{ text: "⏩ Skip Note", callback_data: `idle_snooze_apply:${mins}:none` }],
+            [{ text: "◀️ Cancel", callback_data: "idle_snooze_cancel" }],
+          ]
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Apply Idle Snooze (with preset or skipped reason) ---
+      if (callbackData.startsWith("idle_snooze_apply:")) {
+        const parts = callbackData.split(":");
+        const mins = parseInt(parts[1], 10) || 30;
+        const presetKey = parts[2] || "none";
+        const reason = SNOOZE_PRESETS[presetKey] !== undefined ? SNOOZE_PRESETS[presetKey] : (presetKey === "none" ? null : presetKey);
+
+        const now = Date.now();
+        const snoozeUntil = new Date(now + mins * 60 * 1000).toISOString();
+
+        await Promise.all([
+          updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil }),
+          setIdleSnoozeState(chatId, {
+            snoozedAt: new Date(now).toISOString(),
+            snoozedUntil: snoozeUntil,
+            durationMins: mins,
+            reason: reason || null,
+          }),
+          clearWizardSession(chatId),
+          clearIdleAlertCard(chatId, messageId),
+        ]);
+
+        const targetTime = localTimeString(new Date(snoozeUntil));
+        const reasonLine = reason ? `📝 <b>Reason:</b> <code>${escapeHtml(reason)}</code>\n\n` : "";
+
+        await respondUi(
+          chatId,
+          messageId,
+          `⏸️ <b>Idle Guardian Snoozed for ${formatTimerMinutes(mins)}!</b>\n` +
+            `🕒 <i>Paused until ${targetTime}</i>\n\n` +
+            reasonLine +
+            `Enjoy your time! Idle alerts are paused until then.`,
           [
             [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }],
             [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
@@ -3362,10 +3465,22 @@ export async function POST(req: NextRequest) {
 
       // --- Button: Cancel Snooze ---
       if (callbackData === "idle_unsnooze") {
-        await updateUserSettings(chatId, {
-          idle_snoozed_until: null,
-          last_idle_nudge_at: new Date().toISOString(),
-        });
+        await Promise.all([
+          updateUserSettings(chatId, {
+            idle_snoozed_until: null,
+            last_idle_nudge_at: new Date().toISOString(),
+          }),
+          finalizeIdleSnooze(chatId),
+          clearWizardSession(chatId),
+        ]);
+        const view = await buildSettingsView(chatId);
+        await respondUi(chatId, messageId, view.text, view.keyboard);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Cancel Snooze Picker / Return to Previous View ---
+      if (callbackData === "idle_snooze_cancel") {
+        await clearWizardSession(chatId);
         const view = await buildSettingsView(chatId);
         await respondUi(chatId, messageId, view.text, view.keyboard);
         return NextResponse.json({ ok: true });
@@ -4537,6 +4652,8 @@ export async function POST(req: NextRequest) {
             ? updateActiveTimer(chatId, { phase_started_at: newPhaseStartedAtIso })
             : Promise.resolve(),
           clearIdleAlertCard(chatId, messageId),
+          finalizeIdleSnooze(chatId),
+          updateUserSettings(chatId, { idle_snoozed_until: null }),
           getNudgeState(chatId).then(async (nudge) => {
             if (nudge.messageId) {
               await deleteTelegramMessage(chatId, nudge.messageId);
@@ -5629,6 +5746,51 @@ export async function POST(req: NextRequest) {
       // 3. CONVERSATIONAL WIZARD STATE HANDLER
       // =======================================================================
       if (activeSession) {
+        // --- State: User Typing Custom Idle Snooze Note ---
+        if (activeSession.step === "idle_snooze_custom_note") {
+          const durationMins = activeSession.task_data?.durationMins || 60;
+          const promptMessageId = activeSession.task_data?.promptMessageId;
+
+          if (messageId) {
+            await deleteTelegramMessage(chatId, messageId);
+          }
+
+          const reason = text.trim();
+          const now = Date.now();
+          const snoozeUntil = new Date(now + durationMins * 60 * 1000).toISOString();
+
+          await Promise.all([
+            updateUserSettings(chatId, { idle_snoozed_until: snoozeUntil }),
+            setIdleSnoozeState(chatId, {
+              snoozedAt: new Date(now).toISOString(),
+              snoozedUntil: snoozeUntil,
+              durationMins,
+              reason,
+            }),
+            clearWizardSession(chatId),
+            clearIdleAlertCard(chatId, promptMessageId),
+          ]);
+
+          const targetTime = localTimeString(new Date(snoozeUntil));
+          const confirmText =
+            `⏸️ <b>Idle Guardian Snoozed for ${formatTimerMinutes(durationMins)}!</b>\n` +
+            `🕒 <i>Paused until ${targetTime}</i>\n\n` +
+            `📝 <b>Reason:</b> <code>${escapeHtml(reason)}</code>\n\n` +
+            `Enjoy your time! Idle alerts are paused until then.`;
+
+          const confirmKb: InlineKeyboard = [
+            [{ text: "▶️ Cancel Snooze", callback_data: "idle_unsnooze" }],
+            [{ text: "⚙️ Settings", callback_data: "menu_settings" }],
+          ];
+
+          if (promptMessageId) {
+            await respondUi(chatId, promptMessageId, confirmText, confirmKb);
+          } else {
+            await sendUiMessage(chatId, confirmText, confirmKb);
+          }
+          return NextResponse.json({ ok: true });
+        }
+
         // --- State: User Typing Note on Checkout Card ---
         if (activeSession.step === "awaiting_session_note" || activeSession.step === "checkout_review") {
           const logId = activeSession.task_data.sessionLogId;

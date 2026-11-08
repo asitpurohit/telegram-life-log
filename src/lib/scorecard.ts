@@ -11,6 +11,7 @@ import {
   formatMoodDisplay,
   getTodos,
   getDailyTodosForTask,
+  getIdleSnoozeState,
 } from "./supabase";
 import { formatTimerMinutes, computeWastedDays } from "./timeAudit";
 import {
@@ -110,7 +111,7 @@ export async function buildTodayScorecard(chatId: string | number): Promise<stri
   const today = localDateString();
   const logs = await getLogsInRange(shiftDateString(today, -1), today);
 
-  // Wasted = elapsed (midnight -> now) - tracked timer sessions (Sleep included).
+  // Wasted = elapsed (midnight -> now) - tracked timer sessions (Sleep included) - planned offline breaks.
   if (allTasks.length > 0) {
     const active = await getActiveTimer(chatId);
     const pause = await getPauseState(chatId);
@@ -123,11 +124,39 @@ export async function buildTodayScorecard(chatId: string | number): Promise<stri
         }
       : null;
 
-    const [day] = computeWastedDays({ dates: [today], logs, tasks: allTasks, running });
+    const snoozeState = await getIdleSnoozeState(chatId);
+    let activeSnoozeMin = 0;
+    if (snoozeState && snoozeState.snoozedAt) {
+      const now = Date.now();
+      const end = new Date(snoozeState.snoozedUntil).getTime();
+      if (now < end) {
+        activeSnoozeMin = Math.max(0, Math.round((now - new Date(snoozeState.snoozedAt).getTime()) / 60000));
+      }
+    }
+
+    const [day] = computeWastedDays({ dates: [today], logs, tasks: allTasks, running, snoozeMin: activeSnoozeMin });
     if (day) {
       const sleepLabel = day.tracked ? `😴 ${formatTimerMinutes(day.sleepMin)}` : "😴 not tracked";
+      const breakLabel = (day.breakMin || 0) > 0 ? ` · ⏸️ ${formatTimerMinutes(day.breakMin!)} breaks` : "";
 
-      text += `\n🕳️ <b>Wasted:</b> ${formatTimerMinutes(day.wastedMin)} of ${formatTimerMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatTimerMinutes(day.taskMin)} tasks)</i>\n`;
+      text += `\n🕳️ <b>Wasted:</b> ${formatTimerMinutes(day.wastedMin)} of ${formatTimerMinutes(day.elapsedMin)} <i>(${sleepLabel} · ⏱️ ${formatTimerMinutes(day.taskMin)} tasks${breakLabel})</i>\n`;
+    }
+  }
+
+  const breakLogs = logs.filter((l) => l.task_name === "Offline Break" && l.log_date === today);
+  const currentSnooze = await getIdleSnoozeState(chatId);
+  const now = Date.now();
+  const isSnoozeLive = Boolean(currentSnooze && currentSnooze.snoozedUntil && now < new Date(currentSnooze.snoozedUntil).getTime());
+  if (breakLogs.length > 0 || isSnoozeLive) {
+    text += `\n⏸️ <b>Planned Breaks & Offline Snoozes:</b>\n`;
+    for (const b of breakLogs) {
+      const noteStr = b.summary || b.notes ? ` — <i>${(b.summary || b.notes || "").replace(/^Planned Snooze:\s*/i, "")}</i>` : "";
+      text += `• <b>${formatTimerMinutes(b.value || 0)}</b>${noteStr}\n`;
+    }
+    if (isSnoozeLive && currentSnooze?.snoozedAt) {
+      const liveMin = Math.max(1, Math.round((now - new Date(currentSnooze.snoozedAt).getTime()) / 60000));
+      const reasonStr = currentSnooze.reason ? ` — <i>${currentSnooze.reason}</i>` : "";
+      text += `• <b>${formatTimerMinutes(liveMin)}</b> (in progress)${reasonStr}\n`;
     }
   }
 
