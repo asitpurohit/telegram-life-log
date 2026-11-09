@@ -259,6 +259,7 @@ function TimerView() {
       });
       const data = await res.json();
       if (data.ok && data.active) {
+        setStoppedSuccess(false);
         setActive(data.active);
         try {
           localStorage.setItem("tg_timer_active_cache", JSON.stringify(data.active));
@@ -755,15 +756,25 @@ function TimerView() {
         <div style={{ fontSize: "3rem" }}>⏱️</div>
         <h2 style={{ fontSize: "1.3rem", fontWeight: 700 }}>No Active Timer</h2>
         <p style={{ color: "var(--hint-color)", fontSize: "0.9rem", maxWidth: 280 }}>
-          No stopwatch is currently running. Start a timer in your Telegram chat to watch it tick live.
+          No stopwatch is currently running.
         </p>
-        <button
-          className="btn btn-secondary"
-          style={{ maxWidth: 200, marginTop: "1rem" }}
-          onClick={handleClose}
+        <div
+          style={{
+            marginTop: "1.2rem",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            fontSize: "0.82rem",
+            color: "var(--hint-color)",
+            opacity: 0.75,
+            background: "rgba(255, 255, 255, 0.04)",
+            padding: "0.4rem 0.9rem",
+            borderRadius: "20px",
+          }}
         >
-          Close
-        </button>
+          <span className="pulse-dot" style={{ width: 8, height: 8 }} />
+          <span>Waiting for next timer from Telegram chat...</span>
+        </div>
       </div>
     );
   }
