@@ -145,6 +145,7 @@ function TimerView() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const autoTriggeredRef = useRef<boolean>(false);
   const lastMilestoneRef = useRef<number>(0);
+  const lastPositionSyncRef = useRef<number>(0);
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
 
@@ -293,7 +294,7 @@ function TimerView() {
   }, [chatId, fetchActiveTimer]);
 
   // Update Android Lock Screen Media Session Controls & PositionState
-  const updateMediaSessionState = useCallback((current: ActiveData) => {
+  const updateMediaSessionState = useCallback((current: ActiveData, forceSyncPosition = false) => {
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
 
     const now = Date.now();
@@ -305,52 +306,46 @@ function TimerView() {
     );
     const phaseStartMs = new Date(current.phaseStartedAt || current.startedAt).getTime();
 
-    let displayText = "00:00";
-    let sublabel = "ELAPSED";
     let durationSec = 3600;
     let positionSec = elapsedSec;
+    let phaseBadge = "Stopwatch";
 
     if (current.isPomodoro) {
       if (current.phase === "break") {
-        const targetSec = current.breakMins * 60;
+        durationSec = current.breakMins * 60;
         const breakSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
-        const remainingSec = Math.max(0, targetSec - breakSec);
-        displayText = formatClockTime(remainingSec);
-        sublabel = "BREAK REMAINING";
-        durationSec = targetSec;
-        positionSec = Math.min(targetSec, breakSec);
+        positionSec = Math.min(durationSec, breakSec);
+        phaseBadge = `☕ Round ${current.round} Break (${current.breakMins}m)`;
       } else if (current.phase === "awaiting_break") {
-        displayText = "00:00";
-        sublabel = "FOCUS COMPLETE";
         durationSec = 10;
         positionSec = 10;
+        phaseBadge = "🎉 Focus Complete";
       } else if (current.phase === "awaiting_round") {
-        displayText = "00:00";
-        sublabel = "BREAK COMPLETE";
         durationSec = 10;
         positionSec = 10;
+        phaseBadge = `🚨 Ready for Round ${current.round}`;
       } else {
-        const targetSec = current.workMins * 60;
+        durationSec = current.workMins * 60;
         const workSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
-        const remainingSec = Math.max(0, targetSec - workSec);
-        displayText = formatClockTime(remainingSec);
-        sublabel = `ROUND ${current.round} FOCUS`;
-        durationSec = targetSec;
-        positionSec = Math.min(targetSec, workSec);
+        positionSec = Math.min(durationSec, workSec);
+        phaseBadge = `🍅 Round ${current.round} Focus (${current.workMins}m)`;
       }
     } else {
-      displayText = formatClockTime(elapsedSec);
-      sublabel = current.isPaused ? "PAUSED" : "RUNNING";
-      durationSec = Math.max(3600, elapsedSec + 600);
+      durationSec = Math.max(3600, elapsedSec + 1800);
       positionSec = elapsedSec;
+      phaseBadge = "⏱️ Live Stopwatch";
     }
 
-    const titleStr = `${displayText} — ${current.taskName}`;
+    // STABLE TITLE: taskName only, so Android marquee scrolling doesn't reset every second!
+    const titleStr = current.taskName;
     const artistStr = current.isPaused
-      ? "⏸ Paused • Telegram Life Log"
-      : current.isPomodoro
-      ? `${sublabel} • Telegram Life Log`
-      : "⏱️ Running • Telegram Life Log";
+      ? `⏸️ Paused • ${phaseBadge}`
+      : `${phaseBadge} • Telegram Life Log`;
+    const albumStr = current.projectName
+      ? `📦 ${current.projectName}`
+      : current.todoTitle
+      ? `🎯 ${current.todoTitle}`
+      : "Telegram Life Log";
 
     const origin = typeof window !== "undefined" ? window.location.origin : "";
 
@@ -358,7 +353,7 @@ function TimerView() {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: titleStr,
         artist: artistStr,
-        album: current.projectName ? `📦 ${current.projectName}` : "Telegram Life Log",
+        album: albumStr,
         artwork: [
           { src: `${origin}/icon-192.png`, sizes: "192x192", type: "image/png" },
           { src: `${origin}/icon-512.png`, sizes: "512x512", type: "image/png" },
@@ -371,13 +366,26 @@ function TimerView() {
       if (navigator.mediaSession.metadata.artist !== artistStr) {
         navigator.mediaSession.metadata.artist = artistStr;
       }
+      if (navigator.mediaSession.metadata.album !== albumStr) {
+        navigator.mediaSession.metadata.album = albumStr;
+      }
     }
 
-    try {
-      navigator.mediaSession.playbackState = current.isPaused ? "paused" : "playing";
-    } catch {}
+    const desiredState = current.isPaused ? "paused" : "playing";
+    if (navigator.mediaSession.playbackState !== desiredState) {
+      try {
+        navigator.mediaSession.playbackState = desiredState;
+      } catch {}
+    }
 
-    if ("setPositionState" in navigator.mediaSession) {
+    // Android Lock Screen Native Progress Sync (syncs on change or every 5s)
+    const shouldSyncPos =
+      forceSyncPosition ||
+      now - lastPositionSyncRef.current > 5000 ||
+      current.isPaused;
+
+    if (shouldSyncPos && "setPositionState" in navigator.mediaSession) {
+      lastPositionSyncRef.current = now;
       try {
         navigator.mediaSession.setPositionState({
           duration: Math.max(1, durationSec),
@@ -572,7 +580,7 @@ function TimerView() {
             }
           }
           if (activeRef.current) {
-            updateMediaSessionState(activeRef.current);
+            updateMediaSessionState(activeRef.current, true);
             channelRef.current?.postMessage({
               type: "SYNC_ACTIVE",
               active: activeRef.current,
@@ -606,7 +614,7 @@ function TimerView() {
       setLockScreenActive(true);
       navigator.mediaSession.playbackState = "playing";
       if (activeRef.current) {
-        updateMediaSessionState(activeRef.current);
+        updateMediaSessionState(activeRef.current, true);
       }
     } catch (err) {
       console.warn("Audio play rejected:", err);
@@ -670,7 +678,7 @@ function TimerView() {
 
     const interval = setInterval(() => {
       if (activeRef.current) {
-        updateMediaSessionState(activeRef.current);
+        updateMediaSessionState(activeRef.current, true);
       }
     }, 1000);
 
