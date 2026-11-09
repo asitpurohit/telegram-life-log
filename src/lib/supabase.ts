@@ -238,28 +238,50 @@ export async function startActiveTimer(
   const startedAt = new Date().toISOString();
   const task = await getTaskById(taskId);
   const isPomodoro = !!task?.is_pomodoro;
+  const autoAdvance = isPomodoro ? await getTaskPomodoroAutoAdvance(taskId) : false;
+
+  const payload: any = {
+    chat_id: String(chatId),
+    task_id: taskId,
+    task_name: taskName,
+    started_at: startedAt,
+    project_id: projectId || null,
+    project_name: projectName || null,
+    todo_id: todoId || null,
+    todo_title: todoTitle || null,
+    is_pomodoro: isPomodoro,
+    pomodoro_work_mins: isPomodoro ? task?.pomodoro_work_mins || 25 : null,
+    pomodoro_break_mins: isPomodoro ? task?.pomodoro_break_mins || 5 : null,
+    pomodoro_round: 1,
+    pomodoro_phase: "work",
+    phase_started_at: startedAt,
+  };
 
   // Upsert active timer for this chat
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("active_timers")
-    .upsert({
-      chat_id: String(chatId),
-      task_id: taskId,
-      task_name: taskName,
-      started_at: startedAt,
-      project_id: projectId || null,
-      project_name: projectName || null,
-      todo_id: todoId || null,
-      todo_title: todoTitle || null,
-      is_pomodoro: isPomodoro,
-      pomodoro_work_mins: isPomodoro ? task?.pomodoro_work_mins || 25 : null,
-      pomodoro_break_mins: isPomodoro ? task?.pomodoro_break_mins || 5 : null,
-      pomodoro_round: 1,
-      pomodoro_phase: "work",
-      phase_started_at: startedAt,
-    })
+    .upsert({ ...payload, pomodoro_auto_advance: autoAdvance })
     .select()
     .single();
+
+  if (error && error.message?.includes("pomodoro_auto_advance")) {
+    const retry = await supabase
+      .from("active_timers")
+      .upsert(payload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+
+  // Also persist active timer autoAdvance in wizard_sessions as instant fallback
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: `__active_pomodoro_auto__:${chatId}`,
+      step: "active_pomodoro",
+      task_data: { autoAdvance, updated_at: new Date().toISOString() },
+    });
+  } catch {}
 
   if (error) {
     console.error("Error starting timer:", error);
@@ -1926,6 +1948,78 @@ export async function finalizeIdleSnooze(chatId: string | number): Promise<Log |
     started_at: state.snoozedAt,
   });
 }
+
+// ==========================================
+// POMODORO AUTO-ADVANCE (10s auto phase pass)
+// ==========================================
+
+export async function getTaskPomodoroAutoAdvance(taskId: string): Promise<boolean> {
+  const task = await getTaskById(taskId);
+  if (task && typeof task.pomodoro_auto_advance === "boolean") {
+    return task.pomodoro_auto_advance;
+  }
+  try {
+    const { data } = await supabase
+      .from("wizard_sessions")
+      .select("task_data")
+      .eq("chat_id", `__pomodoro_auto__:${taskId}`)
+      .maybeSingle();
+    return Boolean(data?.task_data?.autoAdvance);
+  } catch {
+    return false;
+  }
+}
+
+export async function setTaskPomodoroAutoAdvance(taskId: string, autoAdvance: boolean): Promise<void> {
+  try {
+    await updateTask(taskId, { pomodoro_auto_advance: autoAdvance });
+  } catch {}
+
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: `__pomodoro_auto__:${taskId}`,
+      step: "task_preference",
+      task_data: { autoAdvance, updated_at: new Date().toISOString() },
+    });
+  } catch (err) {
+    console.error("Error saving task pomodoro auto advance preference:", err);
+  }
+}
+
+export async function setActiveTimerAutoAdvance(chatId: string | number, autoAdvance: boolean): Promise<void> {
+  try {
+    await updateActiveTimer(chatId, { pomodoro_auto_advance: autoAdvance });
+  } catch {}
+
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: `__active_pomodoro_auto__:${chatId}`,
+      step: "active_pomodoro",
+      task_data: { autoAdvance, updated_at: new Date().toISOString() },
+    });
+  } catch {}
+}
+
+export async function getActiveTimerAutoAdvance(chatId: string | number, active?: ActiveTimer | null): Promise<boolean> {
+  if (active && typeof active.pomodoro_auto_advance === "boolean") {
+    return active.pomodoro_auto_advance;
+  }
+  try {
+    const { data } = await supabase
+      .from("wizard_sessions")
+      .select("task_data")
+      .eq("chat_id", `__active_pomodoro_auto__:${chatId}`)
+      .maybeSingle();
+    if (data?.task_data?.autoAdvance !== undefined) {
+      return Boolean(data.task_data.autoAdvance);
+    }
+  } catch {}
+  if (active?.task_id) {
+    return getTaskPomodoroAutoAdvance(active.task_id);
+  }
+  return false;
+}
+
 
 
 

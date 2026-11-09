@@ -98,6 +98,10 @@ import {
   setIdleSnoozeState,
   clearIdleSnoozeState,
   finalizeIdleSnooze,
+  getTaskPomodoroAutoAdvance,
+  setTaskPomodoroAutoAdvance,
+  setActiveTimerAutoAdvance,
+  getActiveTimerAutoAdvance,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -3170,13 +3174,19 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
+        const autoAdvance = await getTaskPomodoroAutoAdvance(task.id);
         const statusLine = task.is_pomodoro
           ? `✅ <b>Status: ON</b> (${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break)`
           : `⚪ <b>Status: OFF</b> (Normal continuous stopwatch)`;
 
+        const autoLine = autoAdvance
+          ? `⚡ <b>Auto-Pass Phases:</b> 🟢 ON (Auto-starts break & round after 10s chime)`
+          : `⚡ <b>Auto-Pass Phases:</b> ⚪ OFF (Manual - pauses until you tap button)`;
+
         const text =
           `🍅 <b>Pomodoro Settings for "${task.name}"</b>\n\n` +
-          `${statusLine}\n\n` +
+          `${statusLine}\n` +
+          `${autoLine}\n\n` +
           `When enabled, the timer will automatically:\n` +
           `• Count down your focus session\n` +
           `• Auto-pause and chime when focus ends\n` +
@@ -3193,6 +3203,79 @@ export async function POST(req: NextRequest) {
           ],
           [
             { text: "✏️ Custom Intervals", callback_data: `set_pomodoro:${task.id}:custom` },
+          ],
+          [
+            {
+              text: autoAdvance
+                ? "⚡ Auto-Pass (10s): 🟢 ON"
+                : "⚡ Auto-Pass (10s): ⚪ OFF",
+              callback_data: `toggle_pomodoro_auto:${task.id}`,
+            },
+          ],
+          ...(task.is_pomodoro
+            ? [[{ text: "❌ Turn OFF Pomodoro", callback_data: `set_pomodoro:${task.id}:off` }]]
+            : [[{ text: "✅ Turn ON (25m / 5m)", callback_data: `set_pomodoro:${task.id}:25:5` }]]),
+          [{ text: "↩️ Back to Edit Task", callback_data: `edit_task:${task.id}` }],
+        ];
+
+        await respondUi(chatId, messageId, text, kb);
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Button: Toggle Pomodoro Auto-Pass (10s auto phase pass) ---
+      if (callbackData.startsWith("toggle_pomodoro_auto:")) {
+        const taskId = callbackData.split(":")[1];
+        const current = await getTaskPomodoroAutoAdvance(taskId);
+        const nextVal = !current;
+        await setTaskPomodoroAutoAdvance(taskId, nextVal);
+
+        const active = await getActiveTimer(chatId);
+        if (active && active.task_id === taskId) {
+          await setActiveTimerAutoAdvance(chatId, nextVal);
+        }
+
+        const task = await getTaskById(taskId);
+        if (!task) {
+          await respondUi(chatId, messageId, "⚠️ Task not found.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const statusLine = task.is_pomodoro
+          ? `✅ <b>Status: ON</b> (${task.pomodoro_work_mins || 25}m focus / ${task.pomodoro_break_mins || 5}m break)`
+          : `⚪ <b>Status: OFF</b> (Normal continuous stopwatch)`;
+
+        const autoLine = nextVal
+          ? `⚡ <b>Auto-Pass Phases:</b> 🟢 ON (Auto-starts break & round after 10s chime)`
+          : `⚡ <b>Auto-Pass Phases:</b> ⚪ OFF (Manual - pauses until you tap button)`;
+
+        const text =
+          `🍅 <b>Pomodoro Settings for "${task.name}"</b>\n\n` +
+          `${statusLine}\n` +
+          `${autoLine}\n\n` +
+          `When enabled, the timer will automatically:\n` +
+          `• Count down your focus session\n` +
+          `• Auto-pause and chime when focus ends\n` +
+          `• Guide you through a restful break (excluded from study time)\n` +
+          `• Sound an alarm when break ends\n\n` +
+          `Choose an interval preset or toggle:`;
+
+        const kb: InlineKeyboard = [
+          [
+            { text: "🍅 25m Focus / 5m Break", callback_data: `set_pomodoro:${task.id}:25:5` },
+          ],
+          [
+            { text: "🍅 50m Focus / 10m Break", callback_data: `set_pomodoro:${task.id}:50:10` },
+          ],
+          [
+            { text: "✏️ Custom Intervals", callback_data: `set_pomodoro:${task.id}:custom` },
+          ],
+          [
+            {
+              text: nextVal
+                ? "⚡ Auto-Pass (10s): 🟢 ON"
+                : "⚡ Auto-Pass (10s): ⚪ OFF",
+              callback_data: `toggle_pomodoro_auto:${task.id}`,
+            },
           ],
           ...(task.is_pomodoro
             ? [[{ text: "❌ Turn OFF Pomodoro", callback_data: `set_pomodoro:${task.id}:off` }]]

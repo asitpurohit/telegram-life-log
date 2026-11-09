@@ -13,6 +13,7 @@ export interface Task {
   is_pomodoro?: boolean; // Pomodoro timer task with work/break intervals
   pomodoro_work_mins?: number | null; // e.g. 25
   pomodoro_break_mins?: number | null; // e.g. 5
+  pomodoro_auto_advance?: boolean; // auto-pass work and break after 10-second transition
   is_archived: boolean;
   created_at?: string;
 }
@@ -87,6 +88,7 @@ export interface ActiveTimer {
   pomodoro_round?: number;
   pomodoro_phase?: 'work' | 'awaiting_break' | 'break' | 'awaiting_round';
   phase_started_at?: string;
+  pomodoro_auto_advance?: boolean;
 }
 
 export interface WizardSession {

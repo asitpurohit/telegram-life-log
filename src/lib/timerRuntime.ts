@@ -10,6 +10,8 @@ import {
   updateActiveTimer,
   getSleepAlarmState,
   setSleepAlarmState,
+  getActiveTimer,
+  getActiveTimerAutoAdvance,
 } from "./supabase";
 import {
   editTelegramMessage,
@@ -31,6 +33,7 @@ export interface PomodoroInfo {
   round: number;
   phase: "work" | "awaiting_break" | "break" | "awaiting_round";
   phaseStartedAtIso: string;
+  autoAdvance?: boolean;
 }
 
 export function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | null {
@@ -42,6 +45,7 @@ export function extractPomodoroInfo(active: ActiveTimer | null): PomodoroInfo | 
     round: active.pomodoro_round || 1,
     phase: (active.pomodoro_phase as "work" | "awaiting_break" | "break" | "awaiting_round") || "work",
     phaseStartedAtIso: active.phase_started_at || active.started_at,
+    autoAdvance: Boolean(active.pomodoro_auto_advance),
   };
 }
 
@@ -114,12 +118,15 @@ export function buildTimerView(
 
     // Awaiting Break Phase: Focus is completed & paused; waiting for user to start break
     if (pomodoro.phase === "awaiting_break") {
+      const autoNote = pomodoro.autoAdvance
+        ? `\n\n⚡ <i>Auto-advance enabled: Break starts automatically in 10s...</i>`
+        : `\n\nTap <b>Start Break</b> whenever you are ready to take your ${breakMins}-minute break:`;
+
       const text =
         `🎉 <b>${taskName}</b> — Focus Complete! (Round ${round} Done)${projectLine}${taskLine}\n\n` +
         `⏳ Focus Time: <b>${workMins}m / ${workMins}m</b>  [■■■■■■■■■■] 100%\n` +
         `🕐 Started: ${startedTime}\n\n` +
-        `✨ <b>Great focus!</b> Work is paused.\n` +
-        `Tap <b>Start Break</b> whenever you are ready to take your ${breakMins}-minute break:`;
+        `✨ <b>Great focus!</b> Work is paused.${autoNote}`;
 
       const keyboard: InlineKeyboard = [
         [{ text: `☕ Start ${breakMins}m Break`, callback_data: "pomodoro_start_break" }],
@@ -154,11 +161,14 @@ export function buildTimerView(
 
     // Awaiting Round Phase: Break finished; waiting for user to start next focus round
     if (pomodoro.phase === "awaiting_round") {
+      const autoNote = pomodoro.autoAdvance
+        ? `\n\n⚡ <i>Auto-advance enabled: Round ${round} starts automatically in 10s...</i>`
+        : `\n\nReady for <b>Round ${round}</b>?`;
+
       const text =
         `🚨 ⏰ 🔔 <b>BEEP BEEP! Break is Over!</b> 🔔 ⏰ 🚨\n\n` +
         `🍅 <b>${taskName}</b>${projectLine}${taskLine}\n\n` +
-        `You finished <b>${workMins}m focus + ${breakMins}m break</b>.\n\n` +
-        `Ready for <b>Round ${round}</b>?`;
+        `You finished <b>${workMins}m focus + ${breakMins}m break</b>.${autoNote}`;
 
       const keyboard: InlineKeyboard = [
         [{ text: `▶️ Start Round ${round} (${workMins}m)`, callback_data: "pomodoro_next_round" }],
@@ -352,6 +362,7 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       const round = timer.pomodoro_round || 1;
       const phase = timer.pomodoro_phase || "work";
       const phaseStartMs = new Date(timer.phase_started_at || timer.started_at).getTime();
+      const autoAdvance = await getActiveTimerAutoAdvance(timer.chat_id, timer);
 
       pomodoroInfo = {
         isPomodoro: true,
@@ -360,6 +371,7 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         round,
         phase,
         phaseStartedAtIso: timer.phase_started_at || timer.started_at,
+        autoAdvance,
       };
 
       // 1) Work phase completed -> auto-pause & prompt to start break
@@ -409,6 +421,37 @@ export async function refreshRunningTimerMessages(): Promise<void> {
 
           if (finalMsgId) {
             await trackTimerMessage(timer.chat_id, finalMsgId);
+          }
+
+          // If auto-advance is enabled, wait 10 seconds then automatically start the break!
+          if (autoAdvance) {
+            await new Promise((resolve) => setTimeout(resolve, 10000));
+            const liveTimer = await getActiveTimer(timer.chat_id);
+            if (liveTimer && liveTimer.pomodoro_phase === "awaiting_break") {
+              const breakStartIso = new Date().toISOString();
+              await updateActiveTimer(timer.chat_id, {
+                pomodoro_phase: "break",
+                phase_started_at: breakStartIso,
+              });
+              const breakInfo: PomodoroInfo = {
+                ...pomodoroInfo,
+                phase: "break",
+                phaseStartedAtIso: breakStartIso,
+              };
+              const breakView = buildTimerView(
+                timer.task_name,
+                timer.started_at,
+                now,
+                pause.pausedSeconds,
+                timer.project_name,
+                null,
+                timer.todo_title,
+                breakInfo
+              );
+              if (finalMsgId) {
+                await editTelegramMessage(timer.chat_id, finalMsgId, breakView.text, breakView.keyboard);
+              }
+            }
           }
           continue;
         }
@@ -464,7 +507,76 @@ export async function refreshRunningTimerMessages(): Promise<void> {
           if (finalMsgId) {
             await trackTimerMessage(timer.chat_id, finalMsgId);
           }
+
+          // If auto-advance is enabled, wait 10 seconds then automatically start the next work round!
+          if (autoAdvance) {
+            await new Promise((resolve) => setTimeout(resolve, 10000));
+            const liveTimer = await getActiveTimer(timer.chat_id);
+            if (liveTimer && liveTimer.pomodoro_phase === "awaiting_round") {
+              const workStartIso = new Date().toISOString();
+              await Promise.all([
+                setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: newPausedSeconds }),
+                updateActiveTimer(timer.chat_id, {
+                  pomodoro_phase: "work",
+                  phase_started_at: workStartIso,
+                  pomodoro_round: nextRound,
+                }),
+              ]);
+              const workInfo: PomodoroInfo = {
+                ...pomodoroInfo,
+                round: nextRound,
+                phase: "work",
+                phaseStartedAtIso: workStartIso,
+              };
+              const workView = buildTimerView(
+                timer.task_name,
+                timer.started_at,
+                0,
+                newPausedSeconds,
+                timer.project_name,
+                null,
+                timer.todo_title,
+                workInfo
+              );
+              if (finalMsgId) {
+                await editTelegramMessage(timer.chat_id, finalMsgId, workView.text, workView.keyboard);
+              }
+            }
+          }
           continue;
+        }
+      } else if (phase === "awaiting_break" && autoAdvance) {
+        // Resilient auto-pass if previous transition timed out or was interrupted
+        const waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+        if (waitingSec >= 10) {
+          const breakStartIso = new Date().toISOString();
+          await updateActiveTimer(timer.chat_id, {
+            pomodoro_phase: "break",
+            phase_started_at: breakStartIso,
+          });
+          pomodoroInfo = {
+            ...pomodoroInfo,
+            phase: "break",
+            phaseStartedAtIso: breakStartIso,
+          };
+        }
+      } else if (phase === "awaiting_round" && autoAdvance) {
+        // Resilient auto-pass if previous transition timed out or was interrupted
+        const waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+        if (waitingSec >= 10) {
+          const workStartIso = new Date().toISOString();
+          await Promise.all([
+            setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: pause.pausedSeconds }),
+            updateActiveTimer(timer.chat_id, {
+              pomodoro_phase: "work",
+              phase_started_at: workStartIso,
+            }),
+          ]);
+          pomodoroInfo = {
+            ...pomodoroInfo,
+            phase: "work",
+            phaseStartedAtIso: workStartIso,
+          };
         }
       }
     }
