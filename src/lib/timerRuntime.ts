@@ -78,7 +78,22 @@ export function buildTimerView(
   webAppUrl?: string | null
 ): { text: string; keyboard: InlineKeyboard } {
   const withWebApp = (kb: InlineKeyboard): InlineKeyboard => {
-    return kb;
+    if (!webAppUrl) return kb;
+    const hasRefreshRow = kb.some((row) =>
+      row.some((btn) => "callback_data" in btn && btn.callback_data?.startsWith("timer_refresh"))
+    );
+    if (hasRefreshRow) {
+      return kb.map((row) => {
+        const hasRefresh = row.some(
+          (btn) => "callback_data" in btn && btn.callback_data?.startsWith("timer_refresh")
+        );
+        if (hasRefresh) {
+          return [...row, { text: "⏱️ Open in Chrome", url: webAppUrl }];
+        }
+        return row;
+      });
+    }
+    return [...kb, [{ text: "⏱️ Open in Chrome", url: webAppUrl }]];
   };
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
