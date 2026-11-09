@@ -79,7 +79,7 @@ export function buildTimerView(
 ): { text: string; keyboard: InlineKeyboard } {
   const withWebApp = (kb: InlineKeyboard): InlineKeyboard => {
     if (webAppUrl) {
-      return [[{ text: "⚡ Open Live Stopwatch", web_app: { url: webAppUrl } }], ...kb];
+      return [[{ text: "⚡ Open Live Stopwatch", url: webAppUrl }], ...kb];
     }
     return kb;
   };

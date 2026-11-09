@@ -11,6 +11,7 @@ declare global {
         expand: () => void;
         close: () => void;
         openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+        initData?: string;
         isExpanded: boolean;
         HapticFeedback?: {
           impactOccurred: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
@@ -229,13 +230,18 @@ function TimerView() {
     autoTriggeredRef.current = false;
   }, [active?.phase, active?.round]);
 
-  // Initialize Telegram Web App SDK & detect chatId
+  // Initialize Telegram Web App SDK, auto-bounce to Chrome if in Mini App container, & detect chatId
   useEffect(() => {
     try {
       const tg = window.Telegram?.WebApp;
       if (tg) {
         tg.ready();
-        tg.expand();
+        // If opened inside Telegram in-app Mini App, instantly hand off to external Google Chrome browser
+        if (tg.initData && tg.openLink) {
+          tg.openLink(window.location.href, { try_instant_view: false });
+          tg.close();
+          return;
+        }
       }
     } catch {}
 
@@ -901,21 +907,15 @@ function TimerView() {
           💬 Control pause, resume & stop in Telegram chat
         </div>
 
-        <button
-          onClick={handleOpenInBrowser}
+        <div
           style={{
-            background: "transparent",
-            border: "none",
+            fontSize: "0.75rem",
             color: "var(--hint-color)",
-            fontSize: "0.74rem",
-            textDecoration: "underline",
-            cursor: "pointer",
-            padding: "0.2rem 0.5rem",
-            opacity: 0.55,
+            opacity: 0.6,
           }}
         >
-          Open in Chrome for lock screen ↗
-        </button>
+          🔒 Lock your phone anytime to view on lock screen
+        </div>
       </footer>
     </div>
   );
