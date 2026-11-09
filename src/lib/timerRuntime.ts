@@ -142,7 +142,7 @@ export function buildTimerView(
         [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
       ];
 
-      return { text, keyboard: withWebApp(keyboard) };
+      return { text, keyboard };
     }
 
     if (pomodoro.phase === "break") {
@@ -183,7 +183,7 @@ export function buildTimerView(
         [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
       ];
 
-      return { text, keyboard: withWebApp(keyboard) };
+      return { text, keyboard };
     }
 
     // Work Phase

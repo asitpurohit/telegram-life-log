@@ -147,6 +147,69 @@ function TimerView() {
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
 
+  const myInstanceId = useRef(
+    typeof window !== "undefined" ? Math.random().toString(36).slice(2) : ""
+  ).current;
+  const channelRef = useRef<BroadcastChannel | null>(null);
+
+  // 0ms instant display from localStorage cache if available
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("tg_timer_active_cache");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.taskName) {
+          setActive(parsed);
+          setLoading(false);
+        }
+      }
+    } catch {}
+  }, []);
+
+  // Single-instance coordination via BroadcastChannel
+  useEffect(() => {
+    if (typeof window === "undefined" || !("BroadcastChannel" in window)) return;
+
+    const channel = new BroadcastChannel("tg_live_timer_lock");
+    channelRef.current = channel;
+
+    // Announce to any existing instances that this new instance is claiming lead
+    channel.postMessage({ type: "CLAIM_LEAD", instanceId: myInstanceId });
+
+    channel.onmessage = (event) => {
+      const msg = event.data;
+      if (!msg) return;
+
+      if (msg.type === "CLAIM_LEAD" && msg.instanceId !== myInstanceId) {
+        // Another instance took leadership; surrender audio and media session
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
+        if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+          try {
+            navigator.mediaSession.playbackState = "none";
+          } catch {}
+        }
+        setLockScreenActive(false);
+      } else if (msg.type === "SESSION_STOPPED") {
+        try {
+          localStorage.removeItem("tg_timer_active_cache");
+        } catch {}
+        setActive(null);
+        setStoppedSuccess(true);
+      } else if (msg.type === "SYNC_ACTIVE" && msg.active) {
+        setActive(msg.active);
+        try {
+          localStorage.setItem("tg_timer_active_cache", JSON.stringify(msg.active));
+        } catch {}
+      }
+    };
+
+    return () => {
+      channel.close();
+    };
+  }, [myInstanceId]);
+
   const triggerFlash = useCallback(
     (type: "milestone" | "celebration" | "alarm", text: string) => {
       setFlashInfo({ type, text });
@@ -189,8 +252,14 @@ function TimerView() {
       const data = await res.json();
       if (data.ok && data.active) {
         setActive(data.active);
+        try {
+          localStorage.setItem("tg_timer_active_cache", JSON.stringify(data.active));
+        } catch {}
       } else {
         setActive(null);
+        try {
+          localStorage.removeItem("tg_timer_active_cache");
+        } catch {}
       }
     } catch (err) {
       console.error("Failed to fetch active timer:", err);
@@ -390,6 +459,13 @@ function TimerView() {
         if (action === "stop") {
           setStoppedSuccess(true);
           triggerHaptic("heavy");
+          try {
+            localStorage.removeItem("tg_timer_active_cache");
+          } catch {}
+          channelRef.current?.postMessage({
+            type: "SESSION_STOPPED",
+            instanceId: myInstanceId,
+          });
           if (audioRef.current) {
             audioRef.current.pause();
           }
@@ -403,6 +479,13 @@ function TimerView() {
           }, 1200);
         } else {
           await fetchActiveTimer(chatId);
+          if (activeRef.current) {
+            channelRef.current?.postMessage({
+              type: "SYNC_ACTIVE",
+              active: activeRef.current,
+              instanceId: myInstanceId,
+            });
+          }
         }
       }
     } catch (err) {

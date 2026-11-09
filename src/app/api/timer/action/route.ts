@@ -27,6 +27,7 @@ import {
   sendTelegramMessage,
   deleteTelegramMessage,
   InlineKeyboard,
+  setChatMenuButton,
 } from "@/lib/telegram";
 import {
   buildTimerView,
@@ -213,6 +214,7 @@ export async function POST(req: NextRequest) {
           clearNudgeState(chatId),
           clearIdleAlertCard(chatId, prevTimerId || undefined),
           clearSleepAlarmState(chatId),
+          setChatMenuButton(chatId, { type: "default" }),
         ]);
         return NextResponse.json({ ok: true, stopped: true, durationSeconds: 0 });
       }
@@ -223,6 +225,7 @@ export async function POST(req: NextRequest) {
         clearPauseState(chatId),
         clearIdleAlertCard(chatId, prevTimerId || undefined),
         clearSleepAlarmState(chatId),
+        setChatMenuButton(chatId, { type: "default" }),
         getNudgeState(chatId).then(async (nudge) => {
           if (nudge.messageId) {
             await deleteTelegramMessage(chatId, nudge.messageId);

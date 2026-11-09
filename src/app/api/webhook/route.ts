@@ -8,6 +8,7 @@ import {
   setBotCommands,
   BOT_COMMANDS,
   InlineKeyboard,
+  setChatMenuButton,
 } from "@/lib/telegram";
 import {
   getActiveTasks,
@@ -954,6 +955,13 @@ async function doStartActiveTimer(
   ]);
   const sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
   const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo, sleepTargetMins, webAppUrl);
+  if (webAppUrl) {
+    void setChatMenuButton(chatId, {
+      type: "web_app",
+      text: "⏱️ Live Timer",
+      web_app: { url: webAppUrl },
+    });
+  }
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
     await trackTimerMessage(chatId, messageId);
@@ -5088,6 +5096,7 @@ export async function POST(req: NextRequest) {
           clearPauseState(chatId),
           clearIdleAlertCard(chatId, messageId),
           clearSleepAlarmState(chatId),
+          setChatMenuButton(chatId, { type: "default" }),
           getNudgeState(chatId).then(async (nudge) => {
             if (nudge.messageId) {
               await deleteTelegramMessage(chatId, nudge.messageId);
@@ -5282,6 +5291,7 @@ export async function POST(req: NextRequest) {
           clearPauseState(chatId),
           clearNudgeState(chatId),
           clearSleepAlarmState(chatId),
+          setChatMenuButton(chatId, { type: "default" }),
         ]);
 
         if (!result) {

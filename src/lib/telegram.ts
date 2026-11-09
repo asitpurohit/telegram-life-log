@@ -41,6 +41,36 @@ export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {
   }
 }
 
+export interface ChatMenuButton {
+  type: "default" | "commands" | "web_app";
+  text?: string;
+  web_app?: { url: string };
+}
+
+export async function setChatMenuButton(
+  chatId?: string | number,
+  menuButton?: ChatMenuButton
+): Promise<boolean> {
+  if (!TELEGRAM_TOKEN) return false;
+
+  try {
+    const body: Record<string, any> = {};
+    if (chatId) body.chat_id = chatId;
+    if (menuButton) body.menu_button = menuButton;
+
+    const res = await fetch(`${TELEGRAM_API_BASE}/setChatMenuButton`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return Boolean(data.ok);
+  } catch (err: any) {
+    console.error("setChatMenuButton network error:", err.message);
+    return false;
+  }
+}
+
 export interface InlineKeyboardButton {
   text: string;
   callback_data?: string;
