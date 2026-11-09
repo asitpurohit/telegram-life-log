@@ -12,6 +12,7 @@ import {
   setSleepAlarmState,
   getActiveTimer,
   getActiveTimerAutoAdvance,
+  getSavedAppUrl,
 } from "./supabase";
 import {
   editTelegramMessage,
@@ -73,8 +74,15 @@ export function buildTimerView(
   projectProgress?: string | null,
   todoTitle?: string | null,
   pomodoro?: PomodoroInfo | null,
-  sleepTargetMins?: number | null
+  sleepTargetMins?: number | null,
+  webAppUrl?: string | null
 ): { text: string; keyboard: InlineKeyboard } {
+  const withWebApp = (kb: InlineKeyboard): InlineKeyboard => {
+    if (webAppUrl) {
+      return [[{ text: "⚡ Open Live Stopwatch", web_app: { url: webAppUrl } }], ...kb];
+    }
+    return kb;
+  };
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
     0,
@@ -134,7 +142,7 @@ export function buildTimerView(
         [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
       ];
 
-      return { text, keyboard };
+      return { text, keyboard: withWebApp(keyboard) };
     }
 
     if (pomodoro.phase === "break") {
@@ -156,7 +164,7 @@ export function buildTimerView(
         [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
       ];
 
-      return { text, keyboard };
+      return { text, keyboard: withWebApp(keyboard) };
     }
 
     // Awaiting Round Phase: Break finished; waiting for user to start next focus round
@@ -175,7 +183,7 @@ export function buildTimerView(
         [{ text: "⏹ Stop & Log Session", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
       ];
 
-      return { text, keyboard };
+      return { text, keyboard: withWebApp(keyboard) };
     }
 
     // Work Phase
@@ -211,7 +219,7 @@ export function buildTimerView(
           [{ text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` }],
         ];
 
-    return { text, keyboard };
+    return { text, keyboard: withWebApp(keyboard) };
   }
 
   // --- Sleep Timer View ---
@@ -246,7 +254,7 @@ export function buildTimerView(
       [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
     ];
 
-    return { text, keyboard };
+    return { text, keyboard: withWebApp(keyboard) };
   }
 
   // --- Standard Stopwatch View ---
@@ -276,7 +284,7 @@ export function buildTimerView(
         [{ text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` }],
       ];
 
-  return { text, keyboard };
+  return { text, keyboard: withWebApp(keyboard) };
 }
 
 // Burst of 10 rapid wake-up notifications spaced ~1.2s apart to ensure the user's phone rings/vibrates loudly.
@@ -347,9 +355,13 @@ async function sendTripleChimeAlert(
 // (/api/tick, 1 min) to make running timers tick, manage Pomodoro intervals,
 // and send "still running" notifications every 5 minutes.
 export async function refreshRunningTimerMessages(): Promise<void> {
-  const timers = await getAllActiveTimers();
+  const [timers, appUrl] = await Promise.all([
+    getAllActiveTimers(),
+    getSavedAppUrl(),
+  ]);
 
   for (const timer of timers) {
+    const webAppUrl = appUrl ? `${appUrl}/timer?chatId=${timer.chat_id}` : null;
     const messageId = await getTimerMessage(timer.chat_id);
     const pause = await getPauseState(timer.chat_id);
     const now = Date.now();
@@ -404,7 +416,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             timer.project_name,
             null,
             timer.todo_title,
-            pomodoroInfo
+            pomodoroInfo,
+            null,
+            webAppUrl
           );
 
           if (messageId) {
@@ -446,7 +460,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
                 timer.project_name,
                 null,
                 timer.todo_title,
-                breakInfo
+                breakInfo,
+                null,
+                webAppUrl
               );
               if (finalMsgId) {
                 await editTelegramMessage(timer.chat_id, finalMsgId, breakView.text, breakView.keyboard);
@@ -489,7 +505,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             timer.project_name,
             null,
             timer.todo_title,
-            pomodoroInfo
+            pomodoroInfo,
+            null,
+            webAppUrl
           );
 
           if (messageId) {
@@ -536,7 +554,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
                 timer.project_name,
                 null,
                 timer.todo_title,
-                workInfo
+                workInfo,
+                null,
+                webAppUrl
               );
               if (finalMsgId) {
                 await editTelegramMessage(timer.chat_id, finalMsgId, workView.text, workView.keyboard);
@@ -597,7 +617,8 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         null,
         timer.todo_title,
         pomodoroInfo,
-        sleepTargetMins
+        sleepTargetMins,
+        webAppUrl
       );
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }

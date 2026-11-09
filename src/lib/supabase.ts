@@ -2020,6 +2020,51 @@ export async function getActiveTimerAutoAdvance(chatId: string | number, active?
   return false;
 }
 
+// ==========================================
+// SYSTEM APP URL / DOMAIN AUTO-DETECTION
+// ==========================================
+
+export function getAppBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/\/$/, "")}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL.replace(/\/$/, "")}`;
+  }
+  return "";
+}
+
+export async function getSavedAppUrl(): Promise<string> {
+  const envUrl = getAppBaseUrl();
+  if (envUrl) return envUrl;
+  try {
+    const { data } = await supabase
+      .from("wizard_sessions")
+      .select("task_data")
+      .eq("chat_id", "__system_app_url__")
+      .maybeSingle();
+    return data?.task_data?.url || "";
+  } catch {
+    return "";
+  }
+}
+
+export async function saveAppUrl(url: string): Promise<void> {
+  if (!url || url.includes("localhost")) return;
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: "__system_app_url__",
+      step: "system",
+      task_data: { url: url.replace(/\/$/, "") },
+      updated_at: new Date().toISOString(),
+    });
+  } catch {}
+}
+
+
 
 
 

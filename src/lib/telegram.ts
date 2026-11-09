@@ -43,7 +43,9 @@ export async function setBotCommands(commands: BotCommand[] = BOT_COMMANDS) {
 
 export interface InlineKeyboardButton {
   text: string;
-  callback_data: string;
+  callback_data?: string;
+  web_app?: { url: string };
+  url?: string;
 }
 
 export type InlineKeyboard = InlineKeyboardButton[][];
