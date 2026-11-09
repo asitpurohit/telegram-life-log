@@ -12,6 +12,7 @@ declare global {
         close: () => void;
         openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
         initData?: string;
+        platform?: string;
         isExpanded: boolean;
         HapticFeedback?: {
           impactOccurred: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
@@ -236,10 +237,14 @@ function TimerView() {
       const tg = window.Telegram?.WebApp;
       if (tg) {
         tg.ready();
-        // If opened inside Telegram in-app Mini App, instantly hand off to external Google Chrome browser
-        if (tg.initData && tg.openLink) {
+        // If opened inside Telegram in-app client, instantly hand off to external Google Chrome browser
+        if (typeof tg.openLink === "function" && tg.platform && tg.platform !== "unknown") {
           tg.openLink(window.location.href, { try_instant_view: false });
-          tg.close();
+          setTimeout(() => {
+            try {
+              tg.close();
+            } catch {}
+          }, 150);
           return;
         }
       }
@@ -332,43 +337,56 @@ function TimerView() {
     let durationSec = 3600;
     let positionSec = elapsedSec;
     let phaseBadge = "Stopwatch";
+    let displayText = "00:00";
 
     if (current.isPomodoro) {
       if (current.phase === "break") {
         durationSec = current.breakMins * 60;
         const breakSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+        const remainingSec = Math.max(0, durationSec - breakSec);
         positionSec = Math.min(durationSec, breakSec);
-        phaseBadge = `☕ Round ${current.round} Break (${current.breakMins}m)`;
+        displayText = formatClockTime(remainingSec);
+        phaseBadge = `☕ Break (R${current.round})`;
       } else if (current.phase === "awaiting_break") {
         durationSec = 10;
         positionSec = 10;
-        phaseBadge = "🎉 Focus Complete";
+        displayText = "00:00";
+        phaseBadge = "🎉 Focus Done";
       } else if (current.phase === "awaiting_round") {
         durationSec = 10;
         positionSec = 10;
-        phaseBadge = `🚨 Ready for Round ${current.round}`;
+        displayText = "00:00";
+        phaseBadge = `🚨 Next R${current.round}`;
       } else {
         durationSec = current.workMins * 60;
         const workSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+        const remainingSec = Math.max(0, durationSec - workSec);
         positionSec = Math.min(durationSec, workSec);
-        phaseBadge = `🍅 Round ${current.round} Focus (${current.workMins}m)`;
+        displayText = formatClockTime(remainingSec);
+        phaseBadge = `🍅 Focus (R${current.round})`;
       }
     } else {
       durationSec = Math.max(3600, elapsedSec + 1800);
       positionSec = elapsedSec;
-      phaseBadge = "⏱️ Live Stopwatch";
+      displayText = formatClockTime(elapsedSec);
+      phaseBadge = "⏱️ Running";
     }
 
-    // STABLE TITLE: taskName only, so Android marquee scrolling doesn't reset every second!
+    // Line 1: taskName ONLY. Stable string, does NOT change every second, so Android marquee scrolls fully without resetting!
     const titleStr = current.taskName;
+
+    // Line 2: Live time + Phase status (e.g. "⏱️ 05:24 • Running" or "🍅 18:42 • Focus (R1)").
+    // Short string, fits on lock screen without marquee scrolling, never contains "Telegram Life Log"!
     const artistStr = current.isPaused
-      ? `⏸️ Paused • ${phaseBadge}`
-      : `${phaseBadge} • Telegram Life Log`;
+      ? `⏸️ ${displayText} (Paused)`
+      : `${displayText} • ${phaseBadge}`;
+
+    // Line 3: Project or Todo if present, else empty string. Never contains "Telegram Life Log"!
     const albumStr = current.projectName
       ? `📦 ${current.projectName}`
       : current.todoTitle
       ? `🎯 ${current.todoTitle}`
-      : "Telegram Life Log";
+      : "";
 
     const origin = typeof window !== "undefined" ? window.location.origin : "";
 
