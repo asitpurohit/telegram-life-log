@@ -306,3 +306,147 @@ progress.progress-ring::-moz-progress-bar {
   text-align: center;
   gap: 1.25rem;
 }
+
+/* Ambient Screen Flash Effects */
+.ambient-flash-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99;
+  opacity: 0;
+}
+
+.flash-milestone {
+  animation: flashMilestoneAnim 2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.flash-celebration {
+  animation: flashCelebrationAnim 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.flash-alarm {
+  animation: flashAlarmAnim 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes flashMilestoneAnim {
+  0% {
+    opacity: 0;
+    background: radial-gradient(circle at center, rgba(6, 182, 212, 0.55) 0%, transparent 75%);
+  }
+  20% {
+    opacity: 1;
+    background: radial-gradient(circle at center, rgba(16, 185, 129, 0.6) 0%, rgba(6, 182, 212, 0.3) 50%, transparent 80%);
+  }
+  45% {
+    opacity: 0.3;
+  }
+  65% {
+    opacity: 0.85;
+    background: radial-gradient(circle at center, rgba(16, 185, 129, 0.5) 0%, transparent 70%);
+  }
+  100% {
+    opacity: 0;
+    background: transparent;
+  }
+}
+
+@keyframes flashCelebrationAnim {
+  0% {
+    opacity: 0;
+    background: radial-gradient(circle at center, rgba(245, 158, 11, 0.6) 0%, transparent 75%);
+  }
+  15% {
+    opacity: 1;
+    background: radial-gradient(circle at center, rgba(245, 158, 11, 0.7) 0%, rgba(16, 185, 129, 0.4) 55%, transparent 85%);
+  }
+  35% { opacity: 0.35; }
+  55% {
+    opacity: 0.95;
+    background: radial-gradient(circle at center, rgba(16, 185, 129, 0.65) 0%, rgba(245, 158, 11, 0.45) 50%, transparent 80%);
+  }
+  75% { opacity: 0.25; }
+  85% { opacity: 0.7; }
+  100% {
+    opacity: 0;
+    background: transparent;
+  }
+}
+
+@keyframes flashAlarmAnim {
+  0% {
+    opacity: 0;
+    background: radial-gradient(circle at center, rgba(239, 68, 68, 0.65) 0%, transparent 75%);
+  }
+  12% {
+    opacity: 1;
+    background: radial-gradient(circle at center, rgba(239, 68, 68, 0.75) 0%, rgba(245, 158, 11, 0.5) 55%, transparent 85%);
+  }
+  25% { opacity: 0.2; }
+  38% { opacity: 1; }
+  50% { opacity: 0.2; }
+  65% { opacity: 0.95; }
+  80% { opacity: 0.15; }
+  100% {
+    opacity: 0;
+    background: transparent;
+  }
+}
+
+/* Flash Banner Toast Notification */
+.flash-banner {
+  position: fixed;
+  top: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 1.25rem;
+  border-radius: 9999px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: bannerPop 2.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes bannerPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -20px) scale(0.9);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  85% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -10px) scale(0.95);
+  }
+}
+
+.flash-banner-milestone {
+  background: rgba(6, 182, 212, 0.25);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+.flash-banner-celebration {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
+
+.flash-banner-alarm {
+  background: rgba(239, 68, 68, 0.28);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+}

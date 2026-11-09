@@ -59,34 +59,63 @@ function formatClockTime(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-function playAudioChime() {
+function playAudioAlert(type: "milestone" | "celebration" | "alarm") {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
     const now = ctx.currentTime;
 
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.type = "sine";
-    osc1.frequency.setValueAtTime(587.33, now); // D5
-    gain1.gain.setValueAtTime(0.2, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.4);
+    if (type === "milestone") {
+      // Gentle soft crystalline chime for 5-minute milestones
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(659.25, now); // E5
+      gain.gain.setValueAtTime(0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.45);
+    } else if (type === "celebration") {
+      // Warm uplifting 2-tone chime for focus completion
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = "sine";
+      osc1.frequency.setValueAtTime(587.33, now); // D5
+      gain1.gain.setValueAtTime(0.2, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.4);
 
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = "sine";
-    osc2.frequency.setValueAtTime(880, now + 0.16); // A5
-    gain2.gain.setValueAtTime(0.25, now + 0.16);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
-    osc2.connect(gain2);
-    gain2.connect(ctx.destination);
-    osc2.start(now + 0.16);
-    osc2.stop(now + 0.65);
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = "sine";
+      osc2.frequency.setValueAtTime(880, now + 0.16); // A5
+      gain2.gain.setValueAtTime(0.25, now + 0.16);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.16);
+      osc2.stop(now + 0.65);
+    } else {
+      // Triple alert tone for break completion
+      [0, 0.14, 0.28].forEach((offset, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(idx === 2 ? 880 : 740, now + offset);
+        gain.gain.setValueAtTime(0.22, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.12);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.12);
+      });
+    }
   } catch {}
 }
 
@@ -104,14 +133,31 @@ function TimerView() {
   const [isOperating, setIsOperating] = useState(false);
   const [stoppedSuccess, setStoppedSuccess] = useState(false);
   const [lockScreenActive, setLockScreenActive] = useState<boolean>(false);
+  const [flashInfo, setFlashInfo] = useState<{
+    type: "milestone" | "celebration" | "alarm";
+    text: string;
+  } | null>(null);
 
   const progressRef = useRef<HTMLProgressElement | null>(null);
   const digitsRef = useRef<HTMLDivElement | null>(null);
   const sublabelRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const autoTriggeredRef = useRef<boolean>(false);
+  const lastMilestoneRef = useRef<number>(0);
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
+
+  const triggerFlash = useCallback(
+    (type: "milestone" | "celebration" | "alarm", text: string) => {
+      setFlashInfo({ type, text });
+      playAudioAlert(type);
+      triggerHaptic(type === "milestone" ? "medium" : "heavy");
+      setTimeout(() => {
+        setFlashInfo(null);
+      }, 2600);
+    },
+    []
+  );
 
   // Reset auto-trigger lock when phase changes
   useEffect(() => {
@@ -189,6 +235,12 @@ function TimerView() {
 
       const now = Date.now();
       const endMs = current.isPaused && current.pausedAt ? current.pausedAt : now;
+      const startMs = new Date(current.startedAt).getTime();
+      const elapsedSec = Math.max(
+        0,
+        Math.floor((endMs - startMs) / 1000) - (current.pausedSeconds || 0)
+      );
+      const phaseStartMs = new Date(current.phaseStartedAt || current.startedAt).getTime();
 
       let displayText = "00:00";
       let sublabel = "ELAPSED";
@@ -196,7 +248,6 @@ function TimerView() {
       let currentSec = 0;
 
       if (current.isPomodoro) {
-        const phaseStartMs = new Date(current.phaseStartedAt || current.startedAt).getTime();
         if (current.phase === "break") {
           const targetSec = current.breakMins * 60;
           const breakSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
@@ -249,11 +300,6 @@ function TimerView() {
         }
       } else {
         // Standard Stopwatch
-        const startMs = new Date(current.startedAt).getTime();
-        const elapsedSec = Math.max(
-          0,
-          Math.floor((endMs - startMs) / 1000) - (current.pausedSeconds || 0)
-        );
         currentSec = elapsedSec;
         // Ring progresses smoothly every 60 seconds
         percent = Math.round(((elapsedSec % 60) / 60) * 100);
@@ -294,16 +340,28 @@ function TimerView() {
         }
       }
 
-      // Play soft sound chime when a Pomodoro countdown hits exactly 0
+      // Check 5-minute milestone flash alert
+      const milestoneSec = current.isPomodoro
+        ? Math.max(0, Math.floor((endMs - phaseStartMs) / 1000))
+        : elapsedSec;
+      const fiveMinChunk = Math.floor(milestoneSec / 300);
+      if (fiveMinChunk > 0 && fiveMinChunk > lastMilestoneRef.current && !current.isPaused) {
+        lastMilestoneRef.current = fiveMinChunk;
+        triggerFlash("milestone", `✨ ${fiveMinChunk * 5} Minutes Logged!`);
+      }
+
+      // Check Pomodoro countdown completion (Work -> Break or Break -> Work)
       if (
         current.isPomodoro &&
         !current.isPaused &&
         currentSec === 0 &&
-        lastSecond > 0 &&
-        (current.phase === "work" || current.phase === "break")
+        lastSecond > 0
       ) {
-        playAudioChime();
-        triggerHaptic("heavy");
+        if (current.phase === "work") {
+          triggerFlash("celebration", "🎉 Focus Complete! Break Time ☕");
+        } else if (current.phase === "break") {
+          triggerFlash("alarm", `🚨 Break Over! Ready for Round ${current.round + 1}`);
+        }
       }
       lastSecond = currentSec;
 
@@ -312,7 +370,7 @@ function TimerView() {
 
     animFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animFrame);
-  }, [active, lockScreenActive]);
+  }, [active, lockScreenActive, triggerFlash]);
 
   // Action dispatcher
   const executeAction = useCallback(async (action: string) => {
@@ -483,6 +541,15 @@ function TimerView() {
 
   return (
     <div className="timer-container" style={{ "--accent-color": accentColor } as React.CSSProperties}>
+      {flashInfo && (
+        <>
+          <div className={`ambient-flash-overlay flash-${flashInfo.type}`} />
+          <div className={`flash-banner flash-banner-${flashInfo.type}`}>
+            {flashInfo.text}
+          </div>
+        </>
+      )}
+
       {/* Header */}
       <header className="timer-header">
         <div className="phase-pill">
