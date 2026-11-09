@@ -232,6 +232,16 @@ function TimerView() {
     autoTriggeredRef.current = false;
   }, [active?.phase, active?.round]);
 
+  // Clean up any Telegram hash in standalone browser
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash.includes("tgWebAppData")) {
+      try {
+        const cleanPath = window.location.pathname + window.location.search;
+        window.history.replaceState(null, "", cleanPath);
+      } catch {}
+    }
+  }, []);
+
   // Initialize Telegram Web App SDK & detect container
   useEffect(() => {
     try {
@@ -239,8 +249,8 @@ function TimerView() {
       if (tg) {
         tg.ready();
         const isTg = Boolean(
-          (tg.initData && tg.initData.length > 0) ||
-          (tg.platform && tg.platform !== "unknown")
+          tg.platform &&
+          tg.platform !== "unknown"
         );
         setIsInsideTelegram(isTg);
       }
@@ -732,7 +742,7 @@ function TimerView() {
     triggerHaptic("light");
     const targetUrl = chatId
       ? `${window.location.origin}/timer?chatId=${encodeURIComponent(chatId)}`
-      : window.location.href;
+      : `${window.location.origin}/timer`;
     if (window.Telegram?.WebApp?.openLink) {
       window.Telegram.WebApp.openLink(targetUrl, { try_instant_view: false });
     } else {
