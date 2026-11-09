@@ -965,52 +965,6 @@ function TimerView() {
         </div>
       </main>
 
-      {/* Floating Controls Pod matching screenshot */}
-      <div className="controls-pod">
-        <button
-          type="button"
-          className="pod-btn pod-btn-secondary"
-          onClick={() => {
-            triggerHaptic("light");
-            if (active?.isPomodoro && (active.phase === "break" || active.phase === "awaiting_break")) {
-              void executeAction("pomodoro_skip_break");
-            } else if (active?.isPomodoro && active.phase === "awaiting_round") {
-              void executeAction("pomodoro_next_round");
-            } else if (chatId) {
-              void fetchActiveTimer(chatId);
-            }
-          }}
-          title="Skip or Refresh"
-          aria-label="Skip or Refresh"
-        >
-          <span style={{ fontSize: "1.35rem", display: "inline-block", transform: "rotate(-45deg)" }}>↺</span>
-        </button>
-
-        <button
-          type="button"
-          className="pod-btn pod-btn-primary"
-          onClick={() => void executeAction(active?.isPaused ? "resume" : "pause")}
-          title={active?.isPaused ? "Resume" : "Pause"}
-          aria-label={active?.isPaused ? "Resume" : "Pause"}
-        >
-          {active?.isPaused ? (
-            <span style={{ marginLeft: "3px" }}>▶</span>
-          ) : (
-            <span>⏸</span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          className="pod-btn pod-btn-secondary"
-          onClick={() => void executeAction("stop")}
-          title="Stop"
-          aria-label="Stop"
-        >
-          <span style={{ fontSize: "1.1rem" }}>⏹</span>
-        </button>
-      </div>
-
       {/* Details Card matching screenshot */}
       <section className="details-card-light">
         <div className="card-side">
