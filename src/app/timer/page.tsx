@@ -690,37 +690,16 @@ function TimerView() {
       console.warn("Audio play rejected:", err);
     }
 
+    // Zero lock-screen buttons: keep lock screen as a pure visual display
     try {
-      navigator.mediaSession.setActionHandler("play", async () => {
-        executeAction("resume");
-        try {
-          if (audioRef.current) await audioRef.current.play();
-          navigator.mediaSession.playbackState = "playing";
-        } catch {}
-      });
-
-      navigator.mediaSession.setActionHandler("pause", () => {
-        executeAction("pause");
-        if (audioRef.current) audioRef.current.pause();
-        navigator.mediaSession.playbackState = "paused";
-      });
-
-      navigator.mediaSession.setActionHandler("stop", () => {
-        executeAction("stop");
-        if (audioRef.current) audioRef.current.pause();
-        navigator.mediaSession.playbackState = "none";
-      });
-
-      navigator.mediaSession.setActionHandler("nexttrack", () => {
-        const cur = activeRef.current;
-        if (cur?.isPomodoro) {
-          if (cur.phase === "break" || cur.phase === "awaiting_break") {
-            executeAction("pomodoro_skip_break");
-          } else if (cur.phase === "awaiting_round") {
-            executeAction("pomodoro_next_round");
-          }
-        }
-      });
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler("stop", null);
+      navigator.mediaSession.setActionHandler("nexttrack", null);
+      navigator.mediaSession.setActionHandler("previoustrack", null);
+      navigator.mediaSession.setActionHandler("seekto", null);
+      navigator.mediaSession.setActionHandler("seekforward", null);
+      navigator.mediaSession.setActionHandler("seekbackward", null);
     } catch {}
   }, [executeAction, updateMediaSessionState]);
 
