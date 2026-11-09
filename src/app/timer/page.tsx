@@ -754,11 +754,11 @@ function TimerView() {
 
   if (loading) {
     return (
-      <div className="empty-state-light">
+      <div className="empty-state-dark">
         <div className="ambient-blob ambient-blob-1" />
         <div className="ambient-blob ambient-blob-2" />
-        <div className="pulse-dot-green" style={{ width: 16, height: 16 }} />
-        <p style={{ color: "#64748b", fontSize: "0.95rem", fontWeight: 500 }}>
+        <div className="pulse-dot-green" style={{ width: 18, height: 18 }} />
+        <p style={{ color: "#94a3b8", fontSize: "0.95rem", fontWeight: 500 }}>
           Connecting live timer...
         </p>
       </div>
@@ -767,12 +767,12 @@ function TimerView() {
 
   if (stoppedSuccess) {
     return (
-      <div className="empty-state-light">
+      <div className="empty-state-dark">
         <div className="ambient-blob ambient-blob-1" />
         <div className="ambient-blob ambient-blob-2" />
         <div style={{ fontSize: "3.5rem" }}>🎉</div>
-        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#0f172a" }}>Session Completed!</h2>
-        <p style={{ color: "#64748b", fontSize: "0.9rem" }}>
+        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#ffffff" }}>Session Completed!</h2>
+        <p style={{ color: "#94a3b8", fontSize: "0.9rem" }}>
           Saved to your log. Returning to chat...
         </p>
       </div>
@@ -781,13 +781,13 @@ function TimerView() {
 
   if (!active) {
     return (
-      <div className="empty-state-light">
+      <div className="empty-state-dark">
         <div className="ambient-blob ambient-blob-1" />
         <div className="ambient-blob ambient-blob-2" />
         <div className="ambient-blob ambient-blob-3" />
         <div style={{ fontSize: "3rem" }}>⏱️</div>
-        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#0f172a" }}>No Active Timer</h2>
-        <p style={{ color: "#64748b", fontSize: "0.92rem", maxWidth: 280, lineHeight: 1.5 }}>
+        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#ffffff" }}>No Active Timer</h2>
+        <p style={{ color: "#94a3b8", fontSize: "0.92rem", maxWidth: 280, lineHeight: 1.5 }}>
           No stopwatch is currently running. Start a timer in Telegram chat.
         </p>
         <div
@@ -798,10 +798,10 @@ function TimerView() {
             gap: "0.5rem",
             fontSize: "0.85rem",
             fontWeight: 500,
-            color: "#64748b",
-            background: "rgba(255, 255, 255, 0.9)",
-            border: "1px solid rgba(226, 232, 240, 0.9)",
-            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.03)",
+            color: "#94a3b8",
+            background: "rgba(15, 23, 42, 0.8)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.3)",
             padding: "0.5rem 1rem",
             borderRadius: "20px",
           }}
@@ -822,17 +822,17 @@ function TimerView() {
       ? "#64748b"
       : isPomodoro
       ? phase === "break"
-        ? "#f59e0b"
-        : "#0066ff"
+        ? "#fbbf24"
+        : "#38bdf8"
       : /sleep/i.test(active.taskName)
-      ? "#6366f1"
-      : "#0066ff";
+      ? "#818cf8"
+      : "#38bdf8";
 
   const taskIcon = getTaskVisualIcon(active.taskName);
 
   return (
     <div className="timer-container" style={{ "--accent-color": accentColor } as React.CSSProperties}>
-      {/* Ambient Pastel Background Blobs */}
+      {/* Ambient Dark Mode Luminous Glow Blobs */}
       <div className="ambient-blob ambient-blob-1" />
       <div className="ambient-blob ambient-blob-2" />
       <div className="ambient-blob ambient-blob-3" />
@@ -856,7 +856,7 @@ function TimerView() {
 
       {/* Header */}
       <header className="timer-header">
-        <div className="phase-pill-light">
+        <div className="phase-pill-dark">
           {!isPaused && <span className="pulse-dot-green" />}
           <span>
             {isPaused
@@ -871,10 +871,10 @@ function TimerView() {
                 : `🍅 FOCUS (Round ${active.round})`
               : "⏱️ ACTIVE STOPWATCH"}
           </span>
-          <span style={{ color: "#64748b", fontSize: "0.85rem", marginLeft: "2px" }}>⌵</span>
+          <span style={{ color: "#94a3b8", fontSize: "0.85rem", marginLeft: "2px" }}>⌵</span>
         </div>
 
-        <h1 className="task-title-light">
+        <h1 className="task-title-dark">
           {taskIcon && <span>{taskIcon}</span>}
           <span>{active.taskName}</span>
         </h1>
@@ -893,8 +893,8 @@ function TimerView() {
         )}
       </header>
 
-      {/* Modern Circular Progress Ring Component matching screenshot */}
-      <main className="ring-wrapper-light">
+      {/* Modern Circular Progress Ring Component in Dark Mode */}
+      <main className="ring-wrapper-dark">
         <svg width="280" height="280" viewBox="0 0 280 280" className="progress-ring-svg">
           {/* Background Track */}
           <circle
@@ -902,10 +902,10 @@ function TimerView() {
             cy="140"
             r="116"
             fill="none"
-            stroke="#e8edf5"
+            stroke="#1e293b"
             strokeWidth="15"
           />
-          {/* Animated Progress Fill Arc */}
+          {/* Animated Progress Fill Arc with Glow */}
           <circle
             ref={svgCircleRef}
             cx="140"
@@ -925,11 +925,11 @@ function TimerView() {
           />
         </svg>
 
-        <div className="ring-content-light">
+        <div className="ring-content-dark">
           <div className="timer-hourglass" style={{ color: accentColor }}>
             {/sleep/i.test(active.taskName) ? "😴" : phase === "break" ? "☕" : "⌛"}
           </div>
-          <div ref={digitsRef} className="timer-digits-light">
+          <div ref={digitsRef} className="timer-digits-dark">
             00:00
           </div>
           <div ref={sublabelRef} className="timer-badge-pill">
@@ -944,8 +944,8 @@ function TimerView() {
         </div>
       </main>
 
-      {/* Details Card matching screenshot */}
-      <section className="details-card-light">
+      {/* Details Card in Dark Mode */}
+      <section className="details-card-dark">
         <div className="card-side">
           <div className="card-icon-circle blue-circle">
             <span>▶</span>
@@ -976,7 +976,7 @@ function TimerView() {
             <span className="card-sublabel">LOCK SCREEN</span>
             <span
               className="card-value"
-              style={{ color: "#2563eb", fontSize: "0.92rem", fontWeight: 600 }}
+              style={{ color: "#38bdf8", fontSize: "0.92rem", fontWeight: 600 }}
             >
               {lockScreenActive ? "🟢 Active on Lock Screen" : "Tap to activate"}
             </span>
@@ -991,11 +991,11 @@ export default function TimerPage() {
   return (
     <Suspense
       fallback={
-        <div className="empty-state-light">
+        <div className="empty-state-dark">
           <div className="ambient-blob ambient-blob-1" />
           <div className="ambient-blob ambient-blob-2" />
           <div className="pulse-dot-green" style={{ width: 16, height: 16 }} />
-          <p style={{ color: "#64748b", fontSize: "0.95rem" }}>
+          <p style={{ color: "#94a3b8", fontSize: "0.95rem" }}>
             Loading stopwatch...
           </p>
         </div>
