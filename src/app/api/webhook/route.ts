@@ -955,13 +955,7 @@ async function doStartActiveTimer(
   ]);
   const sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
   const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo, sleepTargetMins, webAppUrl);
-  if (webAppUrl) {
-    void setChatMenuButton(chatId, {
-      type: "web_app",
-      text: "⏱️",
-      web_app: { url: webAppUrl },
-    });
-  }
+  void setChatMenuButton(chatId, { type: "default" });
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
     await trackTimerMessage(chatId, messageId);
