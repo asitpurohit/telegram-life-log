@@ -841,7 +841,7 @@ function TimerView() {
             void initMediaSession();
           }}
         >
-          <span className="details-label">Lock Screen Controls</span>
+          <span className="details-label">Lock Screen</span>
           <span
             className="details-val"
             style={{
@@ -849,53 +849,33 @@ function TimerView() {
               color: lockScreenActive ? "var(--accent-color)" : "var(--hint-color)",
             }}
           >
-            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap to activate"}
+            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap to link"}
           </span>
         </div>
       </section>
 
-      {/* Lock Screen Activation / Status Bar */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem", marginBottom: "1rem", width: "100%" }}>
-        {!lockScreenActive ? (
-          <button
-            onClick={() => {
-              triggerHaptic("medium");
-              void initMediaSession();
-            }}
-            style={{
-              background: "rgba(16, 185, 129, 0.15)",
-              border: "1px solid rgba(16, 185, 129, 0.4)",
-              color: "#10b981",
-              borderRadius: "20px",
-              fontSize: "0.82rem",
-              fontWeight: 600,
-              padding: "0.45rem 1.1rem",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              transition: "all 0.2s ease",
-            }}
-          >
-            <span>🔒 Tap to Enable Lock Screen Timer</span>
-          </button>
-        ) : (
-          <div
-            style={{
-              fontSize: "0.8rem",
-              color: "var(--accent-color)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.4rem",
-              background: "rgba(255, 255, 255, 0.04)",
-              padding: "0.3rem 0.8rem",
-              borderRadius: "15px",
-            }}
-          >
-            <span className="pulse-dot" style={{ width: 8, height: 8 }} />
-            <span>Lock Screen Active • Lock phone to view</span>
-          </div>
-        )}
+      {/* Visual HUD Status Footer (Zero Buttons - All Controls in Telegram Chat) */}
+      <footer
+        style={{
+          marginTop: "0.5rem",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "0.4rem",
+          textAlign: "center",
+          width: "100%",
+        }}
+      >
+        <div
+          style={{
+            fontSize: "0.82rem",
+            color: "var(--hint-color)",
+            opacity: 0.85,
+            letterSpacing: "0.02em",
+          }}
+        >
+          💬 Control pause, resume & stop in Telegram chat
+        </div>
 
         <button
           onClick={handleOpenInBrowser}
@@ -903,81 +883,15 @@ function TimerView() {
             background: "transparent",
             border: "none",
             color: "var(--hint-color)",
-            fontSize: "0.75rem",
+            fontSize: "0.74rem",
             textDecoration: "underline",
             cursor: "pointer",
             padding: "0.2rem 0.5rem",
+            opacity: 0.55,
           }}
         >
-          Open in Chrome browser ↗
+          Open in Chrome for lock screen ↗
         </button>
-      </div>
-
-      {/* Action Buttons */}
-      <footer className="actions-row">
-        {isPomodoro && phase === "awaiting_break" ? (
-          <>
-            <button
-              className="btn btn-primary"
-              disabled={isOperating}
-              onClick={() => executeAction("pomodoro_start_break")}
-            >
-              ☕ {active.autoAdvance ? "Start Break Now" : `Start ${active.breakMins}m Break`}
-            </button>
-            <button
-              className="btn btn-secondary"
-              disabled={isOperating}
-              onClick={() => executeAction("pomodoro_skip_break")}
-            >
-              ▶️ Skip Break
-            </button>
-          </>
-        ) : isPomodoro && phase === "awaiting_round" ? (
-          <>
-            <button
-              className="btn btn-primary"
-              disabled={isOperating}
-              onClick={() => executeAction("pomodoro_next_round")}
-            >
-              ▶️ {active.autoAdvance ? `Start Round ${active.round} Now` : `Start Round ${active.round}`}
-            </button>
-            <button
-              className="btn btn-danger"
-              disabled={isOperating}
-              onClick={() => executeAction("stop")}
-            >
-              ⏹ Stop & Log
-            </button>
-          </>
-        ) : (
-          <>
-            {isPaused ? (
-              <button
-                className="btn btn-primary"
-                disabled={isOperating}
-                onClick={() => executeAction("resume")}
-              >
-                ▶️ Resume
-              </button>
-            ) : (
-              <button
-                className="btn btn-secondary"
-                disabled={isOperating}
-                onClick={() => executeAction("pause")}
-              >
-                ⏸ Pause
-              </button>
-            )}
-
-            <button
-              className="btn btn-danger"
-              disabled={isOperating}
-              onClick={() => executeAction("stop")}
-            >
-              ⏹ Stop & Log
-            </button>
-          </>
-        )}
       </footer>
     </div>
   );
