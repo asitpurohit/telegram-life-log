@@ -1722,7 +1722,7 @@ export async function POST(req: NextRequest) {
     const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
     const proto = req.headers.get("x-forwarded-proto") || "https";
     if (host && !host.includes("localhost") && !host.includes("127.0.0.1")) {
-      void saveAppUrl(`${proto}://${host}`);
+      await saveAppUrl(`${proto}://${host}`);
     }
 
     const body = await req.json();

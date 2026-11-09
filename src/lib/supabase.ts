@@ -2024,7 +2024,10 @@ export async function getActiveTimerAutoAdvance(chatId: string | number, active?
 // SYSTEM APP URL / DOMAIN AUTO-DETECTION
 // ==========================================
 
+let cachedAppUrl: string = "";
+
 export function getAppBaseUrl(): string {
+  if (cachedAppUrl) return cachedAppUrl;
   if (process.env.NEXT_PUBLIC_APP_URL) {
     return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
   }
@@ -2040,13 +2043,16 @@ export function getAppBaseUrl(): string {
 export async function getSavedAppUrl(): Promise<string> {
   const envUrl = getAppBaseUrl();
   if (envUrl) return envUrl;
+  if (cachedAppUrl) return cachedAppUrl;
   try {
     const { data } = await supabase
       .from("wizard_sessions")
       .select("task_data")
       .eq("chat_id", "__system_app_url__")
       .maybeSingle();
-    return data?.task_data?.url || "";
+    const url = data?.task_data?.url || "";
+    if (url) cachedAppUrl = url;
+    return url;
   } catch {
     return "";
   }
@@ -2054,11 +2060,13 @@ export async function getSavedAppUrl(): Promise<string> {
 
 export async function saveAppUrl(url: string): Promise<void> {
   if (!url || url.includes("localhost")) return;
+  const cleaned = url.replace(/\/$/, "");
+  cachedAppUrl = cleaned;
   try {
     await supabase.from("wizard_sessions").upsert({
       chat_id: "__system_app_url__",
       step: "system",
-      task_data: { url: url.replace(/\/$/, "") },
+      task_data: { url: cleaned },
       updated_at: new Date().toISOString(),
     });
   } catch {}
