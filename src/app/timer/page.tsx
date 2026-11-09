@@ -573,11 +573,13 @@ function TimerView() {
   const handleOpenInBrowser = () => {
     triggerHaptic("light");
     initMediaSession();
-    const currentUrl = window.location.href;
+    const targetUrl = chatId
+      ? `${window.location.origin}/timer?chatId=${encodeURIComponent(chatId)}`
+      : window.location.href;
     if (window.Telegram?.WebApp?.openLink) {
-      window.Telegram.WebApp.openLink(currentUrl, { try_instant_view: false });
+      window.Telegram.WebApp.openLink(targetUrl, { try_instant_view: false });
     } else {
-      window.open(currentUrl, "_blank");
+      window.open(targetUrl, "_blank");
     }
   };
 
