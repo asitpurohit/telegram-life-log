@@ -10,6 +10,7 @@ declare global {
         ready: () => void;
         expand: () => void;
         close: () => void;
+        openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
         isExpanded: boolean;
         HapticFeedback?: {
           impactOccurred: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
@@ -402,6 +403,10 @@ function TimerView() {
             title: titleStr,
             artist: artistStr,
             album: current.projectName ? `📦 ${current.projectName}` : "Telegram Life Log",
+            artwork: [
+              { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+              { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+            ],
           });
           try {
             navigator.mediaSession.playbackState = current.isPaused ? "paused" : "playing";
@@ -565,6 +570,17 @@ function TimerView() {
     } catch {}
   };
 
+  const handleOpenInBrowser = () => {
+    triggerHaptic("light");
+    initMediaSession();
+    const currentUrl = window.location.href;
+    if (window.Telegram?.WebApp?.openLink) {
+      window.Telegram.WebApp.openLink(currentUrl, { try_instant_view: false });
+    } else {
+      window.open(currentUrl, "_blank");
+    }
+  };
+
   if (loading) {
     return (
       <div className="empty-state">
@@ -695,8 +711,15 @@ function TimerView() {
             })}
           </span>
         </div>
-        <div className="details-col" style={{ textAlign: "right" }}>
-          <span className="details-label">Lock Screen Controls</span>
+        <div
+          className="details-col"
+          style={{ textAlign: "right", cursor: "pointer" }}
+          onClick={() => {
+            initMediaSession();
+            handleOpenInBrowser();
+          }}
+        >
+          <span className="details-label">Lock Screen Controls ↗</span>
           <span
             className="details-val"
             style={{
@@ -704,10 +727,32 @@ function TimerView() {
               color: lockScreenActive ? "var(--accent-color)" : "var(--hint-color)",
             }}
           >
-            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap screen to link"}
+            {lockScreenActive ? "🟢 Active (Tap for Chrome)" : "📱 Tap to open in Chrome"}
           </span>
         </div>
       </section>
+
+      {/* Quick Launch in Chrome for Lock Screen */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: "1rem", width: "100%" }}>
+        <button
+          onClick={handleOpenInBrowser}
+          style={{
+            background: "rgba(255, 255, 255, 0.05)",
+            border: "1px solid rgba(255, 255, 255, 0.12)",
+            color: "var(--hint-color)",
+            borderRadius: "20px",
+            fontSize: "0.78rem",
+            padding: "0.35rem 0.9rem",
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            transition: "all 0.2s ease",
+          }}
+        >
+          <span>🔒 Open in Chrome for Lock Screen Player</span>
+        </button>
+      </div>
 
       {/* Action Buttons */}
       <footer className="actions-row">
