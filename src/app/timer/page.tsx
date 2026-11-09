@@ -1050,12 +1050,6 @@ function TimerView() {
           </div>
         </div>
       </section>
-
-      {/* Visual HUD Status Footer */}
-      <footer className="timer-footer-light">
-        <div>💬 Control pause, resume &amp; stop in Telegram chat</div>
-        <div>🔒 Keep this tab open &amp; lock your phone to view on lock screen</div>
-      </footer>
     </div>
   );
 }
