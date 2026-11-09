@@ -292,6 +292,102 @@ function TimerView() {
     };
   }, [chatId, fetchActiveTimer]);
 
+  // Update Android Lock Screen Media Session Controls & PositionState
+  const updateMediaSessionState = useCallback((current: ActiveData) => {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+
+    const now = Date.now();
+    const endMs = current.isPaused && current.pausedAt ? current.pausedAt : now;
+    const startMs = new Date(current.startedAt).getTime();
+    const elapsedSec = Math.max(
+      0,
+      Math.floor((endMs - startMs) / 1000) - (current.pausedSeconds || 0)
+    );
+    const phaseStartMs = new Date(current.phaseStartedAt || current.startedAt).getTime();
+
+    let displayText = "00:00";
+    let sublabel = "ELAPSED";
+    let durationSec = 3600;
+    let positionSec = elapsedSec;
+
+    if (current.isPomodoro) {
+      if (current.phase === "break") {
+        const targetSec = current.breakMins * 60;
+        const breakSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+        const remainingSec = Math.max(0, targetSec - breakSec);
+        displayText = formatClockTime(remainingSec);
+        sublabel = "BREAK REMAINING";
+        durationSec = targetSec;
+        positionSec = Math.min(targetSec, breakSec);
+      } else if (current.phase === "awaiting_break") {
+        displayText = "00:00";
+        sublabel = "FOCUS COMPLETE";
+        durationSec = 10;
+        positionSec = 10;
+      } else if (current.phase === "awaiting_round") {
+        displayText = "00:00";
+        sublabel = "BREAK COMPLETE";
+        durationSec = 10;
+        positionSec = 10;
+      } else {
+        const targetSec = current.workMins * 60;
+        const workSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+        const remainingSec = Math.max(0, targetSec - workSec);
+        displayText = formatClockTime(remainingSec);
+        sublabel = `ROUND ${current.round} FOCUS`;
+        durationSec = targetSec;
+        positionSec = Math.min(targetSec, workSec);
+      }
+    } else {
+      displayText = formatClockTime(elapsedSec);
+      sublabel = current.isPaused ? "PAUSED" : "RUNNING";
+      durationSec = Math.max(3600, elapsedSec + 600);
+      positionSec = elapsedSec;
+    }
+
+    const titleStr = `${displayText} — ${current.taskName}`;
+    const artistStr = current.isPaused
+      ? "⏸ Paused • Telegram Life Log"
+      : current.isPomodoro
+      ? `${sublabel} • Telegram Life Log`
+      : "⏱️ Running • Telegram Life Log";
+
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+    if (!navigator.mediaSession.metadata) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: titleStr,
+        artist: artistStr,
+        album: current.projectName ? `📦 ${current.projectName}` : "Telegram Life Log",
+        artwork: [
+          { src: `${origin}/icon-192.png`, sizes: "192x192", type: "image/png" },
+          { src: `${origin}/icon-512.png`, sizes: "512x512", type: "image/png" },
+        ],
+      });
+    } else {
+      if (navigator.mediaSession.metadata.title !== titleStr) {
+        navigator.mediaSession.metadata.title = titleStr;
+      }
+      if (navigator.mediaSession.metadata.artist !== artistStr) {
+        navigator.mediaSession.metadata.artist = artistStr;
+      }
+    }
+
+    try {
+      navigator.mediaSession.playbackState = current.isPaused ? "paused" : "playing";
+    } catch {}
+
+    if ("setPositionState" in navigator.mediaSession) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: Math.max(1, durationSec),
+          playbackRate: current.isPaused ? 0 : 1.0,
+          position: Math.min(durationSec, Math.max(0, positionSec)),
+        });
+      } catch {}
+    }
+  }, []);
+
   // 60 FPS animation loop for smooth countdown and ring updates
   useEffect(() => {
     if (!active) return;
@@ -390,28 +486,8 @@ function TimerView() {
       }
 
       // Update Android Lock Screen Media Session Controls
-      if (typeof navigator !== "undefined" && "mediaSession" in navigator && lockScreenActive) {
-        const titleStr = `${displayText} — ${current.taskName}`;
-        const artistStr = current.isPaused
-          ? "⏸ Paused • Telegram Life Log"
-          : current.isPomodoro
-          ? `${sublabel} • Telegram Life Log`
-          : "⏱️ Running • Telegram Life Log";
-
-        if (navigator.mediaSession.metadata?.title !== titleStr) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: titleStr,
-            artist: artistStr,
-            album: current.projectName ? `📦 ${current.projectName}` : "Telegram Life Log",
-            artwork: [
-              { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-              { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
-            ],
-          });
-          try {
-            navigator.mediaSession.playbackState = current.isPaused ? "paused" : "playing";
-          } catch {}
-        }
+      if (lockScreenActive && current) {
+        updateMediaSessionState(current);
       }
 
       // Check 5-minute milestone flash alert
@@ -444,7 +520,7 @@ function TimerView() {
 
     animFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animFrame);
-  }, [active, lockScreenActive, triggerFlash]);
+  }, [active, lockScreenActive, triggerFlash, updateMediaSessionState]);
 
   // Action dispatcher
   const executeAction = useCallback(async (action: string) => {
@@ -484,7 +560,19 @@ function TimerView() {
           }, 1200);
         } else {
           await fetchActiveTimer(chatId);
+          if (action === "pause") {
+            audioRef.current?.pause();
+            if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+              navigator.mediaSession.playbackState = "paused";
+            }
+          } else if (action === "resume") {
+            audioRef.current?.play().catch(() => {});
+            if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+              navigator.mediaSession.playbackState = "playing";
+            }
+          }
           if (activeRef.current) {
+            updateMediaSessionState(activeRef.current);
             channelRef.current?.postMessage({
               type: "SYNC_ACTIVE",
               active: activeRef.current,
@@ -498,39 +586,51 @@ function TimerView() {
     } finally {
       setIsOperating(false);
     }
-  }, [chatId, isOperating, fetchActiveTimer]);
+  }, [chatId, isOperating, fetchActiveTimer, updateMediaSessionState]);
 
   // Lock Screen Media Session initialization
-  const initMediaSession = useCallback(() => {
+  const initMediaSession = useCallback(async () => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
 
-    if (!audioRef.current) {
-      const audio = new Audio("/silent.wav");
+    let audio = audioRef.current;
+    if (!audio) {
+      audio = new Audio("/silent.mp3");
       audio.loop = true;
       audioRef.current = audio;
     }
 
-    const audio = audioRef.current;
-    audio.play().then(() => {
+    try {
+      audio.src = "/silent.mp3";
+      audio.loop = true;
+      await audio.play();
       setLockScreenActive(true);
       navigator.mediaSession.playbackState = "playing";
-    }).catch(() => {
-      // Browser autoplay policy might require user click/touch
-    });
+      if (activeRef.current) {
+        updateMediaSessionState(activeRef.current);
+      }
+    } catch (err) {
+      console.warn("Audio play rejected:", err);
+    }
 
     try {
-      navigator.mediaSession.setActionHandler("play", () => {
+      navigator.mediaSession.setActionHandler("play", async () => {
         executeAction("resume");
-        audio.play().catch(() => {});
+        try {
+          if (audioRef.current) await audioRef.current.play();
+          navigator.mediaSession.playbackState = "playing";
+        } catch {}
       });
 
       navigator.mediaSession.setActionHandler("pause", () => {
         executeAction("pause");
-        audio.pause();
+        if (audioRef.current) audioRef.current.pause();
+        navigator.mediaSession.playbackState = "paused";
       });
 
       navigator.mediaSession.setActionHandler("stop", () => {
         executeAction("stop");
+        if (audioRef.current) audioRef.current.pause();
+        navigator.mediaSession.playbackState = "none";
       });
 
       navigator.mediaSession.setActionHandler("nexttrack", () => {
@@ -544,16 +644,16 @@ function TimerView() {
         }
       });
     } catch {}
-  }, [executeAction]);
+  }, [executeAction, updateMediaSessionState]);
 
   useEffect(() => {
     const handleGesture = () => {
-      initMediaSession();
+      void initMediaSession();
     };
     window.addEventListener("touchstart", handleGesture, { once: true });
     window.addEventListener("click", handleGesture, { once: true });
 
-    initMediaSession();
+    void initMediaSession();
 
     return () => {
       window.removeEventListener("touchstart", handleGesture);
@@ -563,6 +663,19 @@ function TimerView() {
       }
     };
   }, [initMediaSession]);
+
+  // Background lock-screen sync timer (keeps firing when phone screen is locked)
+  useEffect(() => {
+    if (!active || !lockScreenActive) return;
+
+    const interval = setInterval(() => {
+      if (activeRef.current) {
+        updateMediaSessionState(activeRef.current);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [active, lockScreenActive, updateMediaSessionState]);
 
   const handleClose = () => {
     try {
@@ -642,6 +755,14 @@ function TimerView() {
 
   return (
     <div className="timer-container" style={{ "--accent-color": accentColor } as React.CSSProperties}>
+      <audio
+        ref={audioRef}
+        src="/silent.mp3"
+        loop
+        playsInline
+        preload="auto"
+        style={{ display: "none" }}
+      />
       {flashInfo && (
         <>
           <div className={`ambient-flash-overlay flash-${flashInfo.type}`} />
@@ -717,11 +838,10 @@ function TimerView() {
           className="details-col"
           style={{ textAlign: "right", cursor: "pointer" }}
           onClick={() => {
-            initMediaSession();
-            handleOpenInBrowser();
+            void initMediaSession();
           }}
         >
-          <span className="details-label">Lock Screen Controls ↗</span>
+          <span className="details-label">Lock Screen Controls</span>
           <span
             className="details-val"
             style={{
@@ -729,30 +849,67 @@ function TimerView() {
               color: lockScreenActive ? "var(--accent-color)" : "var(--hint-color)",
             }}
           >
-            {lockScreenActive ? "🟢 Active (Tap for Chrome)" : "📱 Tap to open in Chrome"}
+            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap to activate"}
           </span>
         </div>
       </section>
 
-      {/* Quick Launch in Chrome for Lock Screen */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: "1rem", width: "100%" }}>
+      {/* Lock Screen Activation / Status Bar */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem", marginBottom: "1rem", width: "100%" }}>
+        {!lockScreenActive ? (
+          <button
+            onClick={() => {
+              triggerHaptic("medium");
+              void initMediaSession();
+            }}
+            style={{
+              background: "rgba(16, 185, 129, 0.15)",
+              border: "1px solid rgba(16, 185, 129, 0.4)",
+              color: "#10b981",
+              borderRadius: "20px",
+              fontSize: "0.82rem",
+              fontWeight: 600,
+              padding: "0.45rem 1.1rem",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>🔒 Tap to Enable Lock Screen Timer</span>
+          </button>
+        ) : (
+          <div
+            style={{
+              fontSize: "0.8rem",
+              color: "var(--accent-color)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              background: "rgba(255, 255, 255, 0.04)",
+              padding: "0.3rem 0.8rem",
+              borderRadius: "15px",
+            }}
+          >
+            <span className="pulse-dot" style={{ width: 8, height: 8 }} />
+            <span>Lock Screen Active • Lock phone to view</span>
+          </div>
+        )}
+
         <button
           onClick={handleOpenInBrowser}
           style={{
-            background: "rgba(255, 255, 255, 0.05)",
-            border: "1px solid rgba(255, 255, 255, 0.12)",
+            background: "transparent",
+            border: "none",
             color: "var(--hint-color)",
-            borderRadius: "20px",
-            fontSize: "0.78rem",
-            padding: "0.35rem 0.9rem",
+            fontSize: "0.75rem",
+            textDecoration: "underline",
             cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "0.4rem",
-            transition: "all 0.2s ease",
+            padding: "0.2rem 0.5rem",
           }}
         >
-          <span>🔒 Open in Chrome for Lock Screen Player</span>
+          Open in Chrome browser ↗
         </button>
       </div>
 
