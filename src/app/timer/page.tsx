@@ -128,6 +128,23 @@ function triggerHaptic(style: "light" | "medium" | "heavy" = "medium") {
   } catch {}
 }
 
+function getTaskVisualIcon(taskName: string): string {
+  const trimmed = taskName.trim();
+  if (/^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(trimmed)) {
+    return "";
+  }
+  const lower = trimmed.toLowerCase();
+  if (/physics|quantum|science|atom|gravity/i.test(lower)) return "⚛️";
+  if (/math|calc|algebra|geometry/i.test(lower)) return "📐";
+  if (/code|programming|dev|bug|react|next|app|python|js|ts|web/i.test(lower)) return "💻";
+  if (/study|read|book|exam|prep/i.test(lower)) return "📚";
+  if (/write|ppt|slide|present|design|figma|art/i.test(lower)) return "🎨";
+  if (/gym|workout|exercise|run|fitness/i.test(lower)) return "🏋️";
+  if (/sleep|nap|rest/i.test(lower)) return "😴";
+  if (/break|coffee|tea/i.test(lower)) return "☕";
+  return "⏱️";
+}
+
 function TimerView() {
   const searchParams = useSearchParams();
   const [chatId, setChatId] = useState<string | null>(null);
@@ -143,6 +160,7 @@ function TimerView() {
   } | null>(null);
 
   const progressRef = useRef<HTMLProgressElement | null>(null);
+  const svgCircleRef = useRef<SVGCircleElement | null>(null);
   const digitsRef = useRef<HTMLDivElement | null>(null);
   const sublabelRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -535,6 +553,11 @@ function TimerView() {
       if (sublabelRef.current && sublabelRef.current.textContent !== sublabel) {
         sublabelRef.current.textContent = sublabel;
       }
+      if (svgCircleRef.current) {
+        // Circumference for r=116 is 2 * PI * 116 = 728.85
+        const offset = 728.85 * (1 - percent / 100);
+        svgCircleRef.current.style.strokeDashoffset = String(offset);
+      }
       if (progressRef.current) {
         progressRef.current.value = percent;
         progressRef.current.style.setProperty("--value", String(percent));
@@ -752,9 +775,11 @@ function TimerView() {
 
   if (loading) {
     return (
-      <div className="empty-state">
-        <div className="pulse-dot" style={{ width: 16, height: 16 }} />
-        <p style={{ color: "var(--hint-color)", fontSize: "0.95rem" }}>
+      <div className="empty-state-light">
+        <div className="ambient-blob ambient-blob-1" />
+        <div className="ambient-blob ambient-blob-2" />
+        <div className="pulse-dot-green" style={{ width: 16, height: 16 }} />
+        <p style={{ color: "#64748b", fontSize: "0.95rem", fontWeight: 500 }}>
           Connecting live timer...
         </p>
       </div>
@@ -763,10 +788,12 @@ function TimerView() {
 
   if (stoppedSuccess) {
     return (
-      <div className="empty-state">
+      <div className="empty-state-light">
+        <div className="ambient-blob ambient-blob-1" />
+        <div className="ambient-blob ambient-blob-2" />
         <div style={{ fontSize: "3.5rem" }}>🎉</div>
-        <h2 style={{ fontSize: "1.4rem", fontWeight: 700 }}>Session Completed!</h2>
-        <p style={{ color: "var(--hint-color)", fontSize: "0.9rem" }}>
+        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#0f172a" }}>Session Completed!</h2>
+        <p style={{ color: "#64748b", fontSize: "0.9rem" }}>
           Saved to your log. Returning to chat...
         </p>
       </div>
@@ -775,11 +802,14 @@ function TimerView() {
 
   if (!active) {
     return (
-      <div className="empty-state">
+      <div className="empty-state-light">
+        <div className="ambient-blob ambient-blob-1" />
+        <div className="ambient-blob ambient-blob-2" />
+        <div className="ambient-blob ambient-blob-3" />
         <div style={{ fontSize: "3rem" }}>⏱️</div>
-        <h2 style={{ fontSize: "1.3rem", fontWeight: 700 }}>No Active Timer</h2>
-        <p style={{ color: "var(--hint-color)", fontSize: "0.9rem", maxWidth: 280 }}>
-          No stopwatch is currently running.
+        <h2 style={{ fontSize: "1.4rem", fontWeight: 800, color: "#0f172a" }}>No Active Timer</h2>
+        <p style={{ color: "#64748b", fontSize: "0.92rem", maxWidth: 280, lineHeight: 1.5 }}>
+          No stopwatch is currently running. Start a timer in Telegram chat.
         </p>
         <div
           style={{
@@ -787,15 +817,17 @@ function TimerView() {
             display: "inline-flex",
             alignItems: "center",
             gap: "0.5rem",
-            fontSize: "0.82rem",
-            color: "var(--hint-color)",
-            opacity: 0.75,
-            background: "rgba(255, 255, 255, 0.04)",
-            padding: "0.4rem 0.9rem",
+            fontSize: "0.85rem",
+            fontWeight: 500,
+            color: "#64748b",
+            background: "rgba(255, 255, 255, 0.9)",
+            border: "1px solid rgba(226, 232, 240, 0.9)",
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.03)",
+            padding: "0.5rem 1rem",
             borderRadius: "20px",
           }}
         >
-          <span className="pulse-dot" style={{ width: 8, height: 8 }} />
+          <span className="pulse-dot-green" style={{ width: 8, height: 8 }} />
           <span>Waiting for next timer from Telegram chat...</span>
         </div>
       </div>
@@ -808,17 +840,24 @@ function TimerView() {
 
   const accentColor =
     isPaused
-      ? "#94a3b8"
+      ? "#64748b"
       : isPomodoro
       ? phase === "break"
         ? "#f59e0b"
-        : "#10b981"
+        : "#0066ff"
       : /sleep/i.test(active.taskName)
-      ? "#818cf8"
-      : "#10b981";
+      ? "#6366f1"
+      : "#0066ff";
+
+  const taskIcon = getTaskVisualIcon(active.taskName);
 
   return (
     <div className="timer-container" style={{ "--accent-color": accentColor } as React.CSSProperties}>
+      {/* Ambient Pastel Background Blobs */}
+      <div className="ambient-blob ambient-blob-1" />
+      <div className="ambient-blob ambient-blob-2" />
+      <div className="ambient-blob ambient-blob-3" />
+
       <audio
         ref={audioRef}
         src="/silent.mp3"
@@ -838,8 +877,8 @@ function TimerView() {
 
       {/* Header */}
       <header className="timer-header">
-        <div className="phase-pill">
-          {!isPaused && <span className="pulse-dot" />}
+        <div className="phase-pill-light">
+          {!isPaused && <span className="pulse-dot-green" />}
           <span>
             {isPaused
               ? "⏸ PAUSED"
@@ -853,138 +892,169 @@ function TimerView() {
                 : `🍅 FOCUS (Round ${active.round})`
               : "⏱️ ACTIVE STOPWATCH"}
           </span>
+          <span style={{ color: "#64748b", fontSize: "0.85rem", marginLeft: "2px" }}>⌵</span>
         </div>
-        <h1 className="task-title">{active.taskName}</h1>
+
+        <h1 className="task-title-light">
+          {taskIcon && <span>{taskIcon}</span>}
+          <span>{active.taskName}</span>
+        </h1>
+
         {active.projectName && (
-          <div className="sub-meta">
+          <div className="sub-meta-pill">
             <span>📦 {active.projectName}</span>
-            {active.projectProgress && <span>• {active.projectProgress}</span>}
+            {active.projectProgress && <span>• ⏱️ {active.projectProgress}</span>}
           </div>
         )}
+
         {active.todoTitle && (
-          <div className="sub-meta">
+          <div className="todo-meta-pill">
             <span>🎯 {active.todoTitle}</span>
           </div>
         )}
       </header>
 
-      {/* Modern Circular Progress Ring Component */}
-      <main className="ring-wrapper">
-        <progress
-          ref={progressRef}
-          className="progress-ring"
-          value={0}
-          max={100}
-          aria-label="Timer Progress"
-        />
-        <div className="ring-content">
-          <div ref={digitsRef} className="timer-digits">
+      {/* Modern Circular Progress Ring Component matching screenshot */}
+      <main className="ring-wrapper-light">
+        <svg width="280" height="280" viewBox="0 0 280 280" className="progress-ring-svg">
+          {/* Background Track */}
+          <circle
+            cx="140"
+            cy="140"
+            r="116"
+            fill="none"
+            stroke="#e8edf5"
+            strokeWidth="15"
+          />
+          {/* Animated Progress Fill Arc */}
+          <circle
+            ref={svgCircleRef}
+            cx="140"
+            cy="140"
+            r="116"
+            fill="none"
+            stroke={accentColor}
+            strokeWidth="15"
+            strokeLinecap="round"
+            strokeDasharray="728.85"
+            strokeDashoffset="728.85"
+            style={{
+              transform: "rotate(-90deg)",
+              transformOrigin: "140px 140px",
+              transition: "stroke-dashoffset 0.15s ease",
+            }}
+          />
+        </svg>
+
+        <div className="ring-content-light">
+          <div className="timer-hourglass" style={{ color: accentColor }}>
+            {/sleep/i.test(active.taskName) ? "😴" : phase === "break" ? "☕" : "⌛"}
+          </div>
+          <div ref={digitsRef} className="timer-digits-light">
             00:00
           </div>
-          <div ref={sublabelRef} className="timer-sublabel">
-            {isPaused ? "PAUSED" : "RUNNING"}
+          <div ref={sublabelRef} className="timer-badge-pill">
+            {isPaused
+              ? "PAUSED"
+              : isPomodoro
+              ? phase === "break"
+                ? `ROUND ${active.round} BREAK`
+                : `ROUND ${active.round} FOCUS`
+              : "RUNNING"}
           </div>
         </div>
       </main>
 
-      {/* Details Card */}
-      <section className="details-card">
-        <div className="details-col">
-          <span className="details-label">Started At</span>
-          <span className="details-val">
-            {new Date(active.startedAt).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </span>
-        </div>
-        <div
-          className="details-col"
-          style={{ textAlign: "right", cursor: "pointer" }}
-          onClick={isInsideTelegram ? handleOpenInBrowser : () => void initMediaSession()}
+      {/* Floating Controls Pod matching screenshot */}
+      <div className="controls-pod">
+        <button
+          type="button"
+          className="pod-btn pod-btn-secondary"
+          onClick={() => {
+            triggerHaptic("light");
+            if (active?.isPomodoro && (active.phase === "break" || active.phase === "awaiting_break")) {
+              void executeAction("pomodoro_skip_break");
+            } else if (active?.isPomodoro && active.phase === "awaiting_round") {
+              void executeAction("pomodoro_next_round");
+            } else if (chatId) {
+              void fetchActiveTimer(chatId);
+            }
+          }}
+          title="Skip or Refresh"
+          aria-label="Skip or Refresh"
         >
-          <span className="details-label">Lock Screen</span>
-          <span
-            className="details-val"
-            style={{
-              fontSize: "0.85rem",
-              color: lockScreenActive ? "var(--accent-color)" : isInsideTelegram ? "#34d399" : "var(--hint-color)",
-            }}
-          >
-            {isInsideTelegram
-              ? "🚀 Open in Chrome ↗"
-              : lockScreenActive
-              ? "🟢 Active on Lock Screen"
-              : "📱 Tap to activate"}
-          </span>
+          <span style={{ fontSize: "1.35rem", display: "inline-block", transform: "rotate(-45deg)" }}>↺</span>
+        </button>
+
+        <button
+          type="button"
+          className="pod-btn pod-btn-primary"
+          onClick={() => void executeAction(active?.isPaused ? "resume" : "pause")}
+          title={active?.isPaused ? "Resume" : "Pause"}
+          aria-label={active?.isPaused ? "Resume" : "Pause"}
+        >
+          {active?.isPaused ? (
+            <span style={{ marginLeft: "3px" }}>▶</span>
+          ) : (
+            <span>⏸</span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          className="pod-btn pod-btn-secondary"
+          onClick={() => void executeAction("stop")}
+          title="Stop"
+          aria-label="Stop"
+        >
+          <span style={{ fontSize: "1.1rem" }}>⏹</span>
+        </button>
+      </div>
+
+      {/* Details Card matching screenshot */}
+      <section className="details-card-light">
+        <div className="card-side">
+          <div className="card-icon-circle blue-circle">
+            <span>▶</span>
+          </div>
+          <div className="card-text-col">
+            <span className="card-sublabel">STARTED AT</span>
+            <span className="card-value">
+              {new Date(active.startedAt).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+          </div>
+        </div>
+
+        <div className="card-divider" />
+
+        <div
+          className="card-side"
+          style={{ cursor: "pointer" }}
+          onClick={() => void initMediaSession()}
+          title="Tap to activate lock screen audio"
+        >
+          <div className="card-icon-circle purple-circle">
+            <span>🔒</span>
+          </div>
+          <div className="card-text-col">
+            <span className="card-sublabel">LOCK SCREEN</span>
+            <span
+              className="card-value"
+              style={{ color: "#2563eb", fontSize: "0.92rem", fontWeight: 600 }}
+            >
+              {lockScreenActive ? "🟢 Active on Lock Screen" : "Tap to activate"}
+            </span>
+          </div>
         </div>
       </section>
 
-      {/* Visual HUD Status Footer (Zero Buttons - All Controls in Telegram Chat) */}
-      <footer
-        style={{
-          marginTop: "0.5rem",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "0.45rem",
-          textAlign: "center",
-          width: "100%",
-        }}
-      >
-        {isInsideTelegram && (
-          <div
-            style={{
-              margin: "0.5rem 0",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: "0.35rem",
-              width: "100%",
-            }}
-          >
-            <button
-              onClick={handleOpenInBrowser}
-              className="btn-chrome-pill"
-              type="button"
-            >
-              <span>🚀 Open in Chrome for Lock Screen</span>
-              <span style={{ fontSize: "0.8rem", opacity: 0.75 }}>↗</span>
-            </button>
-            <span
-              style={{
-                fontSize: "0.75rem",
-                color: "var(--hint-color)",
-                opacity: 0.75,
-              }}
-            >
-              Chrome keeps the live ticker running on your phone lock screen
-            </span>
-          </div>
-        )}
-
-        <div
-          style={{
-            fontSize: "0.82rem",
-            color: "var(--hint-color)",
-            opacity: 0.85,
-            letterSpacing: "0.02em",
-          }}
-        >
-          💬 Control pause, resume &amp; stop in Telegram chat
-        </div>
-
-        {!isInsideTelegram && (
-          <div
-            style={{
-              fontSize: "0.75rem",
-              color: "var(--hint-color)",
-              opacity: 0.65,
-            }}
-          >
-            🔒 Keep this tab open &amp; lock your phone to view on lock screen
-          </div>
-        )}
+      {/* Visual HUD Status Footer */}
+      <footer className="timer-footer-light">
+        <div>💬 Control pause, resume &amp; stop in Telegram chat</div>
+        <div>🔒 Keep this tab open &amp; lock your phone to view on lock screen</div>
       </footer>
     </div>
   );
@@ -994,9 +1064,11 @@ export default function TimerPage() {
   return (
     <Suspense
       fallback={
-        <div className="empty-state">
-          <div className="pulse-dot" style={{ width: 16, height: 16 }} />
-          <p style={{ color: "var(--hint-color)", fontSize: "0.95rem" }}>
+        <div className="empty-state-light">
+          <div className="ambient-blob ambient-blob-1" />
+          <div className="ambient-blob ambient-blob-2" />
+          <div className="pulse-dot-green" style={{ width: 16, height: 16 }} />
+          <p style={{ color: "#64748b", fontSize: "0.95rem" }}>
             Loading stopwatch...
           </p>
         </div>
