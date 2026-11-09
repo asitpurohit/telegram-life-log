@@ -35,6 +35,7 @@ interface ActiveData {
   todoTitle: string | null;
   startedAt: string;
   isPomodoro: boolean;
+  autoAdvance?: boolean;
   workMins: number;
   breakMins: number;
   round: number;
@@ -106,8 +107,14 @@ function TimerView() {
   const progressRef = useRef<HTMLProgressElement | null>(null);
   const digitsRef = useRef<HTMLDivElement | null>(null);
   const sublabelRef = useRef<HTMLDivElement | null>(null);
+  const autoTriggeredRef = useRef<boolean>(false);
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
+
+  // Reset auto-trigger lock when phase changes
+  useEffect(() => {
+    autoTriggeredRef.current = false;
+  }, [active?.phase, active?.round]);
 
   // Initialize Telegram Web App SDK & detect chatId
   useEffect(() => {
@@ -197,13 +204,37 @@ function TimerView() {
           displayText = formatClockTime(remainingSec);
           sublabel = "BREAK REMAINING";
         } else if (current.phase === "awaiting_break") {
-          displayText = "00:00";
-          percent = 100;
-          sublabel = "FOCUS COMPLETE";
+          if (current.autoAdvance) {
+            const waitSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+            const countdown = Math.max(0, 10 - waitSec);
+            displayText = `00:${countdown.toString().padStart(2, "0")}`;
+            percent = Math.min(100, Math.round(((10 - countdown) / 10) * 100));
+            sublabel = `⚡ BREAK IN ${countdown}s (AUTO)`;
+            if (countdown === 0 && !autoTriggeredRef.current) {
+              autoTriggeredRef.current = true;
+              void executeAction("pomodoro_start_break");
+            }
+          } else {
+            displayText = "00:00";
+            percent = 100;
+            sublabel = "FOCUS COMPLETE";
+          }
         } else if (current.phase === "awaiting_round") {
-          displayText = "00:00";
-          percent = 100;
-          sublabel = "BREAK COMPLETE";
+          if (current.autoAdvance) {
+            const waitSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+            const countdown = Math.max(0, 10 - waitSec);
+            displayText = `00:${countdown.toString().padStart(2, "0")}`;
+            percent = Math.min(100, Math.round(((10 - countdown) / 10) * 100));
+            sublabel = `⚡ ROUND ${current.round} IN ${countdown}s`;
+            if (countdown === 0 && !autoTriggeredRef.current) {
+              autoTriggeredRef.current = true;
+              void executeAction("pomodoro_next_round");
+            }
+          } else {
+            displayText = "00:00";
+            percent = 100;
+            sublabel = "BREAK COMPLETE";
+          }
         } else {
           // Work phase
           const targetSec = current.workMins * 60;
@@ -445,7 +476,7 @@ function TimerView() {
               disabled={isOperating}
               onClick={() => executeAction("pomodoro_start_break")}
             >
-              ☕ Start {active.breakMins}m Break
+              ☕ {active.autoAdvance ? "Start Break Now" : `Start ${active.breakMins}m Break`}
             </button>
             <button
               className="btn btn-secondary"
@@ -462,7 +493,7 @@ function TimerView() {
               disabled={isOperating}
               onClick={() => executeAction("pomodoro_next_round")}
             >
-              ▶️ Start Round {active.round}
+              ▶️ {active.autoAdvance ? `Start Round ${active.round} Now` : `Start Round ${active.round}`}
             </button>
             <button
               className="btn btn-danger"
