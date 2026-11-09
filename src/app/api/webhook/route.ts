@@ -958,7 +958,7 @@ async function doStartActiveTimer(
   if (webAppUrl) {
     void setChatMenuButton(chatId, {
       type: "web_app",
-      text: "⚡ Open Stopwatch",
+      text: "⏱️",
       web_app: { url: webAppUrl },
     });
   }
