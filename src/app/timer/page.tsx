@@ -274,12 +274,12 @@ function TimerView() {
     if (!chatId) return;
     fetchActiveTimer(chatId);
 
-    // Sync in background every 8s
+    // Fast-sync every 3s so actions taken in Telegram chat reflect near-instantly in Mini App
     const timer = setInterval(() => {
       fetchActiveTimer(chatId);
-    }, 8000);
+    }, 3000);
 
-    // Fast-sync whenever user returns to the tab/app
+    // Instant-sync the exact millisecond user returns to the tab/app
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         fetchActiveTimer(chatId);
@@ -292,6 +292,22 @@ function TimerView() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [chatId, fetchActiveTimer]);
+
+  // Sync background audio and lock screen player with chat pause/resume actions
+  useEffect(() => {
+    if (!active || !lockScreenActive) return;
+    if (active.isPaused) {
+      audioRef.current?.pause();
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "paused";
+      }
+    } else {
+      audioRef.current?.play().catch(() => {});
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "playing";
+      }
+    }
+  }, [active?.isPaused, lockScreenActive]);
 
   // Update Android Lock Screen Media Session Controls & PositionState
   const updateMediaSessionState = useCallback((current: ActiveData, forceSyncPosition = false) => {
