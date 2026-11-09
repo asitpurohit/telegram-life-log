@@ -238,9 +238,11 @@ function TimerView() {
       const tg = window.Telegram?.WebApp;
       if (tg) {
         tg.ready();
-        if (tg.platform && tg.platform !== "unknown") {
-          setIsInsideTelegram(true);
-        }
+        const isTg = Boolean(
+          (tg.initData && tg.initData.length > 0) ||
+          (tg.platform && tg.platform !== "unknown")
+        );
+        setIsInsideTelegram(isTg);
       }
     } catch {}
 
@@ -726,9 +728,8 @@ function TimerView() {
     } catch {}
   };
 
-  const handleOpenInBrowser = () => {
+  const handleOpenInBrowser = useCallback(() => {
     triggerHaptic("light");
-    initMediaSession();
     const targetUrl = chatId
       ? `${window.location.origin}/timer?chatId=${encodeURIComponent(chatId)}`
       : window.location.href;
@@ -737,54 +738,7 @@ function TimerView() {
     } else {
       window.open(targetUrl, "_blank");
     }
-  };
-
-  if (isInsideTelegram) {
-    return (
-      <div className="empty-state" style={{ padding: "2.5rem 1.5rem", textAlign: "center" }}>
-        <div style={{ fontSize: "3.5rem", marginBottom: "1rem" }}>⏱️</div>
-        <h2 style={{ fontSize: "1.4rem", fontWeight: 700, marginBottom: "0.5rem" }}>
-          Live Stopwatch
-        </h2>
-        <p style={{ color: "var(--hint-color)", fontSize: "0.9rem", marginBottom: "1.75rem", maxWidth: 280 }}>
-          Launch in Google Chrome for the live ticking lock screen player.
-        </p>
-        <button
-          onClick={() => {
-            const currentUrl = window.location.href;
-            if (window.Telegram?.WebApp?.openLink) {
-              window.Telegram.WebApp.openLink(currentUrl, { try_instant_view: false });
-              setTimeout(() => {
-                try {
-                  window.Telegram?.WebApp?.close();
-                } catch {}
-              }, 250);
-            }
-          }}
-          className="btn btn-primary"
-          style={{
-            maxWidth: 260,
-            width: "100%",
-            height: 52,
-            fontSize: "1rem",
-            fontWeight: 700,
-            borderRadius: "9999px",
-            background: "#10b981",
-            color: "#ffffff",
-            border: "none",
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "0.5rem",
-            boxShadow: "0 4px 14px rgba(16, 185, 129, 0.4)",
-          }}
-        >
-          <span>🚀 Open in Google Chrome</span>
-        </button>
-      </div>
-    );
-  }
+  }, [chatId]);
 
   if (loading) {
     return (
@@ -937,19 +891,21 @@ function TimerView() {
         <div
           className="details-col"
           style={{ textAlign: "right", cursor: "pointer" }}
-          onClick={() => {
-            void initMediaSession();
-          }}
+          onClick={isInsideTelegram ? handleOpenInBrowser : () => void initMediaSession()}
         >
           <span className="details-label">Lock Screen</span>
           <span
             className="details-val"
             style={{
               fontSize: "0.85rem",
-              color: lockScreenActive ? "var(--accent-color)" : "var(--hint-color)",
+              color: lockScreenActive ? "var(--accent-color)" : isInsideTelegram ? "#34d399" : "var(--hint-color)",
             }}
           >
-            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap to link"}
+            {isInsideTelegram
+              ? "🚀 Open in Chrome ↗"
+              : lockScreenActive
+              ? "🟢 Active on Lock Screen"
+              : "📱 Tap to activate"}
           </span>
         </div>
       </section>
@@ -961,11 +917,42 @@ function TimerView() {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: "0.4rem",
+          gap: "0.45rem",
           textAlign: "center",
           width: "100%",
         }}
       >
+        {isInsideTelegram && (
+          <div
+            style={{
+              margin: "0.5rem 0",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "0.35rem",
+              width: "100%",
+            }}
+          >
+            <button
+              onClick={handleOpenInBrowser}
+              className="btn-chrome-pill"
+              type="button"
+            >
+              <span>🚀 Open in Chrome for Lock Screen</span>
+              <span style={{ fontSize: "0.8rem", opacity: 0.75 }}>↗</span>
+            </button>
+            <span
+              style={{
+                fontSize: "0.75rem",
+                color: "var(--hint-color)",
+                opacity: 0.75,
+              }}
+            >
+              Chrome keeps the live ticker running on your phone lock screen
+            </span>
+          </div>
+        )}
+
         <div
           style={{
             fontSize: "0.82rem",
@@ -974,18 +961,20 @@ function TimerView() {
             letterSpacing: "0.02em",
           }}
         >
-          💬 Control pause, resume & stop in Telegram chat
+          💬 Control pause, resume &amp; stop in Telegram chat
         </div>
 
-        <div
-          style={{
-            fontSize: "0.75rem",
-            color: "var(--hint-color)",
-            opacity: 0.6,
-          }}
-        >
-          🔒 Lock your phone anytime to view on lock screen
-        </div>
+        {!isInsideTelegram && (
+          <div
+            style={{
+              fontSize: "0.75rem",
+              color: "var(--hint-color)",
+              opacity: 0.65,
+            }}
+          >
+            🔒 Keep this tab open &amp; lock your phone to view on lock screen
+          </div>
+        )}
       </footer>
     </div>
   );
