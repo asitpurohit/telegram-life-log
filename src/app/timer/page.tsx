@@ -136,6 +136,7 @@ function TimerView() {
   const [isOperating, setIsOperating] = useState(false);
   const [stoppedSuccess, setStoppedSuccess] = useState(false);
   const [lockScreenActive, setLockScreenActive] = useState<boolean>(false);
+  const [isInsideTelegram, setIsInsideTelegram] = useState(false);
   const [flashInfo, setFlashInfo] = useState<{
     type: "milestone" | "celebration" | "alarm";
     text: string;
@@ -231,21 +232,14 @@ function TimerView() {
     autoTriggeredRef.current = false;
   }, [active?.phase, active?.round]);
 
-  // Initialize Telegram Web App SDK, auto-bounce to Chrome if in Mini App container, & detect chatId
+  // Initialize Telegram Web App SDK & detect container
   useEffect(() => {
     try {
       const tg = window.Telegram?.WebApp;
       if (tg) {
         tg.ready();
-        // If opened inside Telegram in-app client, instantly hand off to external Google Chrome browser
-        if (typeof tg.openLink === "function" && tg.platform && tg.platform !== "unknown") {
-          tg.openLink(window.location.href, { try_instant_view: false });
-          setTimeout(() => {
-            try {
-              tg.close();
-            } catch {}
-          }, 150);
-          return;
+        if (tg.platform && tg.platform !== "unknown") {
+          setIsInsideTelegram(true);
         }
       }
     } catch {}
@@ -744,6 +738,53 @@ function TimerView() {
       window.open(targetUrl, "_blank");
     }
   };
+
+  if (isInsideTelegram) {
+    return (
+      <div className="empty-state" style={{ padding: "2.5rem 1.5rem", textAlign: "center" }}>
+        <div style={{ fontSize: "3.5rem", marginBottom: "1rem" }}>⏱️</div>
+        <h2 style={{ fontSize: "1.4rem", fontWeight: 700, marginBottom: "0.5rem" }}>
+          Live Stopwatch
+        </h2>
+        <p style={{ color: "var(--hint-color)", fontSize: "0.9rem", marginBottom: "1.75rem", maxWidth: 280 }}>
+          Launch in Google Chrome for the live ticking lock screen player.
+        </p>
+        <button
+          onClick={() => {
+            const currentUrl = window.location.href;
+            if (window.Telegram?.WebApp?.openLink) {
+              window.Telegram.WebApp.openLink(currentUrl, { try_instant_view: false });
+              setTimeout(() => {
+                try {
+                  window.Telegram?.WebApp?.close();
+                } catch {}
+              }, 250);
+            }
+          }}
+          className="btn btn-primary"
+          style={{
+            maxWidth: 260,
+            width: "100%",
+            height: 52,
+            fontSize: "1rem",
+            fontWeight: 700,
+            borderRadius: "9999px",
+            background: "#10b981",
+            color: "#ffffff",
+            border: "none",
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "0.5rem",
+            boxShadow: "0 4px 14px rgba(16, 185, 129, 0.4)",
+          }}
+        >
+          <span>🚀 Open in Google Chrome</span>
+        </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
