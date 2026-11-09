@@ -103,10 +103,12 @@ function TimerView() {
   const [loading, setLoading] = useState(true);
   const [isOperating, setIsOperating] = useState(false);
   const [stoppedSuccess, setStoppedSuccess] = useState(false);
+  const [lockScreenActive, setLockScreenActive] = useState<boolean>(false);
 
   const progressRef = useRef<HTMLProgressElement | null>(null);
   const digitsRef = useRef<HTMLDivElement | null>(null);
   const sublabelRef = useRef<HTMLDivElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const autoTriggeredRef = useRef<boolean>(false);
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
@@ -271,6 +273,27 @@ function TimerView() {
         progressRef.current.style.setProperty("--value", String(percent));
       }
 
+      // Update Android Lock Screen Media Session Controls
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator && lockScreenActive) {
+        const titleStr = `${displayText} — ${current.taskName}`;
+        const artistStr = current.isPaused
+          ? "⏸ Paused • Telegram Life Log"
+          : current.isPomodoro
+          ? `${sublabel} • Telegram Life Log`
+          : "⏱️ Running • Telegram Life Log";
+
+        if (navigator.mediaSession.metadata?.title !== titleStr) {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: titleStr,
+            artist: artistStr,
+            album: current.projectName ? `📦 ${current.projectName}` : "Telegram Life Log",
+          });
+          try {
+            navigator.mediaSession.playbackState = current.isPaused ? "paused" : "playing";
+          } catch {}
+        }
+      }
+
       // Play soft sound chime when a Pomodoro countdown hits exactly 0
       if (
         current.isPomodoro &&
@@ -289,10 +312,10 @@ function TimerView() {
 
     animFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animFrame);
-  }, [active]);
+  }, [active, lockScreenActive]);
 
   // Action dispatcher
-  const executeAction = async (action: string) => {
+  const executeAction = useCallback(async (action: string) => {
     if (!chatId || isOperating) return;
     setIsOperating(true);
     triggerHaptic("medium");
@@ -309,6 +332,12 @@ function TimerView() {
         if (action === "stop") {
           setStoppedSuccess(true);
           triggerHaptic("heavy");
+          if (audioRef.current) {
+            audioRef.current.pause();
+          }
+          if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "none";
+          }
           setTimeout(() => {
             try {
               window.Telegram?.WebApp?.close();
@@ -323,7 +352,71 @@ function TimerView() {
     } finally {
       setIsOperating(false);
     }
-  };
+  }, [chatId, isOperating, fetchActiveTimer]);
+
+  // Lock Screen Media Session initialization
+  const initMediaSession = useCallback(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    if (!audioRef.current) {
+      const audio = new Audio("/silent.wav");
+      audio.loop = true;
+      audioRef.current = audio;
+    }
+
+    const audio = audioRef.current;
+    audio.play().then(() => {
+      setLockScreenActive(true);
+      navigator.mediaSession.playbackState = "playing";
+    }).catch(() => {
+      // Browser autoplay policy might require user click/touch
+    });
+
+    try {
+      navigator.mediaSession.setActionHandler("play", () => {
+        executeAction("resume");
+        audio.play().catch(() => {});
+      });
+
+      navigator.mediaSession.setActionHandler("pause", () => {
+        executeAction("pause");
+        audio.pause();
+      });
+
+      navigator.mediaSession.setActionHandler("stop", () => {
+        executeAction("stop");
+      });
+
+      navigator.mediaSession.setActionHandler("nexttrack", () => {
+        const cur = activeRef.current;
+        if (cur?.isPomodoro) {
+          if (cur.phase === "break" || cur.phase === "awaiting_break") {
+            executeAction("pomodoro_skip_break");
+          } else if (cur.phase === "awaiting_round") {
+            executeAction("pomodoro_next_round");
+          }
+        }
+      });
+    } catch {}
+  }, [executeAction]);
+
+  useEffect(() => {
+    const handleGesture = () => {
+      initMediaSession();
+    };
+    window.addEventListener("touchstart", handleGesture, { once: true });
+    window.addEventListener("click", handleGesture, { once: true });
+
+    initMediaSession();
+
+    return () => {
+      window.removeEventListener("touchstart", handleGesture);
+      window.removeEventListener("click", handleGesture);
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+    };
+  }, [initMediaSession]);
 
   const handleClose = () => {
     try {
@@ -452,19 +545,18 @@ function TimerView() {
             })}
           </span>
         </div>
-        {isPomodoro ? (
-          <div className="details-col" style={{ textAlign: "right" }}>
-            <span className="details-label">Settings</span>
-            <span className="details-val">
-              {active.workMins}m focus / {active.breakMins}m rest
-            </span>
-          </div>
-        ) : (
-          <div className="details-col" style={{ textAlign: "right" }}>
-            <span className="details-label">Sync</span>
-            <span className="details-val">60 FPS Live</span>
-          </div>
-        )}
+        <div className="details-col" style={{ textAlign: "right" }}>
+          <span className="details-label">Lock Screen Controls</span>
+          <span
+            className="details-val"
+            style={{
+              fontSize: "0.85rem",
+              color: lockScreenActive ? "var(--accent-color)" : "var(--hint-color)",
+            }}
+          >
+            {lockScreenActive ? "🟢 Active on Lock Screen" : "📱 Tap screen to link"}
+          </span>
+        </div>
       </section>
 
       {/* Action Buttons */}
