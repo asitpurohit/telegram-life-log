@@ -20,9 +20,11 @@ export async function GET(req: NextRequest) {
   try {
     await recordCronHeartbeat("tick");
     await ensureSystemTasks();
-    await refreshRunningTimerMessages();
-    await checkAndSendIdleNudges();
-    const reminders = await sendDueReminders();
+    const [, , reminders] = await Promise.all([
+      refreshRunningTimerMessages({ precisionWait: true }),
+      checkAndSendIdleNudges(),
+      sendDueReminders(),
+    ]);
     return NextResponse.json({ status: "ok", reminders });
   } catch (err: any) {
     console.error("Cron tick error:", err);

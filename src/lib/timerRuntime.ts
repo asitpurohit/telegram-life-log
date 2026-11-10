@@ -385,114 +385,353 @@ async function sendTripleChimeAlert(
 // Called periodically by the local polling runner (5s) and by the Vercel cron
 // (/api/tick, 1 min) to make running timers tick, manage Pomodoro intervals,
 // and send "still running" notifications every 5 minutes.
-export async function refreshRunningTimerMessages(): Promise<void> {
+export async function refreshRunningTimerMessages(options?: { precisionWait?: boolean }): Promise<void> {
+  const precisionWait = options?.precisionWait ?? false;
+  const cronStartMs = Date.now();
+  const MAX_CRON_LIFETIME_MS = 55000;
+
   const [timers, appUrl] = await Promise.all([
     getAllActiveTimers(),
     getSavedAppUrl(),
   ]);
 
-  for (const timer of timers) {
-    const webAppUrl = appUrl ? `${appUrl}/timer?chatId=${timer.chat_id}` : null;
-    const [messageId, pause, beepEnabled] = await Promise.all([
-      getTimerMessage(timer.chat_id),
-      getPauseState(timer.chat_id),
-      getTimerBeepPreference(timer.chat_id),
-    ]);
-    const now = Date.now();
+  await Promise.all(
+    timers.map(async (timer) => {
+      const webAppUrl = appUrl ? `${appUrl}/timer?chatId=${timer.chat_id}` : null;
+      const [messageId, pause, beepEnabled] = await Promise.all([
+        getTimerMessage(timer.chat_id),
+        getPauseState(timer.chat_id),
+        getTimerBeepPreference(timer.chat_id),
+      ]);
+      let now = Date.now();
 
-    // --- Pomodoro Automatic Transitions ---
-    let pomodoroInfo: PomodoroInfo | null = null;
-    if (timer.is_pomodoro) {
-      const workMins = timer.pomodoro_work_mins || 25;
-      const breakMins = timer.pomodoro_break_mins || 5;
-      const round = timer.pomodoro_round || 1;
-      const phase = timer.pomodoro_phase || "work";
-      const phaseStartMs = new Date(timer.phase_started_at || timer.started_at).getTime();
-      const autoAdvance = await getActiveTimerAutoAdvance(timer.chat_id, timer);
+      // --- Pomodoro Automatic Transitions ---
+      let pomodoroInfo: PomodoroInfo | null = null;
+      if (timer.is_pomodoro) {
+        const workMins = timer.pomodoro_work_mins || 25;
+        const breakMins = timer.pomodoro_break_mins || 5;
+        const round = timer.pomodoro_round || 1;
+        const phase = timer.pomodoro_phase || "work";
+        const phaseStartMs = new Date(timer.phase_started_at || timer.started_at).getTime();
+        const autoAdvance = await getActiveTimerAutoAdvance(timer.chat_id, timer);
 
-      pomodoroInfo = {
-        isPomodoro: true,
-        workMins,
-        breakMins,
-        round,
-        phase,
-        phaseStartedAtIso: timer.phase_started_at || timer.started_at,
-        autoAdvance,
-      };
+        pomodoroInfo = {
+          isPomodoro: true,
+          workMins,
+          breakMins,
+          round,
+          phase,
+          phaseStartedAtIso: timer.phase_started_at || timer.started_at,
+          autoAdvance,
+        };
 
-      // 1) Work phase completed -> auto-pause & prompt to start break
-      if (phase === "work" && !pause.pausedAt) {
-        const workedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
-        if (workedSec >= workMins * 60) {
-          const prevNudge = await getNudgeState(timer.chat_id);
-          if (prevNudge.messageId) {
-            await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
+        // 1) Work phase completed -> auto-pause & prompt to start break
+        if (phase === "work" && !pause.pausedAt) {
+          let workedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+          const targetWorkSec = workMins * 60;
+          const remainingWorkSec = targetWorkSec - workedSec;
+
+          // Precision wait: if within 50s of completion, sleep until exact second so alert arrives with ZERO delay!
+          const availableWaitMs = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+          if (
+            precisionWait &&
+            remainingWorkSec > 0 &&
+            remainingWorkSec <= 50 &&
+            remainingWorkSec * 1000 <= availableWaitMs
+          ) {
+            if (messageId) {
+              const preView = buildTimerView(
+                timer.task_name,
+                timer.started_at,
+                0,
+                pause.pausedSeconds,
+                timer.project_name,
+                null,
+                timer.todo_title,
+                pomodoroInfo,
+                null,
+                webAppUrl,
+                beepEnabled
+              );
+              await editTelegramMessage(timer.chat_id, messageId, preView.text, preView.keyboard).catch(() => {});
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, remainingWorkSec * 1000));
+
+            const [liveCheck, livePause] = await Promise.all([
+              getActiveTimer(timer.chat_id),
+              getPauseState(timer.chat_id),
+            ]);
+            if (!liveCheck || liveCheck.pomodoro_phase !== "work" || livePause.pausedAt) {
+              return;
+            }
+            now = Date.now();
+            workedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
           }
-          await clearNudgeState(timer.chat_id);
 
-          await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: pause.pausedSeconds });
-          await updateActiveTimer(timer.chat_id, {
-            pomodoro_phase: "awaiting_break",
-            phase_started_at: new Date(now).toISOString(),
-          });
+          if (workedSec >= targetWorkSec) {
+            const prevNudge = await getNudgeState(timer.chat_id);
+            if (prevNudge.messageId) {
+              await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
+            }
+            await clearNudgeState(timer.chat_id);
 
-          pomodoroInfo = {
-            ...pomodoroInfo,
-            phase: "awaiting_break",
-            phaseStartedAtIso: new Date(now).toISOString(),
-          };
+            await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: pause.pausedSeconds });
+            await updateActiveTimer(timer.chat_id, {
+              pomodoro_phase: "awaiting_break",
+              phase_started_at: new Date(now).toISOString(),
+            });
 
-          const updatedView = buildTimerView(
-            timer.task_name,
-            timer.started_at,
-            now,
-            pause.pausedSeconds,
-            timer.project_name,
-            null,
-            timer.todo_title,
-            pomodoroInfo,
-            null,
-            webAppUrl,
-            beepEnabled
-          );
+            pomodoroInfo = {
+              ...pomodoroInfo,
+              phase: "awaiting_break",
+              phaseStartedAtIso: new Date(now).toISOString(),
+            };
 
-          if (messageId) {
-            await deleteTelegramMessage(timer.chat_id, messageId);
-          }
-
-          let finalMsgId: number | undefined;
-          if (beepEnabled) {
-            finalMsgId = await sendTripleChimeAlert(
-              timer.chat_id,
-              "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
-              "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
-              updatedView.text,
-              updatedView.keyboard
+            const updatedView = buildTimerView(
+              timer.task_name,
+              timer.started_at,
+              now,
+              pause.pausedSeconds,
+              timer.project_name,
+              null,
+              timer.todo_title,
+              pomodoroInfo,
+              null,
+              webAppUrl,
+              beepEnabled
             );
-          } else {
-            const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
-            finalMsgId = sent?.result?.message_id;
+
+            if (messageId) {
+              await deleteTelegramMessage(timer.chat_id, messageId);
+            }
+
+            let finalMsgId: number | undefined;
+            if (beepEnabled) {
+              finalMsgId = await sendTripleChimeAlert(
+                timer.chat_id,
+                "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
+                "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
+                updatedView.text,
+                updatedView.keyboard
+              );
+            } else {
+              const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
+              finalMsgId = sent?.result?.message_id;
+            }
+
+            if (finalMsgId) {
+              await trackTimerMessage(timer.chat_id, finalMsgId);
+            }
+
+            // If auto-advance is enabled, wait 10 seconds then automatically start the break!
+            if (autoAdvance) {
+              const remainingForAuto = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+              if (remainingForAuto >= 11000) {
+                await new Promise((resolve) => setTimeout(resolve, 10000));
+                const liveTimer = await getActiveTimer(timer.chat_id);
+                if (liveTimer && liveTimer.pomodoro_phase === "awaiting_break") {
+                  const breakStartIso = new Date().toISOString();
+                  await updateActiveTimer(timer.chat_id, {
+                    pomodoro_phase: "break",
+                    phase_started_at: breakStartIso,
+                  });
+                  const breakInfo: PomodoroInfo = {
+                    ...pomodoroInfo,
+                    phase: "break",
+                    phaseStartedAtIso: breakStartIso,
+                  };
+                  const breakView = buildTimerView(
+                    timer.task_name,
+                    timer.started_at,
+                    now,
+                    pause.pausedSeconds,
+                    timer.project_name,
+                    null,
+                    timer.todo_title,
+                    breakInfo,
+                    null,
+                    webAppUrl,
+                    beepEnabled
+                  );
+                  if (finalMsgId) {
+                    await editTelegramMessage(timer.chat_id, finalMsgId, breakView.text, breakView.keyboard);
+                  }
+                }
+              }
+            }
+            return;
+          }
+        } else if (phase === "break") {
+          // 2) Break phase completed -> sound alarm & prompt for next round
+          let breakElapsedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+          const targetBreakSec = breakMins * 60;
+          const remainingBreakSec = targetBreakSec - breakElapsedSec;
+
+          // Precision wait: if within 50s of break completion, sleep until exact second so alert arrives with ZERO delay!
+          const availableWaitMs = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+          if (
+            precisionWait &&
+            remainingBreakSec > 0 &&
+            remainingBreakSec <= 50 &&
+            remainingBreakSec * 1000 <= availableWaitMs
+          ) {
+            if (messageId) {
+              const preView = buildTimerView(
+                timer.task_name,
+                timer.started_at,
+                now,
+                pause.pausedSeconds,
+                timer.project_name,
+                null,
+                timer.todo_title,
+                pomodoroInfo,
+                null,
+                webAppUrl,
+                beepEnabled
+              );
+              await editTelegramMessage(timer.chat_id, messageId, preView.text, preView.keyboard).catch(() => {});
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, remainingBreakSec * 1000));
+
+            const liveCheck = await getActiveTimer(timer.chat_id);
+            if (!liveCheck || liveCheck.pomodoro_phase !== "break") {
+              return;
+            }
+            now = Date.now();
+            breakElapsedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
           }
 
-          if (finalMsgId) {
-            await trackTimerMessage(timer.chat_id, finalMsgId);
+          if (breakElapsedSec >= targetBreakSec) {
+            const prevNudge = await getNudgeState(timer.chat_id);
+            if (prevNudge.messageId) {
+              await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
+            }
+            await clearNudgeState(timer.chat_id);
+
+            const newPausedSeconds = pause.pausedSeconds + breakElapsedSec;
+            await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: newPausedSeconds });
+            const nextRound = round + 1;
+            await updateActiveTimer(timer.chat_id, {
+              pomodoro_phase: "awaiting_round",
+              pomodoro_round: nextRound,
+              phase_started_at: new Date(now).toISOString(),
+            });
+
+            pomodoroInfo = {
+              ...pomodoroInfo,
+              round: nextRound,
+              phase: "awaiting_round",
+              phaseStartedAtIso: new Date(now).toISOString(),
+            };
+
+            const updatedView = buildTimerView(
+              timer.task_name,
+              timer.started_at,
+              now,
+              newPausedSeconds,
+              timer.project_name,
+              null,
+              timer.todo_title,
+              pomodoroInfo,
+              null,
+              webAppUrl,
+              beepEnabled
+            );
+
+            if (messageId) {
+              await deleteTelegramMessage(timer.chat_id, messageId);
+            }
+
+            let finalMsgId: number | undefined;
+            if (beepEnabled) {
+              finalMsgId = await sendTripleChimeAlert(
+                timer.chat_id,
+                "⏰ <b>BEEP!</b> (Break Ending 1/3)",
+                "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
+                updatedView.text,
+                updatedView.keyboard
+              );
+            } else {
+              const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
+              finalMsgId = sent?.result?.message_id;
+            }
+
+            if (finalMsgId) {
+              await trackTimerMessage(timer.chat_id, finalMsgId);
+            }
+
+            // If auto-advance is enabled, wait 10 seconds then automatically start the next work round!
+            if (autoAdvance) {
+              const remainingForAuto = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+              if (remainingForAuto >= 11000) {
+                await new Promise((resolve) => setTimeout(resolve, 10000));
+                const liveTimer = await getActiveTimer(timer.chat_id);
+                if (liveTimer && liveTimer.pomodoro_phase === "awaiting_round") {
+                  const workStartIso = new Date().toISOString();
+                  await Promise.all([
+                    setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: newPausedSeconds }),
+                    updateActiveTimer(timer.chat_id, {
+                      pomodoro_phase: "work",
+                      phase_started_at: workStartIso,
+                      pomodoro_round: nextRound,
+                    }),
+                  ]);
+                  const workInfo: PomodoroInfo = {
+                    ...pomodoroInfo,
+                    round: nextRound,
+                    phase: "work",
+                    phaseStartedAtIso: workStartIso,
+                  };
+                  const workView = buildTimerView(
+                    timer.task_name,
+                    timer.started_at,
+                    0,
+                    newPausedSeconds,
+                    timer.project_name,
+                    null,
+                    timer.todo_title,
+                    workInfo,
+                    null,
+                    webAppUrl,
+                    beepEnabled
+                  );
+                  if (finalMsgId) {
+                    await editTelegramMessage(timer.chat_id, finalMsgId, workView.text, workView.keyboard);
+                  }
+                }
+              }
+            }
+            return;
+          }
+        } else if (phase === "awaiting_break" && autoAdvance) {
+          let waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+          const remainingWaitSec = 10 - waitingSec;
+          const availableWaitMs = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+          if (
+            precisionWait &&
+            remainingWaitSec > 0 &&
+            remainingWaitSec <= 10 &&
+            remainingWaitSec * 1000 <= availableWaitMs
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, remainingWaitSec * 1000));
+            now = Date.now();
+            waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
           }
 
-          // If auto-advance is enabled, wait 10 seconds then automatically start the break!
-          if (autoAdvance) {
-            await new Promise((resolve) => setTimeout(resolve, 10000));
-            const liveTimer = await getActiveTimer(timer.chat_id);
-            if (liveTimer && liveTimer.pomodoro_phase === "awaiting_break") {
-              const breakStartIso = new Date().toISOString();
-              await updateActiveTimer(timer.chat_id, {
-                pomodoro_phase: "break",
-                phase_started_at: breakStartIso,
-              });
-              const breakInfo: PomodoroInfo = {
-                ...pomodoroInfo,
-                phase: "break",
-                phaseStartedAtIso: breakStartIso,
-              };
+          if (waitingSec >= 10) {
+            const breakStartIso = new Date().toISOString();
+            await updateActiveTimer(timer.chat_id, {
+              pomodoro_phase: "break",
+              phase_started_at: breakStartIso,
+            });
+            pomodoroInfo = {
+              ...pomodoroInfo,
+              phase: "break",
+              phaseStartedAtIso: breakStartIso,
+            };
+            if (messageId) {
               const breakView = buildTimerView(
                 timer.task_name,
                 timer.started_at,
@@ -501,155 +740,64 @@ export async function refreshRunningTimerMessages(): Promise<void> {
                 timer.project_name,
                 null,
                 timer.todo_title,
-                breakInfo,
+                pomodoroInfo,
                 null,
                 webAppUrl,
                 beepEnabled
               );
-              if (finalMsgId) {
-                await editTelegramMessage(timer.chat_id, finalMsgId, breakView.text, breakView.keyboard);
-              }
+              await editTelegramMessage(timer.chat_id, messageId, breakView.text, breakView.keyboard).catch(() => {});
             }
+            return;
           }
-          continue;
-        }
-      } else if (phase === "break") {
-        // 2) Break phase completed -> sound alarm & prompt for next round
-        const breakElapsedSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
-        if (breakElapsedSec >= breakMins * 60) {
-          const prevNudge = await getNudgeState(timer.chat_id);
-          if (prevNudge.messageId) {
-            await deleteTelegramMessage(timer.chat_id, prevNudge.messageId);
-          }
-          await clearNudgeState(timer.chat_id);
-
-          const newPausedSeconds = pause.pausedSeconds + breakElapsedSec;
-          await setPauseState(timer.chat_id, { pausedAt: now, pausedSeconds: newPausedSeconds });
-          const nextRound = round + 1;
-          await updateActiveTimer(timer.chat_id, {
-            pomodoro_phase: "awaiting_round",
-            pomodoro_round: nextRound,
-            phase_started_at: new Date(now).toISOString(),
-          });
-
-          pomodoroInfo = {
-            ...pomodoroInfo,
-            round: nextRound,
-            phase: "awaiting_round",
-            phaseStartedAtIso: new Date(now).toISOString(),
-          };
-
-          const updatedView = buildTimerView(
-            timer.task_name,
-            timer.started_at,
-            now,
-            newPausedSeconds,
-            timer.project_name,
-            null,
-            timer.todo_title,
-            pomodoroInfo,
-            null,
-            webAppUrl,
-            beepEnabled
-          );
-
-          if (messageId) {
-            await deleteTelegramMessage(timer.chat_id, messageId);
+        } else if (phase === "awaiting_round" && autoAdvance) {
+          let waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
+          const remainingWaitSec = 10 - waitingSec;
+          const availableWaitMs = MAX_CRON_LIFETIME_MS - (Date.now() - cronStartMs);
+          if (
+            precisionWait &&
+            remainingWaitSec > 0 &&
+            remainingWaitSec <= 10 &&
+            remainingWaitSec * 1000 <= availableWaitMs
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, remainingWaitSec * 1000));
+            now = Date.now();
+            waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
           }
 
-          let finalMsgId: number | undefined;
-          if (beepEnabled) {
-            finalMsgId = await sendTripleChimeAlert(
-              timer.chat_id,
-              "⏰ <b>BEEP!</b> (Break Ending 1/3)",
-              "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
-              updatedView.text,
-              updatedView.keyboard
-            );
-          } else {
-            const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
-            finalMsgId = sent?.result?.message_id;
-          }
-
-          if (finalMsgId) {
-            await trackTimerMessage(timer.chat_id, finalMsgId);
-          }
-
-          // If auto-advance is enabled, wait 10 seconds then automatically start the next work round!
-          if (autoAdvance) {
-            await new Promise((resolve) => setTimeout(resolve, 10000));
-            const liveTimer = await getActiveTimer(timer.chat_id);
-            if (liveTimer && liveTimer.pomodoro_phase === "awaiting_round") {
-              const workStartIso = new Date().toISOString();
-              await Promise.all([
-                setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: newPausedSeconds }),
-                updateActiveTimer(timer.chat_id, {
-                  pomodoro_phase: "work",
-                  phase_started_at: workStartIso,
-                  pomodoro_round: nextRound,
-                }),
-              ]);
-              const workInfo: PomodoroInfo = {
-                ...pomodoroInfo,
-                round: nextRound,
-                phase: "work",
-                phaseStartedAtIso: workStartIso,
-              };
+          if (waitingSec >= 10) {
+            const workStartIso = new Date().toISOString();
+            await Promise.all([
+              setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: pause.pausedSeconds }),
+              updateActiveTimer(timer.chat_id, {
+                pomodoro_phase: "work",
+                phase_started_at: workStartIso,
+              }),
+            ]);
+            pomodoroInfo = {
+              ...pomodoroInfo,
+              phase: "work",
+              phaseStartedAtIso: workStartIso,
+            };
+            if (messageId) {
               const workView = buildTimerView(
                 timer.task_name,
                 timer.started_at,
                 0,
-                newPausedSeconds,
+                pause.pausedSeconds,
                 timer.project_name,
                 null,
                 timer.todo_title,
-                workInfo,
+                pomodoroInfo,
                 null,
                 webAppUrl,
                 beepEnabled
               );
-              if (finalMsgId) {
-                await editTelegramMessage(timer.chat_id, finalMsgId, workView.text, workView.keyboard);
-              }
+              await editTelegramMessage(timer.chat_id, messageId, workView.text, workView.keyboard).catch(() => {});
             }
+            return;
           }
-          continue;
-        }
-      } else if (phase === "awaiting_break" && autoAdvance) {
-        // Resilient auto-pass if previous transition timed out or was interrupted
-        const waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
-        if (waitingSec >= 10) {
-          const breakStartIso = new Date().toISOString();
-          await updateActiveTimer(timer.chat_id, {
-            pomodoro_phase: "break",
-            phase_started_at: breakStartIso,
-          });
-          pomodoroInfo = {
-            ...pomodoroInfo,
-            phase: "break",
-            phaseStartedAtIso: breakStartIso,
-          };
-        }
-      } else if (phase === "awaiting_round" && autoAdvance) {
-        // Resilient auto-pass if previous transition timed out or was interrupted
-        const waitingSec = Math.max(0, Math.floor((now - phaseStartMs) / 1000));
-        if (waitingSec >= 10) {
-          const workStartIso = new Date().toISOString();
-          await Promise.all([
-            setPauseState(timer.chat_id, { pausedAt: null, pausedSeconds: pause.pausedSeconds }),
-            updateActiveTimer(timer.chat_id, {
-              pomodoro_phase: "work",
-              phase_started_at: workStartIso,
-            }),
-          ]);
-          pomodoroInfo = {
-            ...pomodoroInfo,
-            phase: "work",
-            phaseStartedAtIso: workStartIso,
-          };
         }
       }
-    }
 
     // 1) Keep the live timer view fresh
     if (messageId) {
@@ -718,24 +866,24 @@ export async function refreshRunningTimerMessages(): Promise<void> {
           }
         }
       }
-      continue;
+      return;
     }
-    if (pause.pausedAt) continue;
+    if (pause.pausedAt) return;
     if (
       timer.is_pomodoro &&
       (timer.pomodoro_phase === "break" ||
         timer.pomodoro_phase === "awaiting_break" ||
         timer.pomodoro_phase === "awaiting_round")
     ) {
-      continue;
+      return;
     }
 
     // If user has disabled beeps/nudges, stay completely silent
-    if (!beepEnabled) continue;
+    if (!beepEnabled) return;
 
     const nudge = await getNudgeState(timer.chat_id);
     const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;
-    if (now < nextNudgeAt) continue;
+    if (now < nextNudgeAt) return;
 
     // Replace the previous nudge so only one is ever visible
     if (nudge.messageId) {
@@ -766,5 +914,5 @@ export async function refreshRunningTimerMessages(): Promise<void> {
       messageId: sent?.result?.message_id ?? null,
       nextNudgeAt: now + NUDGE_INTERVAL_MS,
     });
-  }
+  }));
 }
