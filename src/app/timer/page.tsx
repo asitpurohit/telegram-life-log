@@ -145,6 +145,12 @@ function getTaskVisualIcon(taskName: string): string {
   return "⏱️";
 }
 
+function truncateNotificationName(name: string, maxLen = 16): string {
+  const chars = Array.from(name.trim());
+  if (chars.length <= maxLen) return name.trim();
+  return chars.slice(0, maxLen - 1).join("").trim() + "…";
+}
+
 function TimerView() {
   const searchParams = useSearchParams();
   const [chatId, setChatId] = useState<string | null>(null);
@@ -167,6 +173,7 @@ function TimerView() {
   const autoTriggeredRef = useRef<boolean>(false);
   const lastMilestoneRef = useRef<number>(0);
   const lastPositionSyncRef = useRef<number>(0);
+  const currentArtworkRef = useRef<string>("");
   const activeRef = useRef<ActiveData | null>(null);
   activeRef.current = active;
 
@@ -360,79 +367,111 @@ function TimerView() {
 
     let durationSec = 3600;
     let positionSec = elapsedSec;
-    let phaseBadge = "Stopwatch";
     let displayText = "00:00";
+    let isBreakPhase = false;
 
     if (current.isPomodoro) {
       if (current.phase === "break") {
+        isBreakPhase = true;
         durationSec = current.breakMins * 60;
         const breakSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
         const remainingSec = Math.max(0, durationSec - breakSec);
         positionSec = Math.min(durationSec, breakSec);
         displayText = formatClockTime(remainingSec);
-        phaseBadge = `☕ Break (R${current.round})`;
       } else if (current.phase === "awaiting_break") {
+        isBreakPhase = false;
         durationSec = 10;
-        positionSec = 10;
-        displayText = "00:00";
-        phaseBadge = "🎉 Focus Done";
+        if (current.autoAdvance) {
+          const waitSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+          const countdown = Math.max(0, 10 - waitSec);
+          positionSec = waitSec;
+          displayText = `00:${countdown.toString().padStart(2, "0")}`;
+        } else {
+          positionSec = 10;
+          displayText = "00:00";
+        }
       } else if (current.phase === "awaiting_round") {
+        isBreakPhase = true;
         durationSec = 10;
-        positionSec = 10;
-        displayText = "00:00";
-        phaseBadge = `🚨 Next R${current.round}`;
+        if (current.autoAdvance) {
+          const waitSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
+          const countdown = Math.max(0, 10 - waitSec);
+          positionSec = waitSec;
+          displayText = `00:${countdown.toString().padStart(2, "0")}`;
+        } else {
+          positionSec = 10;
+          displayText = "00:00";
+        }
       } else {
+        isBreakPhase = false;
         durationSec = current.workMins * 60;
         const workSec = Math.max(0, Math.floor((endMs - phaseStartMs) / 1000));
         const remainingSec = Math.max(0, durationSec - workSec);
         positionSec = Math.min(durationSec, workSec);
         displayText = formatClockTime(remainingSec);
-        phaseBadge = `🍅 Focus (R${current.round})`;
       }
     } else {
       durationSec = Math.max(3600, elapsedSec + 1800);
       positionSec = elapsedSec;
       displayText = formatClockTime(elapsedSec);
-      phaseBadge = "⏱️ Running";
     }
 
-    // Line 1: taskName ONLY. Stable string, does NOT change every second, so Android marquee scrolls fully without resetting!
-    const titleStr = current.taskName;
+    // Exact lock-screen format requested: "Timer name(w/b) : Timer time"
+    // Short string (max 26 chars) so Android notification never overflows or scrolls (stays stationary)
+    const rawName = current.taskName?.trim() || "Timer";
+    const safeName = truncateNotificationName(rawName, 16);
+    const tag = current.isPomodoro ? (isBreakPhase ? "(b)" : "(w)") : "";
+    const prefix = current.isPaused ? "⏸️ " : "";
+    const titleStr = current.isPomodoro
+      ? `${prefix}${safeName}${tag} : ${displayText}`
+      : `${prefix}${safeName} : ${displayText}`;
 
-    // Line 2: Live time + Phase status (e.g. "⏱️ 05:24 • Running" or "🍅 18:42 • Focus (R1)").
-    // Short string, fits on lock screen without marquee scrolling, never contains "Telegram Life Log"!
-    const artistStr = current.isPaused
-      ? `⏸️ ${displayText} (Paused)`
-      : `${displayText} • ${phaseBadge}`;
-
-    // Line 3: Project or Todo if present, else empty string. Never contains "Telegram Life Log"!
-    const albumStr = current.projectName
-      ? `📦 ${current.projectName}`
-      : current.todoTitle
-      ? `🎯 ${current.todoTitle}`
-      : "";
+    // Select dynamic artwork icon: Break (coffee) vs Work (tomato/focus) vs Stopwatch
+    const iconType = current.isPomodoro
+      ? isBreakPhase
+        ? "break"
+        : "work"
+      : "default";
 
     const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const icon192 =
+      iconType === "break"
+        ? `${origin}/icon-break-192.png`
+        : iconType === "work"
+        ? `${origin}/icon-work-192.png`
+        : `${origin}/icon-192.png`;
+    const icon512 =
+      iconType === "break"
+        ? `${origin}/icon-break-512.png`
+        : iconType === "work"
+        ? `${origin}/icon-work-512.png`
+        : `${origin}/icon-512.png`;
 
-    if (!navigator.mediaSession.metadata) {
+    const needsNewMetadata =
+      !navigator.mediaSession.metadata ||
+      currentArtworkRef.current !== iconType;
+
+    if (needsNewMetadata || !navigator.mediaSession.metadata) {
+      currentArtworkRef.current = iconType;
       navigator.mediaSession.metadata = new MediaMetadata({
         title: titleStr,
-        artist: artistStr,
-        album: albumStr,
+        artist: "",
+        album: "",
         artwork: [
-          { src: `${origin}/icon-192.png`, sizes: "192x192", type: "image/png" },
-          { src: `${origin}/icon-512.png`, sizes: "512x512", type: "image/png" },
+          { src: icon192, sizes: "192x192", type: "image/png" },
+          { src: icon512, sizes: "512x512", type: "image/png" },
         ],
       });
     } else {
-      if (navigator.mediaSession.metadata.title !== titleStr) {
-        navigator.mediaSession.metadata.title = titleStr;
+      const meta = navigator.mediaSession.metadata;
+      if (meta.title !== titleStr) {
+        meta.title = titleStr;
       }
-      if (navigator.mediaSession.metadata.artist !== artistStr) {
-        navigator.mediaSession.metadata.artist = artistStr;
+      if (meta.artist !== "") {
+        meta.artist = "";
       }
-      if (navigator.mediaSession.metadata.album !== albumStr) {
-        navigator.mediaSession.metadata.album = albumStr;
+      if (meta.album !== "") {
+        meta.album = "";
       }
     }
 
