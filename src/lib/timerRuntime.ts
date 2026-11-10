@@ -158,9 +158,7 @@ export function buildTimerView(
       const bar = miniProgressBar(breakPercent, 10);
       const remainingSec = Math.max(0, targetBreakSec - breakElapsedSec);
 
-      const alertPrompt = beepEnabled
-        ? `🔔 <i>Alarm will ring in ${formatDuration(remainingSec)} when break ends.\n(Break time is paused and excluded from study hours).</i>`
-        : `🔕 <i>Break ends in ${formatDuration(remainingSec)} (silent mode).\n(Break time is paused and excluded from study hours).</i>`;
+      const alertPrompt = `🔔 <i>Alarm will ring in ${formatDuration(remainingSec)} when break ends.\n(Break time is paused and excluded from study hours).</i>`;
 
       const text =
         `☕ <b>${taskName}</b> — On Break! (Round ${round} Done 🎉)${projectLine}${taskLine}\n\n` +
@@ -209,8 +207,8 @@ export function buildTimerView(
     const remainingSec = Math.max(0, targetWorkSec - currentPhaseElapsedSec);
 
     const alertPrompt = beepEnabled
-      ? `🔔 <i>Auto-pause for a ${breakMins}m break in ${formatDuration(remainingSec)}.</i>`
-      : `🔕 <i>Auto-pause for a ${breakMins}m break in ${formatDuration(remainingSec)} (silent).</i>`;
+      ? `🔔 <i>5m pings on. Break alarm in ${formatDuration(remainingSec)}.</i>`
+      : `🔕 <i>5m pings off. Break alarm in ${formatDuration(remainingSec)}.</i>`;
 
     const text = isPaused
       ? `🍅 <b>${taskName}</b> — Focus Paused (Round ${round})${projectLine}${taskLine}\n\n` +
@@ -511,19 +509,13 @@ export async function refreshRunningTimerMessages(options?: { precisionWait?: bo
               await deleteTelegramMessage(timer.chat_id, messageId);
             }
 
-            let finalMsgId: number | undefined;
-            if (beepEnabled) {
-              finalMsgId = await sendTripleChimeAlert(
-                timer.chat_id,
-                "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
-                "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
-                updatedView.text,
-                updatedView.keyboard
-              );
-            } else {
-              const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
-              finalMsgId = sent?.result?.message_id;
-            }
+            const finalMsgId = await sendTripleChimeAlert(
+              timer.chat_id,
+              "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
+              "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
+              updatedView.text,
+              updatedView.keyboard
+            );
 
             if (finalMsgId) {
               await trackTimerMessage(timer.chat_id, finalMsgId);
@@ -649,19 +641,13 @@ export async function refreshRunningTimerMessages(options?: { precisionWait?: bo
               await deleteTelegramMessage(timer.chat_id, messageId);
             }
 
-            let finalMsgId: number | undefined;
-            if (beepEnabled) {
-              finalMsgId = await sendTripleChimeAlert(
-                timer.chat_id,
-                "⏰ <b>BEEP!</b> (Break Ending 1/3)",
-                "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
-                updatedView.text,
-                updatedView.keyboard
-              );
-            } else {
-              const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
-              finalMsgId = sent?.result?.message_id;
-            }
+            const finalMsgId = await sendTripleChimeAlert(
+              timer.chat_id,
+              "⏰ <b>BEEP!</b> (Break Ending 1/3)",
+              "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
+              updatedView.text,
+              updatedView.keyboard
+            );
 
             if (finalMsgId) {
               await trackTimerMessage(timer.chat_id, finalMsgId);
