@@ -137,7 +137,8 @@ export function buildTimerView(
 
       const text =
         `🎉 <b>${taskName}</b> — Focus Complete! (Round ${round} Done)${projectLine}${taskLine}\n\n` +
-        `⏳ Focus Time: <b>${workMins}m / ${workMins}m</b>  [■■■■■■■■■■] 100%\n` +
+        `⏳ Round ${round}: <b>${workMins}m / ${workMins}m</b>  [■■■■■■■■■■] 100%\n` +
+        `⏱️ Total Focus: <b>${formatDuration(elapsedSeconds)}</b>\n` +
         `🕐 Started: ${startedTime}\n\n` +
         `✨ <b>Great focus!</b> Work is paused.${autoNote}`;
 
@@ -164,6 +165,7 @@ export function buildTimerView(
       const text =
         `☕ <b>${taskName}</b> — On Break! (Round ${round} Done 🎉)${projectLine}${taskLine}\n\n` +
         `⏳ Rest Time: <b>${formatDuration(breakElapsedSec)} / ${formatDuration(targetBreakSec)}</b>  [${bar}]\n` +
+        `⏱️ Total Focus: <b>${formatDuration(elapsedSeconds)}</b>\n` +
         `🕐 Started: ${startedTime}\n\n` +
         alertPrompt;
 
@@ -188,7 +190,8 @@ export function buildTimerView(
       const text =
         `🚨 ⏰ 🔔 <b>BEEP BEEP! Break is Over!</b> 🔔 ⏰ 🚨\n\n` +
         `🍅 <b>${taskName}</b>${projectLine}${taskLine}\n\n` +
-        `You finished <b>${workMins}m focus + ${breakMins}m break</b>.${autoNote}`;
+        `You finished <b>${workMins}m focus + ${breakMins}m break</b>.\n` +
+        `⏱️ Total Focus: <b>${formatDuration(elapsedSeconds)}</b>${autoNote}`;
 
       const keyboard: InlineKeyboard = [
         [{ text: `▶️ Start Round ${round} (${workMins}m)`, callback_data: "pomodoro_next_round" }],
@@ -211,11 +214,13 @@ export function buildTimerView(
 
     const text = isPaused
       ? `🍅 <b>${taskName}</b> — Focus Paused (Round ${round})${projectLine}${taskLine}\n\n` +
-        `⏳ Focus Time: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
+        `⏳ Round ${round}: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
+        `⏱️ Total Focus: <b>${formatDuration(elapsedSeconds)}</b>\n` +
         `🕐 Started: ${startedTime}\n\n` +
         `<i>Focus is paused. Tap Resume to continue.</i>`
       : `🍅 <b>${taskName}</b> — Focus (Round ${round})${projectLine}${taskLine}\n\n` +
-        `⏳ Focus Time: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
+        `⏳ Round ${round}: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
+        `⏱️ Total Focus: <b>${formatDuration(elapsedSeconds)}</b>\n` +
         `🕐 Started: ${startedTime}\n\n` +
         alertPrompt;
 

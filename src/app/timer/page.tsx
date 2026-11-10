@@ -170,6 +170,8 @@ function TimerView() {
   const svgCircleRef = useRef<SVGCircleElement | null>(null);
   const digitsRef = useRef<HTMLDivElement | null>(null);
   const sublabelRef = useRef<HTMLDivElement | null>(null);
+  const totalFocusRef = useRef<HTMLDivElement | null>(null);
+  const totalFocusCardRef = useRef<HTMLSpanElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const autoTriggeredRef = useRef<boolean>(false);
   const lastMilestoneRef = useRef<number>(0);
@@ -601,6 +603,25 @@ function TimerView() {
       if (sublabelRef.current && sublabelRef.current.textContent !== sublabel) {
         sublabelRef.current.textContent = sublabel;
       }
+      if (totalFocusRef.current) {
+        if (current.isPomodoro) {
+          const totalStr = `⏱️ Total: ${formatClockTime(elapsedSec)}`;
+          if (totalFocusRef.current.textContent !== totalStr) {
+            totalFocusRef.current.textContent = totalStr;
+          }
+          if (totalFocusRef.current.style.display !== "block") {
+            totalFocusRef.current.style.display = "block";
+          }
+        } else if (totalFocusRef.current.style.display !== "none") {
+          totalFocusRef.current.style.display = "none";
+        }
+      }
+      if (totalFocusCardRef.current) {
+        const totalClock = formatClockTime(elapsedSec);
+        if (totalFocusCardRef.current.textContent !== totalClock) {
+          totalFocusCardRef.current.textContent = totalClock;
+        }
+      }
       if (svgCircleRef.current) {
         // Circumference for r=116 is 2 * PI * 116 = 728.85
         const offset = 728.85 * (1 - percent / 100);
@@ -991,8 +1012,88 @@ function TimerView() {
                 : `ROUND ${active.round} FOCUS`
               : "RUNNING"}
           </div>
+          <div
+            ref={totalFocusRef}
+            style={{
+              display: active.isPomodoro ? "block" : "none",
+              fontSize: "0.82rem",
+              color: "rgba(255, 255, 255, 0.72)",
+              fontWeight: 600,
+              marginTop: "6px",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            }}
+          >
+            ⏱️ Total: 00:00
+          </div>
         </div>
       </main>
+
+      {/* Pomodoro Total Focus Card */}
+      {active.isPomodoro && (
+        <section
+          style={{
+            background: "rgba(15, 23, 42, 0.75)",
+            border: "1px solid rgba(255, 255, 255, 0.09)",
+            borderRadius: "20px",
+            padding: "0.75rem 1.35rem",
+            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.35)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            width: "100%",
+            maxWidth: "400px",
+            margin: "0 auto 0.85rem",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div
+              style={{
+                width: "34px",
+                height: "34px",
+                borderRadius: "50%",
+                background: "rgba(239, 68, 68, 0.14)",
+                border: "1px solid rgba(239, 68, 68, 0.28)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "1.05rem",
+              }}
+            >
+              🍅
+            </div>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <span
+                style={{
+                  fontSize: "0.68rem",
+                  color: "#94a3b8",
+                  fontWeight: 700,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                }}
+              >
+                TOTAL FOCUS
+              </span>
+              <span style={{ fontSize: "0.78rem", color: "#64748b" }}>
+                Cumulative study time
+              </span>
+            </div>
+          </div>
+          <span
+            ref={totalFocusCardRef}
+            style={{
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontSize: "1.25rem",
+              fontWeight: 800,
+              color: "#ffffff",
+              letterSpacing: "-0.02em",
+            }}
+          >
+            00:00
+          </span>
+        </section>
+      )}
 
       {/* Details Card in Dark Mode */}
       <section className="details-card-dark">
