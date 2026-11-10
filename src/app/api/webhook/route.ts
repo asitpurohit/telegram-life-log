@@ -105,6 +105,8 @@ import {
   getActiveTimerAutoAdvance,
   getSavedAppUrl,
   saveAppUrl,
+  getTimerBeepPreference,
+  setTimerBeepPreference,
 } from "@/lib/supabase";
 import { parseUserMessageWithAI, isQuickGibberishCheck, AIParsedIntent } from "@/lib/ai";
 import { askAboutData } from "@/lib/analytics";
@@ -139,6 +141,8 @@ function isTimerCallback(data: string): boolean {
     data.startsWith("timer_resume:") ||
     data.startsWith("timer_refresh:") ||
     data.startsWith("timer_stop:") ||
+    data === "timer_toggle_beep" ||
+    data.startsWith("timer_toggle_beep:") ||
     data === "pomodoro_start_break" ||
     data === "pomodoro_skip_break" ||
     data === "pomodoro_next_round"
@@ -949,12 +953,13 @@ async function doStartActiveTimer(
 
   const startedAt = active?.started_at || new Date().toISOString();
   const pomodoroInfo = extractPomodoroInfo(active);
-  const [sleepAlarm, webAppUrl] = await Promise.all([
+  const [sleepAlarm, webAppUrl, beepEnabled] = await Promise.all([
     /sleep/i.test(taskName) ? getSleepAlarmState(chatId) : Promise.resolve(null),
     getTimerWebAppUrl(chatId),
+    getTimerBeepPreference(chatId),
   ]);
   const sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
-  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo, sleepTargetMins, webAppUrl);
+  const view = buildTimerView(taskName, startedAt, 0, 0, projectName, progressStr, todoTitle, pomodoroInfo, sleepTargetMins, webAppUrl, beepEnabled);
   void setChatMenuButton(chatId, { type: "default" });
   if (messageId) {
     await respondUi(chatId, messageId, view.text, view.keyboard);
@@ -4687,9 +4692,10 @@ export async function POST(req: NextRequest) {
         // Double-tap: keep the first pause moment
         const pausedAt = pause.pausedAt ?? Date.now();
 
-        const [progressStr, webAppUrl] = await Promise.all([
+        const [progressStr, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
           setPauseState(chatId, { pausedAt, pausedSeconds: pause.pausedSeconds }),
           clearIdleAlertCard(chatId, messageId),
           getNudgeState(chatId).then(async (nudge) => {
@@ -4711,7 +4717,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           null,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -4755,9 +4762,10 @@ export async function POST(req: NextRequest) {
           active.phase_started_at = newPhaseStartedAtIso;
         }
 
-        const [progressStr, webAppUrl] = await Promise.all([
+        const [progressStr, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
           setPauseState(chatId, { pausedAt: null, pausedSeconds }),
           newPhaseStartedAtIso
             ? updateActiveTimer(chatId, { phase_started_at: newPhaseStartedAtIso })
@@ -4784,7 +4792,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           null,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -4814,10 +4823,11 @@ export async function POST(req: NextRequest) {
 
         const pause = await getPauseState(chatId);
         const fallbackPausedAt = parseInt(callbackData.split(":")[1], 10) || 0;
-        const [progressStr, sleepAlarm, webAppUrl] = await Promise.all([
+        const [progressStr, sleepAlarm, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           /sleep/i.test(active.task_name) ? getSleepAlarmState(chatId) : Promise.resolve(null),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
         ]);
         const sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
         const pomodoroInfo = extractPomodoroInfo(active);
@@ -4831,7 +4841,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           sleepTargetMins,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
 
@@ -4841,6 +4852,57 @@ export async function POST(req: NextRequest) {
           await deleteTelegramMessage(chatId, nudge.messageId);
           await setNudgeState(chatId, { messageId: null, nextNudgeAt: nudge.nextNudgeAt });
         }
+
+        if (messageId) {
+          await trackTimerMessage(chatId, messageId);
+        }
+        return NextResponse.json({ ok: true });
+      }
+
+      // --- Timer: Toggle Beep (Mute / Unmute 5m reminder nudges & alert chimes) ---
+      if (callbackData === "timer_toggle_beep" || callbackData.startsWith("timer_toggle_beep:")) {
+        const active = await getActiveTimer(chatId);
+        if (!active) {
+          await respondUi(chatId, messageId, "⏱️ No active timer is running.", []);
+          return NextResponse.json({ ok: true });
+        }
+
+        const currentBeep = await getTimerBeepPreference(chatId);
+        const newBeep = !currentBeep;
+        await setTimerBeepPreference(chatId, newBeep);
+
+        // If turning beep OFF, cleanly remove any pending 5-min nudge message from chat
+        if (!newBeep) {
+          const nudge = await getNudgeState(chatId);
+          if (nudge.messageId) {
+            await deleteTelegramMessage(chatId, nudge.messageId);
+          }
+          await clearNudgeState(chatId);
+        }
+
+        const pause = await getPauseState(chatId);
+        const [progressStr, sleepAlarm, webAppUrl] = await Promise.all([
+          getTimerProjectProgress(active.project_id),
+          /sleep/i.test(active.task_name) ? getSleepAlarmState(chatId) : Promise.resolve(null),
+          getTimerWebAppUrl(chatId),
+        ]);
+        const sleepTargetMins = sleepAlarm?.targetMinutes ?? null;
+        const pomodoroInfo = extractPomodoroInfo(active);
+        const view = buildTimerView(
+          active.task_name,
+          active.started_at,
+          pause.pausedAt ?? 0,
+          pause.pausedSeconds,
+          active.project_name,
+          progressStr,
+          active.todo_title,
+          pomodoroInfo,
+          sleepTargetMins,
+          webAppUrl,
+          newBeep
+        );
+
+        await respondUi(chatId, messageId, view.text, view.keyboard);
 
         if (messageId) {
           await trackTimerMessage(chatId, messageId);
@@ -4875,9 +4937,10 @@ export async function POST(req: NextRequest) {
         }
 
         const nowIso = new Date(now).toISOString();
-        const [progressStr, webAppUrl] = await Promise.all([
+        const [progressStr, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
           setPauseState(chatId, { pausedAt: now, pausedSeconds: newPausedSeconds }),
           updateActiveTimer(chatId, {
             pomodoro_phase: "break",
@@ -4907,7 +4970,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           null,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
         if (messageId) {
@@ -4943,9 +5007,10 @@ export async function POST(req: NextRequest) {
         const nextRound = (active.pomodoro_round || 1) + 1;
         const nowIso = new Date(now).toISOString();
 
-        const [progressStr, webAppUrl] = await Promise.all([
+        const [progressStr, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
           setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds }),
           updateActiveTimer(chatId, {
             pomodoro_phase: "work",
@@ -4976,7 +5041,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           null,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
         if (messageId) {
@@ -5010,9 +5076,10 @@ export async function POST(req: NextRequest) {
         }
 
         const nowIso = new Date(now).toISOString();
-        const [progressStr, webAppUrl] = await Promise.all([
+        const [progressStr, webAppUrl, beepEnabled] = await Promise.all([
           getTimerProjectProgress(active.project_id),
           getTimerWebAppUrl(chatId),
+          getTimerBeepPreference(chatId),
           setPauseState(chatId, { pausedAt: null, pausedSeconds: newPausedSeconds }),
           updateActiveTimer(chatId, {
             pomodoro_phase: "work",
@@ -5041,7 +5108,8 @@ export async function POST(req: NextRequest) {
           active.todo_title,
           pomodoroInfo,
           null,
-          webAppUrl
+          webAppUrl,
+          beepEnabled
         );
         await respondUi(chatId, messageId, view.text, view.keyboard);
         if (messageId) {
@@ -5426,10 +5494,11 @@ export async function POST(req: NextRequest) {
         // If a timer is currently active, re-send the live timer controls so user can control it
         const runningTimer = await getActiveTimer(chatId);
         if (runningTimer) {
-          const [pause, progressStr, webAppUrl] = await Promise.all([
+          const [pause, progressStr, webAppUrl, beepEnabled] = await Promise.all([
             getPauseState(chatId),
             getTimerProjectProgress(runningTimer.project_id),
             getTimerWebAppUrl(chatId),
+            getTimerBeepPreference(chatId),
           ]);
           const pomodoroInfo = extractPomodoroInfo(runningTimer);
           const view = buildTimerView(
@@ -5442,7 +5511,8 @@ export async function POST(req: NextRequest) {
             runningTimer.todo_title,
             pomodoroInfo,
             null,
-            webAppUrl
+            webAppUrl,
+            beepEnabled
           );
 
           const sentMessageId = await sendUiMessage(
@@ -5849,10 +5919,11 @@ export async function POST(req: NextRequest) {
         await setActiveTask(chatId, null);
         const active = await getActiveTimer(chatId);
         if (active) {
-          const [pause, progressStr, webAppUrl] = await Promise.all([
+          const [pause, progressStr, webAppUrl, beepEnabled] = await Promise.all([
             getPauseState(chatId),
             getTimerProjectProgress(active.project_id),
             getTimerWebAppUrl(chatId),
+            getTimerBeepPreference(chatId),
           ]);
           const pomodoroInfo = extractPomodoroInfo(active);
           const view = buildTimerView(
@@ -5865,7 +5936,8 @@ export async function POST(req: NextRequest) {
             active.todo_title,
             pomodoroInfo,
             null,
-            webAppUrl
+            webAppUrl,
+            beepEnabled
           );
           const sentId = await sendUiMessage(chatId, view.text, view.keyboard);
           if (sentId) {

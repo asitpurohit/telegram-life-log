@@ -13,6 +13,7 @@ import {
   getActiveTimer,
   getActiveTimerAutoAdvance,
   getSavedAppUrl,
+  getTimerBeepPreference,
 } from "./supabase";
 import {
   editTelegramMessage,
@@ -75,25 +76,17 @@ export function buildTimerView(
   todoTitle?: string | null,
   pomodoro?: PomodoroInfo | null,
   sleepTargetMins?: number | null,
-  webAppUrl?: string | null
+  webAppUrl?: string | null,
+  beepEnabled = true
 ): { text: string; keyboard: InlineKeyboard } {
   const withWebApp = (kb: InlineKeyboard): InlineKeyboard => {
     if (!webAppUrl) return kb;
-    const hasRefreshRow = kb.some((row) =>
-      row.some((btn) => "callback_data" in btn && btn.callback_data?.startsWith("timer_refresh"))
-    );
-    if (hasRefreshRow) {
-      return kb.map((row) => {
-        const hasRefresh = row.some(
-          (btn) => "callback_data" in btn && btn.callback_data?.startsWith("timer_refresh")
-        );
-        if (hasRefresh) {
-          return [...row, { text: "⏱️ Open in Chrome", url: webAppUrl }];
-        }
-        return row;
-      });
-    }
     return [...kb, [{ text: "⏱️ Open in Chrome", url: webAppUrl }]];
+  };
+
+  const beepBtn = {
+    text: beepEnabled ? "🔔 Beep: ON" : "🔕 Beep: OFF",
+    callback_data: "timer_toggle_beep",
   };
   const endMs = pausedAtMs > 0 ? pausedAtMs : Date.now();
   const elapsedSeconds = Math.max(
@@ -164,16 +157,23 @@ export function buildTimerView(
       const bar = miniProgressBar(breakPercent, 10);
       const remainingSec = Math.max(0, targetBreakSec - breakElapsedSec);
 
+      const alertPrompt = beepEnabled
+        ? `🔔 <i>Alarm will ring in ${formatDuration(remainingSec)} when break ends.\n(Break time is paused and excluded from study hours).</i>`
+        : `🔕 <i>Break ends in ${formatDuration(remainingSec)} (silent mode).\n(Break time is paused and excluded from study hours).</i>`;
+
       const text =
         `☕ <b>${taskName}</b> — On Break! (Round ${round} Done 🎉)${projectLine}${taskLine}\n\n` +
         `⏳ Rest Time: <b>${formatDuration(breakElapsedSec)} / ${formatDuration(targetBreakSec)}</b>  [${bar}]\n` +
         `🕐 Started: ${startedTime}\n\n` +
-        `🔔 <i>Alarm will ring in ${formatDuration(remainingSec)} when break ends.\n(Break time is paused and excluded from study hours).</i>`;
+        alertPrompt;
 
       const keyboard: InlineKeyboard = [
         [{ text: "▶️ Skip Break & Resume Work", callback_data: "pomodoro_skip_break" }],
         [{ text: "⏹ Stop & Log", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
-        [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
+        [
+          { text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` },
+          beepBtn,
+        ],
       ];
 
       return { text, keyboard: withWebApp(keyboard) };
@@ -205,6 +205,10 @@ export function buildTimerView(
     const bar = miniProgressBar(workPercent, 10);
     const remainingSec = Math.max(0, targetWorkSec - currentPhaseElapsedSec);
 
+    const alertPrompt = beepEnabled
+      ? `🔔 <i>Auto-pause for a ${breakMins}m break in ${formatDuration(remainingSec)}.</i>`
+      : `🔕 <i>Auto-pause for a ${breakMins}m break in ${formatDuration(remainingSec)} (silent).</i>`;
+
     const text = isPaused
       ? `🍅 <b>${taskName}</b> — Focus Paused (Round ${round})${projectLine}${taskLine}\n\n` +
         `⏳ Focus Time: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
@@ -213,7 +217,7 @@ export function buildTimerView(
       : `🍅 <b>${taskName}</b> — Focus (Round ${round})${projectLine}${taskLine}\n\n` +
         `⏳ Focus Time: <b>${formatDuration(currentPhaseElapsedSec)} / ${formatDuration(targetWorkSec)}</b>  [${bar}] ${workPercent}%\n` +
         `🕐 Started: ${startedTime}\n\n` +
-        `🔔 <i>Auto-pause for a ${breakMins}m break in ${formatDuration(remainingSec)}.</i>`;
+        alertPrompt;
 
     const keyboard: InlineKeyboard = isPaused
       ? [
@@ -221,14 +225,20 @@ export function buildTimerView(
             { text: "▶️ Resume Focus", callback_data: `timer_resume:${pausedAtMs}:${sessionEpoch}` },
             { text: "⏹ Stop", callback_data: `timer_stop:${pausedAtMs}:${sessionEpoch}` },
           ],
-          [{ text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}:${sessionEpoch}` }],
+          [
+            { text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}:${sessionEpoch}` },
+            beepBtn,
+          ],
         ]
       : [
           [
             { text: "⏸ Pause", callback_data: `timer_pause:${sessionEpoch}` },
             { text: "⏹ Stop", callback_data: `timer_stop:0:${sessionEpoch}` },
           ],
-          [{ text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` }],
+          [
+            { text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` },
+            beepBtn,
+          ],
         ];
 
     return { text, keyboard: withWebApp(keyboard) };
@@ -263,7 +273,10 @@ export function buildTimerView(
 
     const keyboard: InlineKeyboard = [
       [{ text: "⏹ Stop Sleep Timer & Log", callback_data: `timer_stop:${endMs}:${sessionEpoch}` }],
-      [{ text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` }],
+      [
+        { text: "🔄 Refresh", callback_data: `timer_refresh:${endMs}:${sessionEpoch}` },
+        beepBtn,
+      ],
     ];
 
     return { text, keyboard: withWebApp(keyboard) };
@@ -278,7 +291,7 @@ export function buildTimerView(
     : `${emoji} <b>${taskName}</b> — Running${projectLine}${taskLine}\n` +
       `⏳ Elapsed: <b>${formatDuration(elapsedSeconds)}</b>\n` +
       `🕐 Started: ${startedTime}\n\n` +
-      `<i>Runs until you stop it.</i>`;
+      (beepEnabled ? `<i>Runs until you stop it.</i>` : `🔕 <i>Runs until you stop it (silent mode).</i>`);
 
   const keyboard: InlineKeyboard = isPaused
     ? [
@@ -286,14 +299,20 @@ export function buildTimerView(
           { text: "▶️ Resume", callback_data: `timer_resume:${pausedAtMs}:${sessionEpoch}` },
           { text: "⏹ Stop", callback_data: `timer_stop:${pausedAtMs}:${sessionEpoch}` },
         ],
-        [{ text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}:${sessionEpoch}` }],
+        [
+          { text: "🔄 Refresh", callback_data: `timer_refresh:${pausedAtMs}:${sessionEpoch}` },
+          beepBtn,
+        ],
       ]
     : [
         [
           { text: "⏸ Pause", callback_data: `timer_pause:${sessionEpoch}` },
           { text: "⏹ Stop", callback_data: `timer_stop:0:${sessionEpoch}` },
         ],
-        [{ text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` }],
+        [
+          { text: "🔄 Refresh", callback_data: `timer_refresh:0:${sessionEpoch}` },
+          beepBtn,
+        ],
       ];
 
   return { text, keyboard: withWebApp(keyboard) };
@@ -374,8 +393,11 @@ export async function refreshRunningTimerMessages(): Promise<void> {
 
   for (const timer of timers) {
     const webAppUrl = appUrl ? `${appUrl}/timer?chatId=${timer.chat_id}` : null;
-    const messageId = await getTimerMessage(timer.chat_id);
-    const pause = await getPauseState(timer.chat_id);
+    const [messageId, pause, beepEnabled] = await Promise.all([
+      getTimerMessage(timer.chat_id),
+      getPauseState(timer.chat_id),
+      getTimerBeepPreference(timer.chat_id),
+    ]);
     const now = Date.now();
 
     // --- Pomodoro Automatic Transitions ---
@@ -430,20 +452,27 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             timer.todo_title,
             pomodoroInfo,
             null,
-            webAppUrl
+            webAppUrl,
+            beepEnabled
           );
 
           if (messageId) {
             await deleteTelegramMessage(timer.chat_id, messageId);
           }
 
-          const finalMsgId = await sendTripleChimeAlert(
-            timer.chat_id,
-            "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
-            "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
-            updatedView.text,
-            updatedView.keyboard
-          );
+          let finalMsgId: number | undefined;
+          if (beepEnabled) {
+            finalMsgId = await sendTripleChimeAlert(
+              timer.chat_id,
+              "🔔 <b>Ting!</b> (Focus Complete! 1/3)",
+              "🔔 <b>Ting!</b> (Time to rest ☕ 2/3)",
+              updatedView.text,
+              updatedView.keyboard
+            );
+          } else {
+            const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
+            finalMsgId = sent?.result?.message_id;
+          }
 
           if (finalMsgId) {
             await trackTimerMessage(timer.chat_id, finalMsgId);
@@ -474,7 +503,8 @@ export async function refreshRunningTimerMessages(): Promise<void> {
                 timer.todo_title,
                 breakInfo,
                 null,
-                webAppUrl
+                webAppUrl,
+                beepEnabled
               );
               if (finalMsgId) {
                 await editTelegramMessage(timer.chat_id, finalMsgId, breakView.text, breakView.keyboard);
@@ -519,20 +549,27 @@ export async function refreshRunningTimerMessages(): Promise<void> {
             timer.todo_title,
             pomodoroInfo,
             null,
-            webAppUrl
+            webAppUrl,
+            beepEnabled
           );
 
           if (messageId) {
             await deleteTelegramMessage(timer.chat_id, messageId);
           }
 
-          const finalMsgId = await sendTripleChimeAlert(
-            timer.chat_id,
-            "⏰ <b>BEEP!</b> (Break Ending 1/3)",
-            "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
-            updatedView.text,
-            updatedView.keyboard
-          );
+          let finalMsgId: number | undefined;
+          if (beepEnabled) {
+            finalMsgId = await sendTripleChimeAlert(
+              timer.chat_id,
+              "⏰ <b>BEEP!</b> (Break Ending 1/3)",
+              "⏰ <b>BEEP!</b> (Get Ready! 2/3)",
+              updatedView.text,
+              updatedView.keyboard
+            );
+          } else {
+            const sent = await sendTelegramMessage(timer.chat_id, updatedView.text, updatedView.keyboard);
+            finalMsgId = sent?.result?.message_id;
+          }
 
           if (finalMsgId) {
             await trackTimerMessage(timer.chat_id, finalMsgId);
@@ -568,7 +605,8 @@ export async function refreshRunningTimerMessages(): Promise<void> {
                 timer.todo_title,
                 workInfo,
                 null,
-                webAppUrl
+                webAppUrl,
+                beepEnabled
               );
               if (finalMsgId) {
                 await editTelegramMessage(timer.chat_id, finalMsgId, workView.text, workView.keyboard);
@@ -630,7 +668,8 @@ export async function refreshRunningTimerMessages(): Promise<void> {
         timer.todo_title,
         pomodoroInfo,
         sleepTargetMins,
-        webAppUrl
+        webAppUrl,
+        beepEnabled
       );
       await editTelegramMessage(timer.chat_id, messageId, view.text, view.keyboard);
     }
@@ -690,6 +729,9 @@ export async function refreshRunningTimerMessages(): Promise<void> {
     ) {
       continue;
     }
+
+    // If user has disabled beeps/nudges, stay completely silent
+    if (!beepEnabled) continue;
 
     const nudge = await getNudgeState(timer.chat_id);
     const nextNudgeAt = nudge.nextNudgeAt || new Date(timer.started_at).getTime() + NUDGE_INTERVAL_MS;

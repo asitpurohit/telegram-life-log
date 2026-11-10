@@ -4,6 +4,7 @@ import {
   getPauseState,
   getTimerProjectProgress,
   getActiveTimerAutoAdvance,
+  getTimerBeepPreference,
 } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -26,9 +27,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, active: null });
     }
 
-    const [progressStr, autoAdvance] = await Promise.all([
+    const [progressStr, autoAdvance, beepEnabled] = await Promise.all([
       active.project_id ? getTimerProjectProgress(active.project_id) : Promise.resolve(null),
       active.is_pomodoro ? getActiveTimerAutoAdvance(chatId, active) : Promise.resolve(false),
+      getTimerBeepPreference(chatId),
     ]);
 
     const isPaused = Boolean(pause.pausedAt && pause.pausedAt > 0);
@@ -43,6 +45,7 @@ export async function GET(req: NextRequest) {
         startedAt: active.started_at,
         isPomodoro: Boolean(active.is_pomodoro),
         autoAdvance: Boolean(autoAdvance),
+        beepEnabled,
         workMins: active.pomodoro_work_mins || 25,
         breakMins: active.pomodoro_break_mins || 5,
         round: active.pomodoro_round || 1,

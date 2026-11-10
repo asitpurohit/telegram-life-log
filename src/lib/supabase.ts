@@ -1732,6 +1732,35 @@ export async function setUserSummaryEmail(chatId: string | number, email: string
   return true;
 }
 
+export async function getTimerBeepPreference(chatId: string | number): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from("wizard_sessions")
+      .select("task_data")
+      .eq("chat_id", `__pref_timer_beep__:${chatId}`)
+      .maybeSingle();
+
+    if (data?.task_data && typeof data.task_data.beepEnabled === "boolean") {
+      return data.task_data.beepEnabled;
+    }
+  } catch {}
+  return true; // Default is ON (beep enabled)
+}
+
+export async function setTimerBeepPreference(chatId: string | number, enabled: boolean): Promise<boolean> {
+  try {
+    await supabase.from("wizard_sessions").upsert({
+      chat_id: `__pref_timer_beep__:${chatId}`,
+      step: "user_preference",
+      task_data: { beepEnabled: enabled, updated_at: new Date().toISOString() },
+    });
+    return true;
+  } catch (err) {
+    console.error("Error persisting timer beep pref:", err);
+    return false;
+  }
+}
+
 export async function updateUserSettings(
   chatId: string | number,
   updates: Partial<UserSettings>

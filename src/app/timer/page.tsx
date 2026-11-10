@@ -39,6 +39,7 @@ interface ActiveData {
   startedAt: string;
   isPomodoro: boolean;
   autoAdvance?: boolean;
+  beepEnabled?: boolean;
   workMins: number;
   breakMins: number;
   round: number;
@@ -622,7 +623,9 @@ function TimerView() {
       const fiveMinChunk = Math.floor(milestoneSec / 300);
       if (fiveMinChunk > 0 && fiveMinChunk > lastMilestoneRef.current && !current.isPaused) {
         lastMilestoneRef.current = fiveMinChunk;
-        triggerFlash("milestone", `✨ ${fiveMinChunk * 5} Minutes Logged!`);
+        if (current.beepEnabled !== false) {
+          triggerFlash("milestone", `✨ ${fiveMinChunk * 5} Minutes Logged!`);
+        }
       }
 
       // Check Pomodoro countdown completion (Work -> Break or Break -> Work)
