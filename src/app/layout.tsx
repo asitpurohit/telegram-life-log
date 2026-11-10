@@ -3,8 +3,8 @@ import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Live Stopwatch",
-  description: "Telegram Life Log Live Timer",
+  title: "Timer",
+  description: "Live Timer HUD",
 };
 
 export default function RootLayout({

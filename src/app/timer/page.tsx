@@ -447,15 +447,23 @@ function TimerView() {
         ? `${origin}/icon-work-512.png`
         : `${origin}/icon-512.png`;
 
+    // Update browser tab document title
+    if (typeof document !== "undefined" && document.title !== titleStr) {
+      document.title = titleStr;
+    }
+
     const needsNewMetadata =
       !navigator.mediaSession.metadata ||
       currentArtworkRef.current !== iconType;
+
+    // Use zero-width space "\u200B" for artist so Chrome Android never falls back to showing origin domain
+    const emptyPlaceholder = "\u200B";
 
     if (needsNewMetadata || !navigator.mediaSession.metadata) {
       currentArtworkRef.current = iconType;
       navigator.mediaSession.metadata = new MediaMetadata({
         title: titleStr,
-        artist: "",
+        artist: emptyPlaceholder,
         album: "",
         artwork: [
           { src: icon192, sizes: "192x192", type: "image/png" },
@@ -467,8 +475,8 @@ function TimerView() {
       if (meta.title !== titleStr) {
         meta.title = titleStr;
       }
-      if (meta.artist !== "") {
-        meta.artist = "";
+      if (meta.artist !== emptyPlaceholder) {
+        meta.artist = emptyPlaceholder;
       }
       if (meta.album !== "") {
         meta.album = "";
